@@ -13,9 +13,10 @@
                        }).
 
 -record(enterdb_table, {name :: atom(),
+                        path :: string(),
                         key :: [atom()],
                         columns :: [atom()],
                         indexes :: [atom()],
                         options :: [table_option()],
-                        shards :: [#enterdb_shard{}]
+                        shards :: [string()]
                         }).

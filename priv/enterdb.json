@@ -4,6 +4,6 @@
     "verify_cb" : ["enterdb_server", "verify"],
     "params" : {
         "db_path" : "/tmp/enterdb",
-        "num_of_local_shards" : "default"
+        "num_of_local_shards" : "32"
     }
 }

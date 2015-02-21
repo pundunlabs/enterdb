@@ -9,7 +9,10 @@
 -module(enterdb).
 
 %% API
--export([create_table/5]).
+-export([create_table/5,
+         read/2,
+         write/3,
+         delete/2]).
 
 -include("enterdb.hrl").
 
@@ -42,3 +45,52 @@ create_table(Name, Key, Columns, Indexes, Options)->
         {error, Reason} ->
             {error, Reason}
     end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Reads Key from table with name Name
+%% @end
+%%--------------------------------------------------------------------
+-spec read(Name::string(),
+           Key::[{atom(), term()}]) -> {ok, Value::term()} |
+                                       {error, Reason::term()}.
+read(Name, Key)->
+    case gb_hash:find_node(Name, Key) of
+        undefined ->
+            {error, "no_table"};
+        {ok, Shard} ->
+            enterdb_ldb_worker:read(Shard, Key)
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Writes Key/Columns to table with name Name
+%% @end
+%%--------------------------------------------------------------------
+-spec write(Name::string(),
+            Key::[{atom(), term()}],
+            Columns::[{atom(), term()}]) -> ok | {error, Reason::term()}.
+write(Name, Key, Columns)->
+    case gb_hash:find_node(Name, Key) of
+        undefined ->
+            {error, "no_table"};
+        {ok, Shard} ->
+            enterdb_ldb_worker:write(Shard, Key, Columns)
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Delete Key from table with name Name
+%% @end
+%%--------------------------------------------------------------------
+-spec delete(Name::string(),
+             Key::[{atom(), term()}]) -> ok |
+                                         {error, Reason::term()}.
+delete(Name, Key)->
+    case gb_hash:find_node(Name, Key) of
+        undefined ->
+            {error, "no_table"};
+        {ok, Shard} ->
+            enterdb_ldb_worker:delete(Shard, Key)
+    end.
+

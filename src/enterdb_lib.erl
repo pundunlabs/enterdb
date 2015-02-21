@@ -11,7 +11,8 @@
 %% API
 -export([verify_create_table_args/1,
          get_shards/2,
-         create_leveldb_db/2]).
+         create_leveldb_db/1,
+         open_leveldb_db/1]).
 
 -include("enterdb.hrl").
 %%%===================================================================
@@ -151,37 +152,72 @@ check_if_table_exists(Name)->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Create and return #enterdb_shard{} records for local sharding.
+%% Create and return list of shard names for local sharding.
 %%
 %%--------------------------------------------------------------------
--spec get_shards(Name::string(), NumOfShards::pos_integer()) -> {ok, Shards::[#enterdb_shard{}]}.
+-spec get_shards(Name::string(), NumOfShards::pos_integer()) -> {ok, [string()]}.
 get_shards(Name, NumOfShards) ->
-    ShardNames = [lists:concat([Name,"_shard_",N]) ||N <- lists:seq(1, NumOfShards)],
-    Shards = [#enterdb_shard{hash = gb_chash:chash(SN), name = SN} || SN <- ShardNames],
-    {ok, lists:keysort(#enterdb_shard.hash, Shards)}.
+    Shards = [lists:concat([Name,"_shard_",N]) ||N <- lists:seq(1, NumOfShards)],
+    Options = [{algorithm, sha}, {strategy, uniform}],
+    gb_hash:create_ring(Name, Shards, Options),
+    {ok, Shards}.
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Create leveldb dbs on DB_PATH, specified by Shards.
+%% Create leveldb database that is specified by EnterdbTable.
 %%
 %%--------------------------------------------------------------------
--spec create_leveldb_db(DB_PATH::string(),
-                        Shards::[#enterdb_shard{}]) -> ok |
-                                                       {error, Reason::term()}.
-create_leveldb_db(DB_PATH, Shards) ->
+-spec create_leveldb_db(EnterdbTable::[#enterdb_table{}]) -> ok |
+                                                             {error, Reason::term()}.
+create_leveldb_db(EDBT = #enterdb_table{shards = Shards}) ->
     create_leveldb_db([{create_if_missing, true},
-                       {error_if_exists, true}], DB_PATH, Shards).
+                       {error_if_exists, true}], EDBT, Shards).
 
-create_leveldb_db(_LDB_Options, _DB_PATH, []) ->
+create_leveldb_db(_Options, _EDBT, []) ->
     ok;
-create_leveldb_db(LDB_Options, DB_PATH, [#enterdb_shard{name = Name,
-                                                        hash = Hash}|Rest]) ->
-    ChildArgs = [{name, Name}, {hash, Hash},
-                 {options, LDB_Options}, {path, DB_PATH}],
+create_leveldb_db(Options, EDBT, [ShardName|Rest]) ->
+    ChildArgs = [{name, ShardName},
+                 {options, Options}, {tab_rec, EDBT}],
     case supervisor:start_child(enterdb_ldb_sup, [ChildArgs]) of
         {ok, _Pid} ->
-            create_leveldb_db(LDB_Options, DB_PATH, Rest);
+            create_leveldb_db(Options, EDBT, Rest);
         {error, Reason} ->
             {error, Reason}
     end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Open an existing leveldb database specified by Name.
+%%
+%%--------------------------------------------------------------------
+-spec open_leveldb_db(Name::string())-> ok | {error, Reason::term()}
+                    ;(Table::#enterdb_table{})-> ok | {error, Reason::term()}.
+open_leveldb_db(Name) when is_list(Name)->
+    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_table, Name) end) of
+        {atomic, []} ->
+            {error, "no_table"};
+        {atomic, [Table]} ->
+            open_leveldb_db(Table);
+        {error, Reason} ->
+            {error, Reason}
+    end;
+open_leveldb_db(EDBT = #enterdb_table{shards = Shards}) ->
+    Options = [{create_if_missing, false},
+               {error_if_exists, false}],
+    open_leveldb_db(Options, EDBT, Shards).
+
+-spec open_leveldb_db(Options::[{atom(),term()}],
+                      EDBT::#enterdb_table{},
+                      Shards::[string()]) -> ok | {error, Reason::term()}.
+open_leveldb_db(_Options, _EDBT, []) ->
+    ok;
+open_leveldb_db(Options, EDBT, [Name|Rest]) ->
+     ChildArgs = [{name, Name},
+                  {options, Options}, {tab_rec, EDBT}],
+     case supervisor:start_child(enterdb_ldb_sup, [ChildArgs]) of
+        {ok, _Pid} ->
+            open_leveldb_db(Options, EDBT, Rest);
+        {error, Reason} ->
+            {error, Reason}
+     end.
 

@@ -79,8 +79,13 @@ init([]) ->
     NumOfShards = case gb_conf:get_param("enterdb.json", num_of_local_shards, "default") of
                       "default" ->
                           erlang:system_info(schedulers);
-                      Int when is_integer(Int) ->
-                          Int
+                      IntStr ->
+                        case catch list_to_integer(IntStr) of
+                            Int when is_integer(Int) ->
+                                Int;
+                            _ ->
+                                erlang:system_info(schedulers)
+                        end
                   end,
     DB_PATH = gb_conf:get_param("enterdb.json", db_path),
 
@@ -114,8 +119,9 @@ handle_call({create_table,{Name, Key,
                                                    {options, Options}]) of
             {ok, EnterdbTable} ->
                 {ok, Shards} = enterdb_lib:get_shards(Name, NumOfShards),
-                NewEnterdbTable = EnterdbTable#enterdb_table{shards = Shards},
-                create_table(DB_PATH, NewEnterdbTable),
+                NewEnterdbTable = EnterdbTable#enterdb_table{path = DB_PATH,
+                                                             shards = Shards},
+                create_table(NewEnterdbTable),
                 ok;
             {error, Reason} ->
                 {error, Reason}
@@ -185,14 +191,11 @@ code_change(_OldVsn, State, _Extra) ->
 %% Create table according to table specification
 %%
 %%--------------------------------------------------------------------
--spec create_table(DB_PATH::string(), EnterdbTable::#enterdb_table{}) -> 
-        ok |
-        {error, Reason::term()}. 
-create_table(DB_PATH, #enterdb_table{options = Opts,
-                                     shards = Shards} = EnterdbTable)->
+-spec create_table(EnterdbTable::#enterdb_table{}) -> ok | {error, Reason::term()}. 
+create_table(#enterdb_table{options = Opts} = EnterdbTable)->
     case proplists:get_value(backend, Opts) of
         leveldb ->
-            case enterdb_lib:create_leveldb_db(DB_PATH, Shards) of
+            case enterdb_lib:create_leveldb_db(EnterdbTable) of
                 ok -> write_enterdb_table(EnterdbTable);
                 {error, Reason} ->
                     error_logger:error_msg("Could not create leveldb database, error: ~p~n", [Reason]),
