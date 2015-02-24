@@ -45,6 +45,7 @@
                 num_of_local_shards}).
 
 -include("enterdb.hrl").
+-include("gb_log.hrl").
 
 %%%===================================================================
 %%% API
@@ -88,7 +89,7 @@ init([]) ->
                         end
                   end,
     DB_PATH = gb_conf:get_param("enterdb.json", db_path),
-
+    ?debug("DB_PATH: ~p", [DB_PATH]),
     {ok, #state{db_path = DB_PATH,
                 num_of_local_shards = NumOfShards}}.
 

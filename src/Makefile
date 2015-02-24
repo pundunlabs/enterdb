@@ -10,8 +10,8 @@ APP_TARGET= $(EBIN)/$(APP_FILE)
 
 MODULES = \
     enterdb_app \
-	enterdb_sup \
-	enterdb_db \
+    enterdb_sup \
+    enterdb_db \
     enterdb_server \
     enterdb \
     enterdb_lib \
@@ -19,16 +19,21 @@ MODULES = \
     enterdb_ldb_worker \
     gb_chash
 
-ERL_FILES = $(MODULES:%=%.erl)
+ERL_BEAMS = $(MODULES:%=$(EBIN)/%.beam)
 
 INCLUDE_DIRS = \
-	../include
+	../include \
+	../../gb_log/include
+
+ERL_INCLUDES=$(INCLUDE_DIRS:%=-I %)
 
 .PHONY: all clean
 
-all: $(EBIN) $(APP_TARGET)
-	erlc -I $(INCLUDE_DIRS) -o $(EBIN) $(ERL_FILES)
+all: $(EBIN) $(APP_TARGET) $(ERL_BEAMS)
 
+$(EBIN)/%.beam: %.erl
+	erlc $(ERL_INCLUDES) -o $(EBIN) $<
+	
 $(EBIN):
 	mkdir ../ebin
 
