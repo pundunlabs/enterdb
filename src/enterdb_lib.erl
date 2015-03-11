@@ -12,7 +12,8 @@
 -export([verify_create_table_args/1,
          get_shards/2,
          create_leveldb_db/1,
-         open_leveldb_db/1]).
+         open_leveldb_db/1,
+	 read_range/3]).
 
 -include("enterdb.hrl").
 %%%===================================================================
@@ -220,4 +221,30 @@ open_leveldb_db(Options, EDBT, [Name|Rest]) ->
         {error, Reason} ->
             {error, Reason}
      end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Reads a Range of Keys from table with name Name and returns mac Limit items
+%% @end
+%%--------------------------------------------------------------------
+-spec read_range(Name :: string(),
+		 Range :: key_range(),
+		 Limig :: pos_integer()) -> {ok, [kvp()]} | {error, Reason::term()}.
+read_range(Name, Range, Limit) ->
+    case gb_hash:get_nodes(Name) of
+	undefined ->
+	    {error, "no_table"};
+	{ok, Shards} ->
+	    KVLs =
+		[begin
+		    {ok, KVL} = enterdb_ldb_worker:read_range_binary(Shard, Range, Limit),
+		    %%TODO: Reversing the list here is a dirty hack.
+		    %% Some comparison is not working as intended and needs to be fixed!
+		    lists:reverse(KVL)
+		 end || Shard <- Shards],
+	    {ok , MergedKVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
+	    {ok, AnyShard} = gb_hash:find_node(Name, Range),
+	    enterdb_ldb_worker:make_app_kvp(AnyShard, MergedKVL)
+    end.
+
 

@@ -12,7 +12,8 @@
 -export([create_table/5,
          read/2,
          write/3,
-         delete/2]).
+         delete/2,
+	 read_range/3]).
 
 -include("enterdb.hrl").
 
@@ -32,13 +33,13 @@
 %% coulmn provided in this argument. Any given index column is not
 %% neccesarly included in Columns.
 %%--------------------------------------------------------------------
--spec create_table(Name::string(), Key::[atom()],
-                   Columns::[atom()], Indexes::[atom()],
+-spec create_table(Name::string(), KeyDef::[atom()],
+                   ColumnsDef::[atom()], IndexesDef::[atom()],
                    Options::[table_option()])-> 
     ok | {error, Reason::term()}.
-create_table(Name, Key, Columns, Indexes, Options)->
-    case gen_server:call(enterdb_server,{create_table, {Name, Key, 
-                                                        Columns, Indexes,
+create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
+    case gen_server:call(enterdb_server,{create_table, {Name, KeyDef, 
+                                                        ColumnsDef, IndexesDef,
                                                         Options}}) of
         ok ->
             ok;
@@ -52,8 +53,8 @@ create_table(Name, Key, Columns, Indexes, Options)->
 %% @end
 %%--------------------------------------------------------------------
 -spec read(Name::string(),
-           Key::[{atom(), term()}]) -> {ok, Value::term()} |
-                                       {error, Reason::term()}.
+           Key::key()) -> {ok, value()} |
+                          {error, Reason::term()}.
 read(Name, Key)->
     case gb_hash:find_node(Name, Key) of
         undefined ->
@@ -68,8 +69,8 @@ read(Name, Key)->
 %% @end
 %%--------------------------------------------------------------------
 -spec write(Name::string(),
-            Key::[{atom(), term()}],
-            Columns::[{atom(), term()}]) -> ok | {error, Reason::term()}.
+            Key::key(),
+            Columns::[column()]) -> ok | {error, Reason::term()}.
 write(Name, Key, Columns)->
     case gb_hash:find_node(Name, Key) of
         undefined ->
@@ -84,8 +85,8 @@ write(Name, Key, Columns)->
 %% @end
 %%--------------------------------------------------------------------
 -spec delete(Name::string(),
-             Key::[{atom(), term()}]) -> ok |
-                                         {error, Reason::term()}.
+             Key::key()) -> ok |
+                            {error, Reason::term()}.
 delete(Name, Key)->
     case gb_hash:find_node(Name, Key) of
         undefined ->
@@ -93,4 +94,16 @@ delete(Name, Key)->
         {ok, Shard} ->
             enterdb_ldb_worker:delete(Shard, Key)
     end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Reads a Range of Keys from table with name Name and returns mac Limit items
+%% @end
+%%--------------------------------------------------------------------
+-spec read_range(Name::string(),
+		 Range :: key_range(),
+		 Limit :: pos_integer()) -> {ok, [kvp()]} |
+					    {error, Reason::term()}.
+read_range(Name, Range, Limit) ->
+    enterdb_lib:read_range(Name, Range, Limit).
 

@@ -2,6 +2,12 @@
 
 -define(MAX_TABLE_NAME_LENGTH, 64).
 
+-type key() :: [{atom(), term()}].
+-type key_range() :: {key(), key()}.
+-type value() :: term().
+-type kvp() :: {key(), value()}.
+-type column() :: {atom(), term()}.
+
 -type backend() :: leveldb | ets_leveldb.
 -type data_model() :: binary | array | hash.
 -type table_option() :: [{time_ordered, boolean()} |
