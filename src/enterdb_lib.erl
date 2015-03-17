@@ -171,7 +171,8 @@ get_shards(Name, NumOfShards) ->
 -spec create_leveldb_db(EnterdbTable::[#enterdb_table{}]) -> ok |
                                                              {error, Reason::term()}.
 create_leveldb_db(EDBT = #enterdb_table{shards = Shards}) ->
-    create_leveldb_db([{create_if_missing, true},
+    create_leveldb_db([{comparator, 1},
+		       {create_if_missing, true},
                        {error_if_exists, true}], EDBT, Shards).
 
 create_leveldb_db(_Options, _EDBT, []) ->
@@ -203,7 +204,8 @@ open_leveldb_db(Name) when is_list(Name)->
             {error, Reason}
     end;
 open_leveldb_db(EDBT = #enterdb_table{shards = Shards}) ->
-    Options = [{create_if_missing, false},
+    Options = [{comparator, 1},
+	       {create_if_missing, false},
                {error_if_exists, false}],
     open_leveldb_db(Options, EDBT, Shards).
 
@@ -238,9 +240,7 @@ read_range(Name, Range, Limit) ->
 	    KVLs =
 		[begin
 		    {ok, KVL} = enterdb_ldb_worker:read_range_binary(Shard, Range, Limit),
-		    %%TODO: Reversing the list here is a dirty hack.
-		    %% Some comparison is not working as intended and needs to be fixed!
-		    lists:reverse(KVL)
+		    KVL
 		 end || Shard <- Shards],
 	    {ok , MergedKVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
 	    {ok, AnyShard} = gb_hash:find_node(Name, Range),

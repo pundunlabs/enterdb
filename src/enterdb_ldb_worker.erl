@@ -29,7 +29,8 @@
 -include("enterdb.hrl").
 
 -record(state, {db_ref,
-                readoptions,
+                options,
+		readoptions,
                 writeoptions,
                 name,
                 key,
@@ -37,7 +38,6 @@
                 indexes,
                 time_ordered,
                 data_model,
-                options,
                 path}).
 
 %%%===================================================================
@@ -187,7 +187,8 @@ init(Args) ->
                     WriteOptionsRec = build_leveldb_writeoptions([]),
                     {ok, WriteOptions} = leveldb:writeoptions(WriteOptionsRec),
                     {ok, #state{db_ref = DB,
-                                readoptions = ReadOptions,
+                                options = Options,
+				readoptions = ReadOptions,
                                 writeoptions = WriteOptions,
                                 name = Name,
                                 key = Key,
@@ -195,7 +196,6 @@ init(Args) ->
                                 indexes = Indexes,
                                 time_ordered = TimeOrdered,
                                 data_model = DataModel,
-                                options = OptionsRec,
                                 path = Path}}
             end;
         {error, Reason} ->
@@ -273,6 +273,7 @@ handle_call({delete, Key}, _From,
     {reply, Reply, State};
 handle_call({read_range, {StartKey, EndKey}, Limit, Type}, _From,
 	     State = #state{db_ref = DB,
+			    options = Options,
 			    readoptions = ReadOptions,
 			    key = KeyDef}) when Limit > 0 ->
     
@@ -280,7 +281,7 @@ handle_call({read_range, {StartKey, EndKey}, Limit, Type}, _From,
     {ok, DbEndKey} = make_key(KeyDef, EndKey),
     
     Reply =
-    case leveldb:read_range(DB, ReadOptions, {DbStartKey, DbEndKey}, Limit) of
+    case leveldb:read_range(DB, Options, ReadOptions, {DbStartKey, DbEndKey}, Limit) of
 	{ok, KVL} ->
 	    case Type of
 		binary ->
