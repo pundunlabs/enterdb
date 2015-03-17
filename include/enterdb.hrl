@@ -25,4 +25,8 @@
                         indexes :: [atom()],
                         options :: [table_option()],
                         shards :: [string()]
-                        }).
+                       }).
+
+-record(enterdb_ldb_resource, {name :: atom(),
+			       resource :: binary()
+			      }).

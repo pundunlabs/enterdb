@@ -26,7 +26,7 @@
 %%--------------------------------------------------------------------
 -spec create_tables(Nodes :: [node()]) -> ok | {error, Reason :: any()}.
 create_tables(Nodes) ->
-    [create_table(Nodes, T) || T <- [enterdb_table]].
+    [create_table(Nodes, T) || T <- [enterdb_table, enterdb_ldb_resource]].
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -50,6 +50,15 @@ create_table(Nodes, Name) when Name == enterdb_table->
     TabDef = [{access_mode, read_write},
               {attributes, record_info(fields, enterdb_table)},
               {disc_copies, Nodes},
+              {load_order, 49},
+              {record_name, Name},
+              {type, set}
+             ],
+    mnesia:create_table(Name, TabDef);
+create_table(Nodes, Name) when Name == enterdb_ldb_resource->
+    TabDef = [{access_mode, read_write},
+              {attributes, record_info(fields, enterdb_ldb_resource)},
+              {ram_copies, Nodes},
               {load_order, 49},
               {record_name, Name},
               {type, set}

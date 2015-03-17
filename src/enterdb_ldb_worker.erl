@@ -161,6 +161,8 @@ make_app_kvp(Shard, KVP) ->
 %%--------------------------------------------------------------------
 init(Args) ->
     Name = proplists:get_value(name, Args),
+    ok = ensure_closed(Name),
+ 
     OptionsPL = proplists:get_value(options, Args),
     
     TabRec = proplists:get_value(tab_rec, Args),
@@ -182,7 +184,9 @@ init(Args) ->
                 {error, Reason} ->
                     {stop, {error, Reason}};
                 {ok, DB} ->
-                    ReadOptionsRec = build_leveldb_readoptions([]),
+                    ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Name,
+									  resource = DB}),
+		    ReadOptionsRec = build_leveldb_readoptions([]),
                     {ok, ReadOptions} = leveldb:readoptions(ReadOptionsRec),
                     WriteOptionsRec = build_leveldb_writeoptions([]),
                     {ok, WriteOptions} = leveldb:writeoptions(WriteOptionsRec),
@@ -338,8 +342,9 @@ handle_info(_Info, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(_Reason, _State = #state{db_ref = DB}) ->
-    ok = leveldb:close_db(DB).
+terminate(_Reason, _State = #state{db_ref = DB,  name = Name}) ->
+    ok = leveldb:close_db(DB),
+    ok = delete_enterdb_ldb_resource(Name).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -497,4 +502,67 @@ make_indexes([],_) ->
     {ok, []};
 make_indexes(_, _)->
     {error, "not_supported_yet"}.
+
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Ensure the leveldb db is closed and there is no resource left
+%%
+%%--------------------------------------------------------------------
+-spec ensure_closed(Name :: atom()) -> ok | {error, Reason :: term()}.
+ensure_closed(Name) ->
+    case read_enterdb_ldb_resource(Name) of
+	undefined ->
+	    ok;
+	{ok, DB} ->
+	    ok = leveldb:close_db(DB),
+	    ok = delete_enterdb_ldb_resource(Name);
+	{error, Reason} ->
+	    {error, Reason}
+    end.
+
  
+%%--------------------------------------------------------------------
+%% @doc
+%% Store the #enterdb_ldb_resource entry in mnesia ram_copy
+%%
+%%--------------------------------------------------------------------
+-spec write_enterdb_ldb_resource(EnterdbLdbResource::#enterdb_ldb_resource{}) -> ok | {error, Reason::term()}.
+write_enterdb_ldb_resource(EnterdbLdbResource) ->
+    case enterdb_db:transaction(fun() -> mnesia:write(EnterdbLdbResource) end) of
+        {atomic, ok} ->
+            ok;
+        {aborted, Reason} ->
+           {error, {aborted, Reason}}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Read the #enterdb_ldb_resource entry in mnesia ram_copy
+%%
+%%--------------------------------------------------------------------
+-spec read_enterdb_ldb_resource(Name :: atom()) -> {ok, Resource :: binary} |
+						    {error, Reason::term()}.
+read_enterdb_ldb_resource(Name) ->
+    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_ldb_resource, Name) end) of
+        {atomic, []} ->
+	    undefined;
+	{atomic, [#enterdb_ldb_resource{resource = Resource}]} ->
+            {ok, Resource};
+        {aborted, Reason} ->
+           {error, {aborted, Reason}}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Delete the #enterdb_ldb_resource entry in mnesia ram_copy
+%%
+%%--------------------------------------------------------------------
+-spec delete_enterdb_ldb_resource(Name :: atom()) -> ok | {error, Reason::term()}.
+delete_enterdb_ldb_resource(Name) ->
+    case enterdb_db:transaction(fun() -> mnesia:delete(enterdb_ldb_resource, Name, write) end) of
+        {atomic, ok} ->
+            ok;
+        {aborted, Reason} ->
+           {error, {aborted, Reason}}
+    end.
