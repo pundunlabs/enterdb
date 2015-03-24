@@ -2,7 +2,7 @@ include ./vsn.mk
 VSN=$(ENTERDB_VSN)
 APP_NAME = enterdb
 
-SUBDIRS = src
+SUBDIRS = src test
 
 .PHONY: all subdirs $(SUBDIRS) edoc eunit clean
 

@@ -39,6 +39,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
 
+-export([get_state_params/0]).
+
 -define(SERVER, ?MODULE). 
 
 -record(state, {db_path,
@@ -60,6 +62,10 @@
 %%--------------------------------------------------------------------
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+
+-spec get_state_params() -> {ok, [{Attr :: atom(), Val :: atom()}]}.
+get_state_params() ->
+    gen_server:call(enterdb_server, get_state_params).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -107,27 +113,12 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call({create_table,{Name, Key, 
-                           Columns, Indexes,
-                           Options}}, _From,
-                          State = #state{db_path = DB_PATH,
-                                         num_of_local_shards = NumOfShards}) ->
-    Reply =
-        case enterdb_lib:verify_create_table_args([{name, Name},
-                                                   {key, Key},
-                                                   {columns, Columns},
-                                                   {indexes,Indexes},
-                                                   {options, Options}]) of
-            {ok, EnterdbTable} ->
-                {ok, Shards} = enterdb_lib:get_shards(Name, NumOfShards),
-                NewEnterdbTable = EnterdbTable#enterdb_table{path = DB_PATH,
-                                                             shards = Shards},
-                create_table(NewEnterdbTable),
-                ok;
-            {error, Reason} ->
-                {error, Reason}
-        end,
-    {reply, Reply, State};
+handle_call(get_state_params, _From,
+	    State = #state{db_path = DB_PATH,
+                           num_of_local_shards = NumOfShards}) ->
+    PropList = [{db_path, DB_PATH},
+		{num_of_local_shards, NumOfShards}],
+    {reply, {ok, PropList}, State};
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
@@ -187,36 +178,3 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Create table according to table specification
-%%
-%%--------------------------------------------------------------------
--spec create_table(EnterdbTable::#enterdb_table{}) -> ok | {error, Reason::term()}. 
-create_table(#enterdb_table{options = Opts} = EnterdbTable)->
-    case proplists:get_value(backend, Opts) of
-        leveldb ->
-            case enterdb_lib:create_leveldb_db(EnterdbTable) of
-                ok -> write_enterdb_table(EnterdbTable);
-                {error, Reason} ->
-                    error_logger:error_msg("Could not create leveldb database, error: ~p~n", [Reason]),
-                    {error, Reason}
-            end;
-        Else ->
-            error_logger:error_msg("Could not create ~p database, error: not_supported yet.~n", [Else]),
-            {error, "no_supported_backend"}
-    end.
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Store the #enterdb_table entry in mnesia disc_copy
-%%
-%%--------------------------------------------------------------------
--spec write_enterdb_table(EnterdbTable::#enterdb_table{}) -> ok | {error, Reason::term()}.
-write_enterdb_table(EnterdbTable) ->
-    case enterdb_db:transaction(fun() -> mnesia:write(EnterdbTable) end) of
-        {atomic, ok} ->
-            ok;
-        {aborted, Reason} ->
-           {error, {aborted, Reason}}
-    end. 

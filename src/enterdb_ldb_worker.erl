@@ -22,7 +22,8 @@
          delete/2,
 	 read_range_binary/3,
 	 read_range_term/3,
-	 make_app_kvp/2]).
+	 make_app_kvp/2,
+	 recreate_shard/1]).
 
 -define(SERVER, ?MODULE).
 
@@ -36,9 +37,12 @@
                 key,
                 columns,
                 indexes,
+		is_empty,
                 time_ordered,
-                data_model,
-                path}).
+                wrapped,
+		data_model,
+                path,
+		tab_name}).
 
 %%%===================================================================
 %%% API
@@ -143,10 +147,22 @@ make_app_kvp(Shard, KVP) ->
 	    [{make_app_key(KeyDef, binary_to_term(BK)), binary_to_term(BV)} || {BK, BV} <- KVP];
 	{BinKey, BinValue} ->
 	    {make_app_key(KeyDef, binary_to_term(BinKey)), binary_to_term(BinValue)};
+	[] ->
+	    [];
 	_ ->
 	    {error, {invalid_arg, KVP}}
     end,
     {ok, AppKVP}.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Recreate the shard by destroying the leveldb db and re-open a new one
+%% @end
+%%--------------------------------------------------------------------
+-spec recreate_shard(Shard :: string()) -> ok.
+recreate_shard(Shard) ->
+    ServerRef = list_to_atom(Shard),
+    gen_server:call(ServerRef, recreate_shard).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -166,13 +182,15 @@ init(Args) ->
     OptionsPL = proplists:get_value(options, Args),
     
     TabRec = proplists:get_value(tab_rec, Args),
-    #enterdb_table{path = Path,
+    #enterdb_table{name = TabName,
+		   path = Path,
                    key = Key,
                    columns = Columns,
                    indexes = Indexes,
                    options = TabOptions} = TabRec,
 
     TimeOrdered = proplists:get_value(time_ordered, TabOptions),
+    Wrapped = proplists:get_value(wrapped, TabOptions, undefined),
     DataModel = proplists:get_value(data_model, TabOptions),
 
     OptionsRec = build_leveldb_options(OptionsPL),
@@ -198,9 +216,12 @@ init(Args) ->
                                 key = Key,
                                 columns = Columns,
                                 indexes = Indexes,
-                                time_ordered = TimeOrdered,
-                                data_model = DataModel,
-                                path = Path}}
+                                is_empty = true,
+				time_ordered = TimeOrdered,
+                                wrapped = Wrapped,
+				data_model = DataModel,
+                                path = Path,
+				tab_name = TabName}}
             end;
         {error, Reason} ->
             {stop, {error, Reason}}
@@ -237,6 +258,14 @@ handle_call({read, Key}, _From,
             {error, Reason}
     end,
     {reply, Reply, State};
+handle_call({write, Key, Columns}, From,
+	    State = #state{is_empty = true,
+			   wrapped = {_, TimeMargin},
+			   tab_name = TabName}) ->
+    {ok, UpperLevelKey} = make_upper_level_key(Key, TimeMargin),
+    recreate_upper_level(TabName, UpperLevelKey),
+    handle_call({write, Key, Columns}, From,
+		State#state{is_empty = false});
 handle_call({write, Key, Columns}, _From,
             State = #state{db_ref = DB,
                            writeoptions = WriteOptions,
@@ -300,6 +329,19 @@ handle_call({read_range, {StartKey, EndKey}, Limit, Type}, _From,
 handle_call(get_key_columns_def, _From, State = #state{key = KeyDef, columns = ColumnsDef}) ->
     Reply = {ok, KeyDef, ColumnsDef},
     {reply, Reply, State};
+handle_call(recreate_shard, _From, State = #state{db_ref= DB,
+						  options = Options,
+						  name = Name,
+						  path = Path}) ->
+    ok = leveldb:close_db(DB),
+    ok = delete_enterdb_ldb_resource(Name),
+    FullPath = filename:join(Path, Name),
+    ok = leveldb:destroy_db(FullPath, Options), 
+    {ok, NewDB} = leveldb:open_db(Options, FullPath),
+    ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Name,
+							  resource = NewDB}),
+    {reply, ok, State#state{db_ref = NewDB,
+			    is_empty = true}};
 handle_call(_Request, _From, State) ->
     Reply = error_logger:warning_msg("unkown request:~p, from: ~p, gen_server state: ~p",
                                      [_Request, _From, State]),
@@ -507,7 +549,7 @@ make_indexes(_, _)->
 %%--------------------------------------------------------------------
 %% @doc
 %% Ensure the leveldb db is closed and there is no resource left
-%%
+%% @end
 %%--------------------------------------------------------------------
 -spec ensure_closed(Name :: atom()) -> ok | {error, Reason :: term()}.
 ensure_closed(Name) ->
@@ -525,7 +567,7 @@ ensure_closed(Name) ->
 %%--------------------------------------------------------------------
 %% @doc
 %% Store the #enterdb_ldb_resource entry in mnesia ram_copy
-%%
+%% @end
 %%--------------------------------------------------------------------
 -spec write_enterdb_ldb_resource(EnterdbLdbResource::#enterdb_ldb_resource{}) -> ok | {error, Reason::term()}.
 write_enterdb_ldb_resource(EnterdbLdbResource) ->
@@ -539,7 +581,7 @@ write_enterdb_ldb_resource(EnterdbLdbResource) ->
 %%--------------------------------------------------------------------
 %% @doc
 %% Read the #enterdb_ldb_resource entry in mnesia ram_copy
-%%
+%% @end
 %%--------------------------------------------------------------------
 -spec read_enterdb_ldb_resource(Name :: atom()) -> {ok, Resource :: binary} |
 						    {error, Reason::term()}.
@@ -556,7 +598,7 @@ read_enterdb_ldb_resource(Name) ->
 %%--------------------------------------------------------------------
 %% @doc
 %% Delete the #enterdb_ldb_resource entry in mnesia ram_copy
-%%
+%% @end
 %%--------------------------------------------------------------------
 -spec delete_enterdb_ldb_resource(Name :: atom()) -> ok | {error, Reason::term()}.
 delete_enterdb_ldb_resource(Name) ->
@@ -566,3 +608,34 @@ delete_enterdb_ldb_resource(Name) ->
         {aborted, Reason} ->
            {error, {aborted, Reason}}
     end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Make a key with a timestamp value that is TimeMargin seconds larger
+%% than the provided Key's timestamp
+%% @end
+%%--------------------------------------------------------------------
+-spec make_upper_level_key(Key :: key(), TimeMargin :: pos_integer()) ->
+    {ok, UpperLevelKey :: key()} |
+    {error, Reason :: term()}.
+make_upper_level_key(Key, TimeMargin) ->
+    case lists:keyfind(ts, 1, Key) of
+	{ts, {Macs, Secs, Mics}} ->
+	    {ok, lists:keyreplace(ts, 1, Key, {ts, {Macs, Secs+TimeMargin, Mics}})};
+	{ts, _ELSE} ->
+	    {error, invalid_timestamp};
+	false ->
+	    {error, no_timestamp}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Make a key with a timestamp value that is TimeMargin seconds larger
+%% than the provided Key's timestamp
+%% @end
+%%--------------------------------------------------------------------
+-spec recreate_upper_level(TabName :: string(), UpperLevelKey:: key()) -> ok.
+recreate_upper_level(TabName, UpperLevelKey) ->
+    {ok, {level, Level}} = gb_hash:find_node(TabName, UpperLevelKey),
+    {ok, Shards} = gb_hash:get_nodes(Level),
+    [spawn(?MODULE, recreate_shard, [Shard]) || Shard <- Shards]. 

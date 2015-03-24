@@ -10,12 +10,14 @@
 
 %% API
 -export([verify_create_table_args/1,
-         get_shards/2,
-         create_leveldb_db/1,
+         get_shards/3,
+         create_table/1,
          open_leveldb_db/1,
 	 read_range/3]).
 
 -include("enterdb.hrl").
+-include("gb_log.hrl").
+
 %%%===================================================================
 %%% API
 %%===================================================================
@@ -128,7 +130,7 @@ end.
 verify_table_options([]) ->
     ok;
 verify_table_options([{time_ordered, Bool}|Rest]) when Bool == true;
-                                                        Bool == false ->
+                                                       Bool == false ->
     verify_table_options(Rest);
 verify_table_options([{backend, Backend}|Rest]) when Backend == leveldb;
                                                      Backend == ets_leveldb ->
@@ -136,6 +138,11 @@ verify_table_options([{backend, Backend}|Rest]) when Backend == leveldb;
 verify_table_options([{data_model, DM}|Rest]) when DM == binary;
                                                    DM == array;
                                                    DM == hash ->
+    verify_table_options(Rest);
+verify_table_options([{wrapped, {FileMargin, TimeMargin}}|Rest]) when is_integer( FileMargin ) andalso
+								      FileMargin > 0 andalso
+								      is_integer( TimeMargin ) andalso
+								      TimeMargin > 0 ->
     verify_table_options(Rest);
 verify_table_options([Elem|_])->
     {error, {Elem, "unknown_option"}}.
@@ -156,13 +163,63 @@ check_if_table_exists(Name)->
 %% Create and return list of shard names for local sharding.
 %%
 %%--------------------------------------------------------------------
--spec get_shards(Name::string(), NumOfShards::pos_integer()) -> {ok, [string()]}.
-get_shards(Name, NumOfShards) ->
-    Shards = [lists:concat([Name,"_shard_",N]) ||N <- lists:seq(1, NumOfShards)],
+-spec get_shards(Name :: string(),
+		 NumOfShards :: pos_integer(),
+		 Wrapped :: undefined | wrapper()) -> {ok, [string()]}.
+get_shards(Name, NumOfShards, undefined) ->
+    Shards = [lists:concat([Name,"_shard",N]) ||N <- lists:seq(0, NumOfShards-1)],
     Options = [{algorithm, sha}, {strategy, uniform}],
     gb_hash:create_ring(Name, Shards, Options),
+    {ok, Shards};
+get_shards(Name, NumOfShards, {FileMargin, TimeMargin}) ->
+    Levels = [lists:concat([Name,"_lev",N]) ||N <- lists:seq(0, FileMargin-1)],
+    
+    LeveledShards = [ {L,[ lists:concat([L,"_shard",N])
+			    || N <- lists:seq(0, NumOfShards-1)] }
+			|| L <- Levels ],
+    gb_hash:create_ring(Name, Levels, [{algorithm, {tda, FileMargin, TimeMargin}},
+				       {strategy, timedivision}]),
+    Options = [{algorithm, sha}, {strategy, uniform}],
+    Shards =
+	lists:foldl(fun({NameLev, Ss}, Acc) ->
+			gb_hash:create_ring(NameLev, Ss, Options),
+			Ss ++ Acc
+		    end, [], LeveledShards),
     {ok, Shards}.
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Create table according to table specification
+%% @end
+%%--------------------------------------------------------------------
+-spec create_table(EnterdbTable::#enterdb_table{}) -> ok | {error, Reason::term()}. 
+create_table(#enterdb_table{options = Opts} = EnterdbTable)->
+    case proplists:get_value(backend, Opts) of
+        leveldb ->
+            case create_leveldb_db(EnterdbTable) of
+                ok -> write_enterdb_table(EnterdbTable);
+                {error, Reason} ->
+                    ?debug("Could not create leveldb database, error: ~p~n", [Reason]),
+                    {error, Reason}
+            end;
+        Else ->
+            ?debug("Could not create ~p database, error: not_supported yet.~n", [Else]),
+            {error, "no_supported_backend"}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Store the #enterdb_table entry in mnesia disc_copy
+%% @end
+%%--------------------------------------------------------------------
+-spec write_enterdb_table(EnterdbTable::#enterdb_table{}) -> ok | {error, Reason::term()}.
+write_enterdb_table(EnterdbTable) ->
+    case enterdb_db:transaction(fun() -> mnesia:write(EnterdbTable) end) of
+        {atomic, ok} ->
+            ok;
+        {aborted, Reason} ->
+           {error, {aborted, Reason}}
+    end. 
 %%--------------------------------------------------------------------
 %% @doc
 %% Create leveldb database that is specified by EnterdbTable.
@@ -231,20 +288,55 @@ open_leveldb_db(Options, EDBT, [Name|Rest]) ->
 %%--------------------------------------------------------------------
 -spec read_range(Name :: string(),
 		 Range :: key_range(),
-		 Limig :: pos_integer()) -> {ok, [kvp()]} | {error, Reason::term()}.
+		 Limit :: pos_integer()) -> {ok, [kvp()]} | {error, Reason::term()}.
 read_range(Name, Range, Limit) ->
     case gb_hash:get_nodes(Name) of
 	undefined ->
 	    {error, "no_table"};
+	{ok, {level, Levels}} ->
+	    {Start, End} = Range,
+	    {ok, {level, StartLevel}} = gb_hash:find_node(Name, Start),
+	    {ok, {level, EndLevel}} = gb_hash:find_node(Name, End),
+	    LevelRange = get_level_range(StartLevel, EndLevel, Levels),
+	    LevelsOfShards = [begin {ok, Ss} = gb_hash:get_nodes(L), Ss end
+				|| L <- LevelRange],
+	    RangeResults = [read_range_on_shards(hd(LevelRange), LSs, Range, Limit) || LSs <- LevelsOfShards],
+	    lists:append([L || {ok, L} <- RangeResults]);
 	{ok, Shards} ->
-	    KVLs =
-		[begin
-		    {ok, KVL} = enterdb_ldb_worker:read_range_binary(Shard, Range, Limit),
-		    KVL
-		 end || Shard <- Shards],
-	    {ok , MergedKVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
-	    {ok, AnyShard} = gb_hash:find_node(Name, Range),
-	    enterdb_ldb_worker:make_app_kvp(AnyShard, MergedKVL)
+	    read_range_on_shards(Name, Shards, Range, Limit)
     end.
+
+-spec read_range_on_shards(Name :: string(),
+			   Shards :: [term],
+			   Range :: key_range(),
+			   Limit :: pos_integer()) -> {ok, [kvp()]} | {error, Reason::term()}.
+read_range_on_shards(Name, Shards, Range, Limit)->
+    KVLs =
+	[begin
+	    {ok, KVL} = enterdb_ldb_worker:read_range_binary(Shard, Range, Limit),
+	    KVL
+	 end || Shard <- Shards],
+    {ok , MergedKVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
+    {ok, AnyShard} = gb_hash:find_node(Name, Range),
+    enterdb_ldb_worker:make_app_kvp(AnyShard, MergedKVL).
+
+-spec get_level_range(StartLevel :: string(),
+		      EndLevel :: string(),
+		      Levels :: [string()]) -> LevelRange :: [string()].
+get_level_range(StartLevel, StartLevel, _) ->
+    [StartLevel];
+get_level_range(StartLevel, EndLevel, [EndLevel | Levels]) ->
+    get_level_range_acc(StartLevel, Levels, [EndLevel]);
+get_level_range(StartLevel, EndLevel, [AnyLevel | Levels]) ->
+     get_level_range(StartLevel, EndLevel, lists:append(Levels, [AnyLevel])). 
+
+-spec get_level_range_acc(StartLevel :: string(),
+			  Levels :: [string()], Acc :: [string()]) -> Acc :: [string()].  
+get_level_range_acc(StartLevel, [StartLevel | _Levels], Acc) ->
+    [StartLevel|Acc];
+get_level_range_acc(StartLevel, [AnyLevel | Levels], Acc) ->
+    get_level_range_acc(StartLevel, Levels, [AnyLevel | Acc]).
+
+
 
 

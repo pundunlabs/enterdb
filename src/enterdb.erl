@@ -15,7 +15,22 @@
          delete/2,
 	 read_range/3]).
 
+-export([load_test/0,
+	 write_loop/1]).
+
 -include("enterdb.hrl").
+-include("gb_log.hrl").
+
+load_test() ->
+    %%enterdb_lib:open_leveldb_db("test_range").
+    [spawn(?MODULE, write_loop, [10000000]) || _ <- lists:seq(1,8)].
+
+write_loop(0) ->
+    ok;
+write_loop(N) when N > 0 ->
+    Bin = [162,129,179,128,1,59,129,1,3,130,8,0,0,1,75,222,153,109,169,131,8,0,0,1,75,222,53,246,124,132,8,1,0,83,0,161,14,50,239,133,129,140,191,129,10,129,135,160,51,128,8,66,0,146,8,19,16,54,245,129,6,100,103,64,55,104,248,131,8,83,150,151,80,85,68,40,144,132,1,0,133,11,100,97,116,97,46,116,114,101,46,115,101,134,2,66,240,135,1,32,162,80,160,6,128,4,80,251,194,177,161,6,128,4,80,251,193,37,130,1,0,164,59,128,8,0,0,1,75,222,153,39,80,129,8,0,0,1,75,222,153,62,192,131,8,0,0,0,0,0,0,1,189,132,1,7,133,8,0,0,0,0,0,0,0,0,134,1,0,135,1,6,136,1,1,137,1,5,138,2,0,131],
+    enterdb:write("test_range", [{ts, os:timestamp()}],[{value, Bin}]),
+    write_loop(N-1).
 
 %%%===================================================================
 %%% API
@@ -38,13 +53,30 @@
                    Options::[table_option()])-> 
     ok | {error, Reason::term()}.
 create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
-    case gen_server:call(enterdb_server,{create_table, {Name, KeyDef, 
-                                                        ColumnsDef, IndexesDef,
-                                                        Options}}) of
-        ok ->
-            ok;
-        {error, Reason} ->
-            {error, Reason}
+    case enterdb_lib:verify_create_table_args([{name, Name},
+					       {key, KeyDef},
+					       {columns, ColumnsDef},
+					       {indexes,IndexesDef},
+					       {options, Options}]) of
+	{ok, EnterdbTable} ->
+	    case enterdb_server:get_state_params() of
+		{ok, PropList}  ->
+		    DB_PATH = proplists:get_value(db_path, PropList),
+		    NumOfShards = proplists:get_value(num_of_local_shards, PropList),
+		    Wrapped  = proplists:get_value(wrapped, Options, undefined),
+		    ?debug("Get Shards for: ~p, #:~p, wrapped: ~p",
+			    [Name, NumOfShards, Wrapped]),
+		    {ok, Shards} = enterdb_lib:get_shards(Name,
+							  NumOfShards,
+							  Wrapped),
+		    NewEDBT = EnterdbTable#enterdb_table{path = DB_PATH,
+							 shards = Shards},
+		    enterdb_lib:create_table(NewEDBT);
+		Else ->
+		    {error, Else}
+	    end;
+	{error, Reason} ->
+                {error, Reason}
     end.
 
 %%--------------------------------------------------------------------
@@ -59,6 +91,9 @@ read(Name, Key)->
     case gb_hash:find_node(Name, Key) of
         undefined ->
             {error, "no_table"};
+	{ok, {level, Level}} ->
+	    {ok, Shard} = gb_hash:find_node(Level, Key),
+	    enterdb_ldb_worker:read(Shard, Key); 
         {ok, Shard} ->
             enterdb_ldb_worker:read(Shard, Key)
     end.
@@ -75,6 +110,9 @@ write(Name, Key, Columns)->
     case gb_hash:find_node(Name, Key) of
         undefined ->
             {error, "no_table"};
+	{ok, {level, Level}} ->
+	    {ok, Shard} = gb_hash:find_node(Level, Key),
+	    enterdb_ldb_worker:write(Shard, Key, Columns); 
         {ok, Shard} ->
             enterdb_ldb_worker:write(Shard, Key, Columns)
     end.
@@ -91,6 +129,9 @@ delete(Name, Key)->
     case gb_hash:find_node(Name, Key) of
         undefined ->
             {error, "no_table"};
+	{ok, {level, Level}} ->
+	    {ok, Shard} = gb_hash:find_node(Level, Key),
+	    enterdb_ldb_worker:delete(Shard, Key); 
         {ok, Shard} ->
             enterdb_ldb_worker:delete(Shard, Key)
     end.
@@ -106,4 +147,3 @@ delete(Name, Key)->
 					    {error, Reason::term()}.
 read_range(Name, Range, Limit) ->
     enterdb_lib:read_range(Name, Range, Limit).
-

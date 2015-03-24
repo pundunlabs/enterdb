@@ -10,15 +10,21 @@
 
 -type backend() :: leveldb | ets_leveldb.
 -type data_model() :: binary | array | hash.
+
+-type file_margin() :: pos_integer().
+-type time_margin() :: pos_integer().
+-type wrapper() :: {file_margin(), time_margin()}.
+
 -type table_option() :: [{time_ordered, boolean()} |
-                         {backend, backend()} |
+                         {wrapped, wrapper()} |
+			 {backend, backend()} |
                          {data_model, data_model()}].
 
 -record(enterdb_shard, {hash :: binary(),
                         name :: atom()
                        }).
 
--record(enterdb_table, {name :: atom(),
+-record(enterdb_table, {name :: string(),
                         path :: string(),
                         key :: [atom()],
                         columns :: [atom()],
