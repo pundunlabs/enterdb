@@ -20,6 +20,7 @@
 -export([read/2,
          write/3,
          delete/2,
+	 delete_db/1,
 	 read_range_binary/3,
 	 read_range_term/3,
 	 make_app_kvp/2,
@@ -69,8 +70,8 @@ start_link(Args) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec read(Shard :: string(),
-           Key :: key()) -> {ok, Value:: term()} |
-                            {error, Reason::term()}.
+           Key :: key()) -> {ok, Value :: term()} |
+                            {error, Reason :: term()}.
 read(Shard, Key) ->
     ServerRef = list_to_atom(Shard),
     gen_server:call(ServerRef, {read, Key}).
@@ -80,9 +81,9 @@ read(Shard, Key) ->
 %% Write Key/Coulumns to given shard.
 %% @end
 %%--------------------------------------------------------------------
--spec write(Shard::string(),
-            Key::key(),
-            Columns::[column()]) -> ok | {error, Reason::term()}.
+-spec write(Shard :: string(),
+            Key :: key(),
+            Columns :: [column()]) -> ok | {error, Reason :: term()}.
 write(Shard, Key, Columns) ->
     ServerRef = list_to_atom(Shard),
     gen_server:call(ServerRef, {write, Key, Columns}).
@@ -93,11 +94,22 @@ write(Shard, Key, Columns) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec delete(Shard::string(),
-             Key::key()) -> ok | {error, Reason::term()}.
+-spec delete(Shard :: string(),
+             Key :: key()) -> ok | {error, Reason :: term()}.
 delete(Shard, Key) ->
     ServerRef = list_to_atom(Shard),
     gen_server:call(ServerRef, {delete, Key}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Delete the database specified by given Shard.
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec delete_db(Shard :: string()) -> ok | {error, Reason::term()}.
+delete_db(Shard) ->
+    ServerRef = list_to_atom(Shard),
+    gen_server:call(ServerRef, delete_db).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -108,7 +120,7 @@ delete(Shard, Key) ->
 -spec read_range_binary(Shard :: string(),
 			Range :: key_range(),
 			Limit :: pos_integer()) -> {ok, [{binary(), binary()}]} |
-						    {error, Reason::term()}.
+						    {error, Reason :: term()}.
 read_range_binary(Shard, Range, Limit) ->
     ServerRef = list_to_atom(Shard),
     gen_server:call(ServerRef, {read_range, Range, Limit, binary}).
@@ -123,7 +135,7 @@ read_range_binary(Shard, Range, Limit) ->
 -spec read_range_term(Shard :: string(),
 		      Range :: key_range(),
 		      Limit :: pos_integer()) -> {ok, [{binary(), binary()}]} |
-						 {error, Reason::term()}.
+						 {error, Reason :: term()}.
 read_range_term(Shard, Range, Limit) ->
     ServerRef = list_to_atom(Shard),
     gen_server:call(ServerRef, {read_range, Range, Limit, term}).
@@ -137,7 +149,7 @@ read_range_term(Shard, Range, Limit) ->
 -spec make_app_kvp(Shard :: string(),
 		   KVP :: {binary(), binary()} |
 			  [{binary(), binary()}]) -> {ok, [{binary(), binary()}]} |
-						     {error, Reason::term()}.
+						     {error, Reason :: term()}.
 make_app_kvp(Shard, KVP) ->
     ServerRef = list_to_atom(Shard),
     {ok, KeyDef, ColumnsDef} = gen_server:call(ServerRef, get_key_columns_def),
@@ -329,6 +341,15 @@ handle_call({read_range, {StartKey, EndKey}, Limit, Type}, _From,
 handle_call(get_key_columns_def, _From, State = #state{key = KeyDef, columns = ColumnsDef}) ->
     Reply = {ok, KeyDef, ColumnsDef},
     {reply, Reply, State};
+handle_call(delete_db, _From, State = #state{db_ref= DB,
+					     options = Options,
+					     name = Name,
+					     path = Path}) ->
+    ok = leveldb:close_db(DB),
+    ok = delete_enterdb_ldb_resource(Name),
+    FullPath = filename:join(Path, Name),
+    ok = leveldb:destroy_db(FullPath, Options),
+    {stop, normal, ok, State#state{db_ref = undefined}};
 handle_call(recreate_shard, _From, State = #state{db_ref= DB,
 						  options = Options,
 						  name = Name,
@@ -384,6 +405,8 @@ handle_info(_Info, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
+terminate(_Reason, _State = #state{db_ref = undefined}) ->
+    ok;
 terminate(_Reason, _State = #state{db_ref = DB,  name = Name}) ->
     ok = leveldb:close_db(DB),
     ok = delete_enterdb_ldb_resource(Name).

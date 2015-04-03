@@ -13,6 +13,8 @@
          get_shards/3,
          create_table/1,
          open_leveldb_db/1,
+	 close_leveldb_db/1,
+	 delete_leveldb_db/1,
 	 read_range/3]).
 
 -include("enterdb.hrl").
@@ -26,7 +28,7 @@
 %%--------------------------------------------------------------------
 %% @doc
 %% Verify the args given to enterdb:create_table/5
-%%
+%% @end
 %%--------------------------------------------------------------------
 -spec verify_create_table_args(Args :: [{atom(), term()}]) -> {ok, #enterdb_table{}} |
                                                               {error, Reason::term()}.
@@ -83,7 +85,8 @@ verify_create_table_args([{Arg, _}|_], _)->
 %%-------------------------------------------------------------------
 %% @doc
 %% Verify if the given list elements are all atoms and the list
-%%  has unique elements
+%% has unique elements
+%% @end
 %%-------------------------------------------------------------------
 -spec verify_fields(List::[term()]) -> ok | {error, Reason::term()}.
 verify_fields([])->
@@ -161,7 +164,7 @@ check_if_table_exists(Name)->
 %%--------------------------------------------------------------------
 %% @doc
 %% Create and return list of shard names for local sharding.
-%%
+%% @end
 %%--------------------------------------------------------------------
 -spec get_shards(Name :: string(),
 		 NumOfShards :: pos_integer(),
@@ -223,7 +226,7 @@ write_enterdb_table(EnterdbTable) ->
 %%--------------------------------------------------------------------
 %% @doc
 %% Create leveldb database that is specified by EnterdbTable.
-%%
+%% @end
 %%--------------------------------------------------------------------
 -spec create_leveldb_db(EnterdbTable::[#enterdb_table{}]) -> ok |
                                                              {error, Reason::term()}.
@@ -246,29 +249,19 @@ create_leveldb_db(Options, EDBT, [ShardName|Rest]) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Open an existing leveldb database specified by Name.
-%%
+%% Open an existing leveldb database specified by #enterdb_table{}.
+%% @end
 %%--------------------------------------------------------------------
--spec open_leveldb_db(Name::string())-> ok | {error, Reason::term()}
-                    ;(Table::#enterdb_table{})-> ok | {error, Reason::term()}.
-open_leveldb_db(Name) when is_list(Name)->
-    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_table, Name) end) of
-        {atomic, []} ->
-            {error, "no_table"};
-        {atomic, [Table]} ->
-            open_leveldb_db(Table);
-        {error, Reason} ->
-            {error, Reason}
-    end;
+-spec open_leveldb_db(Table :: #enterdb_table{})-> ok | {error, Reason :: term()}.
 open_leveldb_db(EDBT = #enterdb_table{shards = Shards}) ->
     Options = [{comparator, 1},
 	       {create_if_missing, false},
                {error_if_exists, false}],
     open_leveldb_db(Options, EDBT, Shards).
 
--spec open_leveldb_db(Options::[{atom(),term()}],
-                      EDBT::#enterdb_table{},
-                      Shards::[string()]) -> ok | {error, Reason::term()}.
+-spec open_leveldb_db(Options :: [{atom(),term()}],
+                      EDBT :: #enterdb_table{},
+                      Shards :: [string()]) -> ok | {error, Reason :: term()}.
 open_leveldb_db(_Options, _EDBT, []) ->
     ok;
 open_leveldb_db(Options, EDBT, [Name|Rest]) ->
@@ -280,6 +273,65 @@ open_leveldb_db(Options, EDBT, [Name|Rest]) ->
         {error, Reason} ->
             {error, Reason}
      end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Close an existing leveldb database specified by #enterdb_table{}.
+%% @end
+%%--------------------------------------------------------------------
+-spec close_leveldb_db(Table :: #enterdb_table{})-> ok | {error, Reason :: term()}.
+close_leveldb_db(EDBT = #enterdb_table{shards = Shards}) ->
+    close_leveldb_db(EDBT, Shards).
+
+-spec close_leveldb_db(EDBT :: #enterdb_table{},
+                       Shards :: [string()]) -> ok | {error, Reason :: term()}.
+close_leveldb_db(_EDBT, []) ->
+    ok;
+close_leveldb_db(EDBT, [Name | Rest]) ->
+    %% Terminating simple_one_for_one child requires OTP_REL >= R14B03
+    case supervisor:terminate_child(enterdb_ldb_sup, list_to_atom(Name)) of
+	ok ->
+	    close_leveldb_db(EDBT, Rest);
+	{error, Reason} ->
+	    {error, Reason}
+     end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Delete an existing leveldb database specified by #enterdb_table{}.
+%% This function should be called within a mnesia transaction.
+%% @end
+%%--------------------------------------------------------------------
+-spec delete_leveldb_db(Table :: #enterdb_table{})-> ok | {error, Reason :: term()}.
+delete_leveldb_db(#enterdb_table{name = Name, shards = Shards}) ->
+    ok = delete_leveldb_db_shards(Shards),
+    ok = delete_hash_ring(Name),
+    mnesia:delete(enterdb_table, Name, write).
+
+-spec delete_leveldb_db_shards(Shards :: [string()]) -> ok | {error, Reason :: term()}.
+delete_leveldb_db_shards([]) ->
+    ok;
+delete_leveldb_db_shards([Shard | Rest]) ->
+    ok = enterdb_ldb_worker:delete_db(Shard),
+    delete_leveldb_db_shards(Rest).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Delete the compiled and stored hash rings for given table by Name.
+%% @end
+%%--------------------------------------------------------------------
+-spec delete_hash_ring(Name :: string())->
+    ok | {error, Reason :: term()}.
+delete_hash_ring(Name) ->
+    case gb_hash:get_nodes(Name) of
+	undefined ->
+	    {error, "no_table"};
+	{ok, {level, Levels}} ->
+	    [ ok = gb_hash:delete_ring(L) || L <- Levels ],
+	    ok = gb_hash:delete_ring(Name);
+	{ok, _Shards} ->
+	    ok = gb_hash:delete_ring(Name)
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc

@@ -23,18 +23,16 @@
 %%--------------------------------------------------------------------
 -spec open_db(Name :: string()) -> ok.
 open_db(Name) ->
-    enterdb_lib:open_leveldb_db(Name).
+    enterdb:open_db(Name).
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Deletes the entry of database from enterdb_table. Does not delete
-%% the actual table. TODO: Change when a proper enterdb:delete_db
-%% function added.
+%% Deletes the entire database specified by name.
 %% @end
 %%--------------------------------------------------------------------
 -spec delete_db(Name :: string()) -> ok.
 delete_db(Name) ->
-    mnesia:dirty_delete(enterdb_table, Name).
+    enterdb:delete_db(Name).
 
 %%--------------------------------------------------------------------
 %% @doc

@@ -10,10 +10,13 @@
 
 %% API
 -export([create_table/5,
-         read/2,
+         open_db/1,
+	 close_db/1,
+	 read/2,
          write/3,
          delete/2,
-	 read_range/3]).
+	 read_range/3,
+	 delete_db/1]).
 
 -export([load_test/0,
 	 write_loop/1]).
@@ -47,11 +50,12 @@ write_loop(N) when N > 0 ->
 %% Indexes list are optional and an index table will be created for each
 %% coulmn provided in this argument. Any given index column is not
 %% neccesarly included in Columns.
+%% @end
 %%--------------------------------------------------------------------
--spec create_table(Name::string(), KeyDef::[atom()],
-                   ColumnsDef::[atom()], IndexesDef::[atom()],
-                   Options::[table_option()])-> 
-    ok | {error, Reason::term()}.
+-spec create_table(Name :: string(), KeyDef :: [atom()],
+                   ColumnsDef :: [atom()], IndexesDef :: [atom()],
+                   Options :: [table_option()])->
+    ok | {error, Reason :: term()}.
 create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
     case enterdb_lib:verify_create_table_args([{name, Name},
 					       {key, KeyDef},
@@ -81,12 +85,60 @@ create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Open an existing enterdb database.
+%% @end
+%%--------------------------------------------------------------------
+-spec open_db(Name :: string())-> ok | {error, Reason :: term()}.
+open_db(Name) ->
+    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_table, Name) end) of
+        {atomic, []} ->
+            {error, "no_table"};
+        {atomic, [Table]} ->
+	    Options = Table#enterdb_table.options,
+	    Backend = proplists:get_value(backend, Options),
+            case Backend of
+		leveldb ->
+		    enterdb_lib:open_leveldb_db(Table);
+		Else ->
+		    ?debug("enterdb:open_db: {backend, ~p} not supported", [Else]),
+		    {error, "backend_not_supported"}
+	    end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Close an existing enterdb database.
+%% @end
+%%--------------------------------------------------------------------
+-spec close_db(Name :: string())-> ok | {error, Reason :: term()}.
+close_db(Name) ->
+    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_table, Name) end) of
+        {atomic, []} ->
+            {error, "no_table"};
+        {atomic, [Table]} ->
+	    Options = Table#enterdb_table.options,
+	    Backend = proplists:get_value(backend, Options),
+            case Backend of
+		leveldb ->
+		    enterdb_lib:close_leveldb_db(Table);
+		Else ->
+		    ?debug("enterdb:close_db: {backend, ~p} not supported", [Else]),
+		    {error, "backend_not_supported"}
+	    end;
+        {error, Reason} ->
+            {error, Reason}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Reads Key from table with name Name
 %% @end
 %%--------------------------------------------------------------------
--spec read(Name::string(),
-           Key::key()) -> {ok, value()} |
-                          {error, Reason::term()}.
+-spec read(Name :: string(),
+           Key :: key()) -> {ok, value()} |
+                          {error, Reason :: term()}.
 read(Name, Key)->
     case gb_hash:find_node(Name, Key) of
         undefined ->
@@ -103,9 +155,9 @@ read(Name, Key)->
 %% Writes Key/Columns to table with name Name
 %% @end
 %%--------------------------------------------------------------------
--spec write(Name::string(),
-            Key::key(),
-            Columns::[column()]) -> ok | {error, Reason::term()}.
+-spec write(Name :: string(),
+            Key :: key(),
+            Columns :: [column()]) -> ok | {error, Reason :: term()}.
 write(Name, Key, Columns)->
     case gb_hash:find_node(Name, Key) of
         undefined ->
@@ -122,9 +174,9 @@ write(Name, Key, Columns)->
 %% Delete Key from table with name Name
 %% @end
 %%--------------------------------------------------------------------
--spec delete(Name::string(),
-             Key::key()) -> ok |
-                            {error, Reason::term()}.
+-spec delete(Name :: string(),
+             Key :: key()) -> ok |
+                            {error, Reason :: term()}.
 delete(Name, Key)->
     case gb_hash:find_node(Name, Key) of
         undefined ->
@@ -141,9 +193,42 @@ delete(Name, Key)->
 %% Reads a Range of Keys from table with name Name and returns mac Limit items
 %% @end
 %%--------------------------------------------------------------------
--spec read_range(Name::string(),
+-spec read_range(Name :: string(),
 		 Range :: key_range(),
 		 Limit :: pos_integer()) -> {ok, [kvp()]} |
-					    {error, Reason::term()}.
+					    {error, Reason :: term()}.
 read_range(Name, Range, Limit) ->
     enterdb_lib:read_range(Name, Range, Limit).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Delete a database completely. Ensures the database is closed before deletion.
+%% @end
+%%--------------------------------------------------------------------
+-spec delete_db(Name :: string()) -> ok | {error, Reason :: term()}.
+delete_db(Name) ->
+    case enterdb_db:transaction(fun() -> atomic_delete_db(Name)  end) of
+        {atomic, ok} ->
+            ok;
+        {atomic, {error, Reason}} ->
+	    {error, Reason};
+	{aborted, Reason} ->
+            {error, Reason}
+    end.
+
+-spec atomic_delete_db(Name :: string()) -> ok | {error, Reason :: term()}.
+atomic_delete_db(Name) ->
+    case mnesia:read(enterdb_table, Name) of
+	[Table] ->
+	    Options = Table#enterdb_table.options,
+	    Backend = proplists:get_value(backend, Options),
+	    case Backend of
+		leveldb ->
+		    ok = enterdb_lib:delete_leveldb_db(Table);
+		Else ->
+		    ?debug("enterdb:close_db: {backend, ~p} not supported", [Else]),
+		    {error, "backend_not_supported"}
+	    end;
+	[] ->
+	    {error, "no_table"}
+    end.
