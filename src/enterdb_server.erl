@@ -116,7 +116,16 @@ init([]) ->
                                 erlang:system_info(schedulers)
                         end
                   end,
-    DB_PATH = gb_conf:get_param("enterdb.json", db_path),
+    CONF_PATH = gb_conf:get_param("enterdb.json", db_path),
+    
+    DB_PATH =
+	case CONF_PATH of
+	    [$/|_] ->
+		CONF_PATH;
+	    _ ->
+		filename:join(gb_conf_env:proddir(), CONF_PATH)
+	end,
+    ok = filelib:ensure_dir(DB_PATH),
     ?debug("DB_PATH: ~p", [DB_PATH]),
     ets:new(wrapper_registry, [protected, named_table, {keypos, 2}]),
     ok = open_databases(),
