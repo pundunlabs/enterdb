@@ -29,6 +29,7 @@
 -define(SERVER, ?MODULE).
 
 -include("enterdb.hrl").
+-include("gb_log.hrl").
 
 -record(state, {db_ref,
                 options,
@@ -43,7 +44,8 @@
                 wrapped,
 		data_model,
                 path,
-		tab_name}).
+		tab_name,
+		options_pl}).
 
 %%%===================================================================
 %%% API
@@ -220,7 +222,8 @@ init(Args) ->
                     {ok, ReadOptions} = leveldb:readoptions(ReadOptionsRec),
                     WriteOptionsRec = build_leveldb_writeoptions([]),
                     {ok, WriteOptions} = leveldb:writeoptions(WriteOptionsRec),
-                    {ok, #state{db_ref = DB,
+                    process_flag(trap_exit, true),
+		    {ok, #state{db_ref = DB,
                                 options = Options,
 				readoptions = ReadOptions,
                                 writeoptions = WriteOptions,
@@ -228,12 +231,14 @@ init(Args) ->
                                 key = Key,
                                 columns = Columns,
                                 indexes = Indexes,
-                                is_empty = true,
+                                %%TODO: Add leveldb:is_empty(DB) to check. Use iterator. 
+				is_empty = true,
 				time_ordered = TimeOrdered,
                                 wrapped = Wrapped,
 				data_model = DataModel,
                                 path = Path,
-				tab_name = TabName}}
+				tab_name = TabName,
+				options_pl = OptionsPL}}
             end;
         {error, Reason} ->
             {stop, {error, Reason}}
@@ -274,8 +279,7 @@ handle_call({write, Key, Columns}, From,
 	    State = #state{is_empty = true,
 			   wrapped = {_, TimeMargin},
 			   tab_name = TabName}) ->
-    {ok, UpperLevelKey} = make_upper_level_key(Key, TimeMargin),
-    recreate_upper_level(TabName, UpperLevelKey),
+    ok = enterdb_server:wrap_level(?MODULE, TabName, Key, TimeMargin),
     handle_call({write, Key, Columns}, From,
 		State#state{is_empty = false});
 handle_call({write, Key, Columns}, _From,
@@ -345,24 +349,41 @@ handle_call(delete_db, _From, State = #state{db_ref= DB,
 					     options = Options,
 					     name = Name,
 					     path = Path}) ->
-    ok = leveldb:close_db(DB),
+    ?debug("Deleting shard: ~p", [Name]),
     ok = delete_enterdb_ldb_resource(Name),
+    ok = leveldb:close_db(DB),
     FullPath = filename:join(Path, Name),
     ok = leveldb:destroy_db(FullPath, Options),
     {stop, normal, ok, State#state{db_ref = undefined}};
 handle_call(recreate_shard, _From, State = #state{db_ref= DB,
 						  options = Options,
 						  name = Name,
-						  path = Path}) ->
-    ok = leveldb:close_db(DB),
+						  path = Path,
+						  options_pl = OptionsPL}) ->
+    ?debug("Recreating shard: ~p", [Name]),
     ok = delete_enterdb_ldb_resource(Name),
+    ok = leveldb:close_db(DB),
     FullPath = filename:join(Path, Name),
     ok = leveldb:destroy_db(FullPath, Options), 
-    {ok, NewDB} = leveldb:open_db(Options, FullPath),
+    
+    %% Create new options. If table was re-opened, we cannot
+    %% use the options including {create_if_missing, false}
+    %% and {error_if_exists, false}
+    
+    IntOptionsPL = lists:keyreplace(error_if_exists, 1, OptionsPL,
+				    {error_if_exists, true}),
+    NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
+				    {create_if_missing, true}),
+    OptionsRec = build_leveldb_options(NewOptionsPL),
+    {ok, NewOptions} = leveldb:options(OptionsRec),
+    {ok, NewDB} = leveldb:open_db(NewOptions, FullPath),
     ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Name,
 							  resource = NewDB}),
+
     {reply, ok, State#state{db_ref = NewDB,
-			    is_empty = true}};
+			    options = NewOptions,
+			    is_empty = true,
+			    options_pl = NewOptionsPL}};
 handle_call(_Request, _From, State) ->
     Reply = error_logger:warning_msg("unkown request:~p, from: ~p, gen_server state: ~p",
                                      [_Request, _From, State]),
@@ -408,8 +429,9 @@ handle_info(_Info, State) ->
 terminate(_Reason, _State = #state{db_ref = undefined}) ->
     ok;
 terminate(_Reason, _State = #state{db_ref = DB,  name = Name}) ->
-    ok = leveldb:close_db(DB),
-    ok = delete_enterdb_ldb_resource(Name).
+    ?debug("Terminating ldb worker for shard: ~p", [Name]),
+    ok = delete_enterdb_ldb_resource(Name),
+    ok = leveldb:close_db(DB).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -580,8 +602,9 @@ ensure_closed(Name) ->
 	undefined ->
 	    ok;
 	{ok, DB} ->
-	    ok = leveldb:close_db(DB),
-	    ok = delete_enterdb_ldb_resource(Name);
+	    ?debug("Old DB resource found for shard: ~p, closing and deleting..", [Name]),
+	    ok = delete_enterdb_ldb_resource(Name),
+	    ok = leveldb:close_db(DB);
 	{error, Reason} ->
 	    {error, Reason}
     end.
@@ -631,34 +654,3 @@ delete_enterdb_ldb_resource(Name) ->
         {aborted, Reason} ->
            {error, {aborted, Reason}}
     end.
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Make a key with a timestamp value that is TimeMargin seconds larger
-%% than the provided Key's timestamp
-%% @end
-%%--------------------------------------------------------------------
--spec make_upper_level_key(Key :: key(), TimeMargin :: pos_integer()) ->
-    {ok, UpperLevelKey :: key()} |
-    {error, Reason :: term()}.
-make_upper_level_key(Key, TimeMargin) ->
-    case lists:keyfind(ts, 1, Key) of
-	{ts, {Macs, Secs, Mics}} ->
-	    {ok, lists:keyreplace(ts, 1, Key, {ts, {Macs, Secs+TimeMargin, Mics}})};
-	{ts, _ELSE} ->
-	    {error, invalid_timestamp};
-	false ->
-	    {error, no_timestamp}
-    end.
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Make a key with a timestamp value that is TimeMargin seconds larger
-%% than the provided Key's timestamp
-%% @end
-%%--------------------------------------------------------------------
--spec recreate_upper_level(TabName :: string(), UpperLevelKey:: key()) -> ok.
-recreate_upper_level(TabName, UpperLevelKey) ->
-    {ok, {level, Level}} = gb_hash:find_node(TabName, UpperLevelKey),
-    {ok, Shards} = gb_hash:get_nodes(Level),
-    [spawn(?MODULE, recreate_shard, [Shard]) || Shard <- Shards]. 

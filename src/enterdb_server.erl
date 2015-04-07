@@ -39,15 +39,22 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
 
--export([get_state_params/0]).
+-export([get_state_params/0,
+	 wrap_level/4]).
 
 -define(SERVER, ?MODULE). 
+
+-include("enterdb.hrl").
+-include("gb_log.hrl").
 
 -record(state, {db_path,
                 num_of_local_shards}).
 
--include("enterdb.hrl").
--include("gb_log.hrl").
+%% This record is stored in ets table wrapper_registry
+-record(wrapper_registry, {name :: string(),
+			   wrapped_ts :: timestamp(),
+			   wrapped_level :: string()}).
+
 
 %%%===================================================================
 %%% API
@@ -66,6 +73,21 @@ start_link() ->
 -spec get_state_params() -> {ok, [{Attr :: atom(), Val :: atom()}]}.
 get_state_params() ->
     gen_server:call(enterdb_server, get_state_params).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Wrapping database workers invokes this function to delete and
+%% recreate oldest level. This function ensures the level is
+%% recreated only once for given time period.
+%% @end
+%%--------------------------------------------------------------------
+-spec wrap_level(Mod :: atom(),
+		 Name :: string(),
+		 Key :: key(),
+		 TimeMargin :: pos_integer()) -> ok.
+wrap_level(Mod, Name, Key, TimeMargin)->
+    gen_server:cast(enterdb_server,
+		    {wrap_level, Mod, Name, Key, TimeMargin}).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -96,6 +118,8 @@ init([]) ->
                   end,
     DB_PATH = gb_conf:get_param("enterdb.json", db_path),
     ?debug("DB_PATH: ~p", [DB_PATH]),
+    ets:new(wrapper_registry, [protected, named_table, {keypos, 2}]),
+    ok = open_databases(),
     {ok, #state{db_path = DB_PATH,
                 num_of_local_shards = NumOfShards}}.
 
@@ -133,6 +157,43 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_cast({wrap_level, Mod, Name, Key, TimeMargin}, State) ->
+    case lists:keyfind(ts, 1, Key) of
+	{ts, {Macs, Secs, Mics}} ->
+	    Ts = {Macs, Secs+TimeMargin, Mics},
+	    UpperLevelKey = lists:keyreplace(ts, 1, Key, {ts, Ts}),
+	    {ok, {level, Level}} = gb_hash:find_node(Name, UpperLevelKey),
+	    Wrap =
+		case ets:lookup(wrapper_registry, Name) of
+		    [#wrapper_registry{wrapped_ts = Wrapped_Ts,
+			               wrapped_level = Level}] ->
+			TDiff = timer:now_diff(Ts, Wrapped_Ts) / 1000000,
+			if TDiff < TimeMargin ->
+			    false;
+			   true ->
+			    true
+			end;
+		    _ ->
+			true
+		end,
+	    case Wrap of
+		true ->
+		    Rec = #wrapper_registry{name = Name,
+					    wrapped_ts = Ts,
+		                            wrapped_level = Level},
+		    ets:insert(wrapper_registry, Rec),
+		    {ok, Shards} = gb_hash:get_nodes(Level),
+		    ?debug("Wrapping level: ~p.", [Level]),
+		    [spawn(Mod, recreate_shard, [Shard]) || Shard <- Shards];
+		false ->
+		    ok
+	    end;
+	{ts, _ELSE} ->
+	    ?debug("Error: wrap_level with invalid timestamp: ~p", [_ELSE]);
+	false ->
+	    ?debug("Error: wrap_level with key without timestamp", [])
+    end,
+    {noreply, State};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
@@ -178,3 +239,32 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Open existing databases.
+%% @end
+%%--------------------------------------------------------------------
+-spec open_databases() -> ok | {error, Reason :: term()}.
+open_databases() ->
+    case enterdb_db:transaction(fun() -> mnesia:all_keys(enterdb_table) end) of
+	{atomic, DBList} ->
+	    open_databases(DBList);
+	{error, Reason} ->
+	    {error, Reason}
+    end.
+%%--------------------------------------------------------------------
+%% @doc
+%% Open databases those are specified by the given list of db names.
+%% @end
+%%--------------------------------------------------------------------
+-spec open_databases(DBList :: [string()]) -> ok | {error, Reason :: term()}.
+open_databases([]) ->
+    ok;
+open_databases([Name | Rest]) ->
+    ?debug("Opening database: ~p",[Name]),
+    case enterdb:open_db(Name) of
+	ok ->
+	    open_databases(Rest);
+	{error, Reason} ->
+	    {error, Reason}
+    end.

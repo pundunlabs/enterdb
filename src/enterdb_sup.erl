@@ -53,7 +53,7 @@ start_link() ->
 %%--------------------------------------------------------------------
 init([]) ->
     RestartStrategy = one_for_one,
-    MaxRestarts = 1000,
+    MaxRestarts = 4,
     MaxSecondsBetweenRestarts = 3600,
 
     SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
@@ -64,7 +64,7 @@ init([]) ->
     EdbSimpleSup = {enterdb_ldb_sup,
                     {enterdb_simple_sup, start_link,[leveldb]},
                     permanent, infinity, supervisor,[enterdb_simple_sup]},
-    {ok, {SupFlags, [EdbServer, EdbSimpleSup]}}.
+    {ok, {SupFlags, [EdbSimpleSup, EdbServer]}}.
 
 %%%===================================================================
 %%% Internal functions

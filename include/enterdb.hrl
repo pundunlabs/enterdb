@@ -20,6 +20,10 @@
 			 {backend, backend()} |
                          {data_model, data_model()}].
 
+-type timestamp() :: {pos_integer(),
+		      pos_integer(),
+		      pos_integer()}.
+
 -record(enterdb_shard, {hash :: binary(),
                         name :: atom()
                        }).
