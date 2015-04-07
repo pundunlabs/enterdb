@@ -163,17 +163,21 @@ check_if_table_exists(Name)->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Create and return list of shard names for local sharding.
+%% Create and return list of #enterdb_shard records for local sharding.
 %% @end
 %%--------------------------------------------------------------------
 -spec get_shards(Name :: string(),
 		 NumOfShards :: pos_integer(),
-		 Wrapped :: undefined | wrapper()) -> {ok, [string()]}.
+		 Wrapped :: undefined | wrapper()) ->
+    {ok, [#enterdb_shard{}]}.
 get_shards(Name, NumOfShards, undefined) ->
     Shards = [lists:concat([Name,"_shard",N]) ||N <- lists:seq(0, NumOfShards-1)],
     Options = [{algorithm, sha}, {strategy, uniform}],
     gb_hash:create_ring(Name, Shards, Options),
-    {ok, Shards};
+    EnterdbShards = [#enterdb_shard{name = ShardName,
+				    subdir = Name}
+		     || ShardName <- Shards],
+    {ok, EnterdbShards};
 get_shards(Name, NumOfShards, {FileMargin, TimeMargin}) ->
     Levels = [lists:concat([Name,"_lev",N]) ||N <- lists:seq(0, FileMargin-1)],
     
@@ -186,7 +190,12 @@ get_shards(Name, NumOfShards, {FileMargin, TimeMargin}) ->
     Shards =
 	lists:foldl(fun({NameLev, Ss}, Acc) ->
 			gb_hash:create_ring(NameLev, Ss, Options),
-			Ss ++ Acc
+			Subdir =  Name++"/"++NameLev,
+			EnterdbShards =
+			    [#enterdb_shard{name = ShardName,
+					    subdir = Subdir}
+			     || ShardName <- Ss],
+			EnterdbShards ++ Acc
 		    end, [], LeveledShards),
     {ok, Shards}.
 
@@ -215,7 +224,7 @@ create_table(#enterdb_table{options = Opts} = EnterdbTable)->
 %% Store the #enterdb_table entry in mnesia disc_copy
 %% @end
 %%--------------------------------------------------------------------
--spec write_enterdb_table(EnterdbTable::#enterdb_table{}) -> ok | {error, Reason::term()}.
+-spec write_enterdb_table(EnterdbTable::#enterdb_table{}) -> ok | {error, Reason :: term()}.
 write_enterdb_table(EnterdbTable) ->
     case enterdb_db:transaction(fun() -> mnesia:write(EnterdbTable) end) of
         {atomic, ok} ->
@@ -228,17 +237,23 @@ write_enterdb_table(EnterdbTable) ->
 %% Create leveldb database that is specified by EnterdbTable.
 %% @end
 %%--------------------------------------------------------------------
--spec create_leveldb_db(EnterdbTable::[#enterdb_table{}]) -> ok |
-                                                             {error, Reason::term()}.
+-spec create_leveldb_db(EnterdbTable :: #enterdb_table{}) ->
+    ok | {error, Reason :: term()}.
 create_leveldb_db(EDBT = #enterdb_table{shards = Shards}) ->
     create_leveldb_db([{comparator, 1},
 		       {create_if_missing, true},
                        {error_if_exists, true}], EDBT, Shards).
 
+-spec create_leveldb_db(Options :: [term()],
+			EDBT :: #enterdb_table{},
+			Shards :: [#enterdb_shard{}]) ->
+    ok | {error, Reason :: term()}.
 create_leveldb_db(_Options, _EDBT, []) ->
     ok;
-create_leveldb_db(Options, EDBT, [ShardName|Rest]) ->
-    ChildArgs = [{name, ShardName},
+create_leveldb_db(Options, EDBT,
+		  [#enterdb_shard{name = ShardName,
+				  subdir = Subdir} | Rest]) ->
+    ChildArgs = [{name, ShardName}, {subdir, Subdir},
                  {options, Options}, {tab_rec, EDBT}],
     case supervisor:start_child(enterdb_ldb_sup, [ChildArgs]) of
         {ok, _Pid} ->
@@ -261,11 +276,14 @@ open_leveldb_db(EDBT = #enterdb_table{shards = Shards}) ->
 
 -spec open_leveldb_db(Options :: [{atom(),term()}],
                       EDBT :: #enterdb_table{},
-                      Shards :: [string()]) -> ok | {error, Reason :: term()}.
+                      Shards :: [#enterdb_shard{}]) ->
+    ok | {error, Reason :: term()}.
 open_leveldb_db(_Options, _EDBT, []) ->
     ok;
-open_leveldb_db(Options, EDBT, [Name|Rest]) ->
-     ChildArgs = [{name, Name},
+open_leveldb_db(Options, EDBT,
+		[#enterdb_shard{name = ShardName,
+				subdir = Subdir} | Rest]) ->
+     ChildArgs = [{name, ShardName}, {subdir, Subdir},
                   {options, Options}, {tab_rec, EDBT}],
      case supervisor:start_child(enterdb_ldb_sup, [ChildArgs]) of
         {ok, _Pid} ->
@@ -284,10 +302,11 @@ close_leveldb_db(EDBT = #enterdb_table{shards = Shards}) ->
     close_leveldb_db(EDBT, Shards).
 
 -spec close_leveldb_db(EDBT :: #enterdb_table{},
-                       Shards :: [string()]) -> ok | {error, Reason :: term()}.
+                       Shards :: [#enterdb_shard{}]) ->
+    ok | {error, Reason :: term()}.
 close_leveldb_db(_EDBT, []) ->
     ok;
-close_leveldb_db(EDBT, [Name | Rest]) ->
+close_leveldb_db(EDBT, [#enterdb_shard{name = Name} | Rest]) ->
     %% Terminating simple_one_for_one child requires OTP_REL >= R14B03
     case supervisor:terminate_child(enterdb_ldb_sup, list_to_atom(Name)) of
 	ok ->
@@ -308,11 +327,12 @@ delete_leveldb_db(#enterdb_table{name = Name, shards = Shards}) ->
     ok = delete_hash_ring(Name),
     mnesia:delete(enterdb_table, Name, write).
 
--spec delete_leveldb_db_shards(Shards :: [string()]) -> ok | {error, Reason :: term()}.
+-spec delete_leveldb_db_shards(Shards :: [#enterdb_shard{}]) ->
+    ok | {error, Reason :: term()}.
 delete_leveldb_db_shards([]) ->
     ok;
-delete_leveldb_db_shards([Shard | Rest]) ->
-    ok = enterdb_ldb_worker:delete_db(Shard),
+delete_leveldb_db_shards([#enterdb_shard{name = Name} | Rest]) ->
+    ok = enterdb_ldb_worker:delete_db(Name),
     delete_leveldb_db_shards(Rest).
 
 %%--------------------------------------------------------------------
@@ -388,7 +408,3 @@ get_level_range_acc(StartLevel, [StartLevel | _Levels], Acc) ->
     [StartLevel|Acc];
 get_level_range_acc(StartLevel, [AnyLevel | Levels], Acc) ->
     get_level_range_acc(StartLevel, Levels, [AnyLevel | Acc]).
-
-
-
-

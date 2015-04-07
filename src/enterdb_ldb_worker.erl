@@ -41,9 +41,10 @@
                 indexes,
 		is_empty,
                 time_ordered,
-                wrapped,
+		wrapped,
 		data_model,
-                path,
+		path,
+		subdir,
 		tab_name,
 		options_pl}).
 
@@ -191,6 +192,7 @@ recreate_shard(Shard) ->
 %%--------------------------------------------------------------------
 init(Args) ->
     Name = proplists:get_value(name, Args),
+    Subdir = proplists:get_value(subdir, Args),
     ok = ensure_closed(Name),
  
     OptionsPL = proplists:get_value(options, Args),
@@ -211,13 +213,13 @@ init(Args) ->
 
     case leveldb:options(OptionsRec) of
         {ok, Options} ->
-            FullPath = filename:join(Path, Name),
-            case leveldb:open_db(Options, FullPath) of
+            FullPath = filename:join([Path, Subdir, Name]),
+            ok = filelib:ensure_dir(FullPath),
+	    case leveldb:open_db(Options, FullPath) of
                 {error, Reason} ->
                     {stop, {error, Reason}};
                 {ok, DB} ->
-                    ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Name,
-									  resource = DB}),
+                    ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Name, resource = DB}),
 		    ReadOptionsRec = build_leveldb_readoptions([]),
                     {ok, ReadOptions} = leveldb:readoptions(ReadOptionsRec),
                     WriteOptionsRec = build_leveldb_writeoptions([]),
@@ -237,6 +239,7 @@ init(Args) ->
                                 wrapped = Wrapped,
 				data_model = DataModel,
                                 path = Path,
+				subdir = Subdir,
 				tab_name = TabName,
 				options_pl = OptionsPL}}
             end;
@@ -348,22 +351,24 @@ handle_call(get_key_columns_def, _From, State = #state{key = KeyDef, columns = C
 handle_call(delete_db, _From, State = #state{db_ref= DB,
 					     options = Options,
 					     name = Name,
-					     path = Path}) ->
+					     path = Path,
+					     subdir = Subdir}) ->
     ?debug("Deleting shard: ~p", [Name]),
     ok = delete_enterdb_ldb_resource(Name),
     ok = leveldb:close_db(DB),
-    FullPath = filename:join(Path, Name),
+    FullPath = filename:join([Path, Subdir, Name]),
     ok = leveldb:destroy_db(FullPath, Options),
     {stop, normal, ok, State#state{db_ref = undefined}};
 handle_call(recreate_shard, _From, State = #state{db_ref= DB,
 						  options = Options,
 						  name = Name,
 						  path = Path,
+						  subdir = Subdir,
 						  options_pl = OptionsPL}) ->
     ?debug("Recreating shard: ~p", [Name]),
     ok = delete_enterdb_ldb_resource(Name),
     ok = leveldb:close_db(DB),
-    FullPath = filename:join(Path, Name),
+    FullPath = filename:join([Path, Subdir, Name]),
     ok = leveldb:destroy_db(FullPath, Options), 
     
     %% Create new options. If table was re-opened, we cannot

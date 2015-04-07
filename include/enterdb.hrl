@@ -24,9 +24,8 @@
 		      pos_integer(),
 		      pos_integer()}.
 
--record(enterdb_shard, {hash :: binary(),
-                        name :: atom()
-                       }).
+-record(enterdb_shard, {name :: atom(),
+			subdir :: string()}).
 
 -record(enterdb_table, {name :: string(),
                         path :: string(),
@@ -34,7 +33,7 @@
                         columns :: [atom()],
                         indexes :: [atom()],
                         options :: [table_option()],
-                        shards :: [string()]
+                        shards :: [#enterdb_shard{}]
                        }).
 
 -record(enterdb_ldb_resource, {name :: atom(),
