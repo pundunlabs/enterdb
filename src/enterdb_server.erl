@@ -129,7 +129,7 @@ init([]) ->
     ok = filelib:ensure_dir(DB_PATH),
     ?debug("DB_PATH: ~p", [DB_PATH]),
     ets:new(wrapper_registry, [protected, named_table, {keypos, 2}]),
-    ok = open_databases(),
+    ok = open_tables(),
     {ok, #state{db_path = DB_PATH,
                 num_of_local_shards = NumOfShards}}.
 
@@ -251,30 +251,30 @@ code_change(_OldVsn, State, _Extra) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Open existing databases.
+%% Open existing database tables.
 %% @end
 %%--------------------------------------------------------------------
--spec open_databases() -> ok | {error, Reason :: term()}.
-open_databases() ->
+-spec open_tables() -> ok | {error, Reason :: term()}.
+open_tables() ->
     case enterdb_db:transaction(fun() -> mnesia:all_keys(enterdb_table) end) of
 	{atomic, DBList} ->
-	    open_databases(DBList);
+	    open_tables(DBList);
 	{error, Reason} ->
 	    {error, Reason}
     end.
 %%--------------------------------------------------------------------
 %% @doc
-%% Open databases those are specified by the given list of db names.
+%% Open database tables those are specified by the given list of db names.
 %% @end
 %%--------------------------------------------------------------------
--spec open_databases(DBList :: [string()]) -> ok | {error, Reason :: term()}.
-open_databases([]) ->
+-spec open_tables(DBList :: [string()]) -> ok | {error, Reason :: term()}.
+open_tables([]) ->
     ok;
-open_databases([Name | Rest]) ->
-    ?debug("Opening database: ~p",[Name]),
-    case enterdb:open_db(Name) of
+open_tables([Name | Rest]) ->
+    ?debug("Opening table: ~p",[Name]),
+    case enterdb:open_table(Name) of
 	ok ->
-	    open_databases(Rest);
+	    open_tables(Rest);
 	{error, Reason} ->
 	    {error, Reason}
     end.

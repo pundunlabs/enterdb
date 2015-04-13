@@ -1,9 +1,8 @@
 -module(enterdb_test).
 
-
--export([open_db/1,
-	 delete_db/1,
-	 create_wrapping_db/1,
+-export([open_table/1,
+	 delete_table/1,
+	 create_wrapping_table/1,
 	 read/2,
 	 read_range/4,
 	 write/1,
@@ -18,30 +17,30 @@
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Open an existing enterdb db.
+%% Open an existing enterdb table.
 %% @end
 %%--------------------------------------------------------------------
--spec open_db(Name :: string()) -> ok.
-open_db(Name) ->
-    enterdb:open_db(Name).
+-spec open_table(Name :: string()) -> ok.
+open_table(Name) ->
+    enterdb:open_table(Name).
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Deletes the entire database specified by name.
+%% Deletes the entire database table specified by name.
 %% @end
 %%--------------------------------------------------------------------
--spec delete_db(Name :: string()) -> ok.
-delete_db(Name) ->
-    enterdb:delete_db(Name).
+-spec delete_table(Name :: string()) -> ok.
+delete_table(Name) ->
+    enterdb:delete_table(Name).
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Creates a database which has a compound key with timestamp and imsi,
-%% and wrapping on files based on timestamp in the key.
+%% Creates a database table which has a compound key with timestamp
+%% and imsi, and wrapping on files based on timestamp in the key.
 %% @end
 %%--------------------------------------------------------------------
--spec create_wrapping_db(Name :: string()) -> ok.
-create_wrapping_db(Name) ->
+-spec create_wrapping_table(Name :: string()) -> ok.
+create_wrapping_table(Name) ->
     Keys = [ts, imsi],
     Columns = [value],
     Indexes = [],

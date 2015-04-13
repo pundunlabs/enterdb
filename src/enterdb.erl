@@ -100,7 +100,7 @@ open_table(Name) ->
 		leveldb ->
 		    enterdb_lib:open_leveldb_db(Table);
 		Else ->
-		    ?debug("enterdb:open_db: {backend, ~p} not supported", [Else]),
+		    ?debug("enterdb:open_table: {backend, ~p} not supported", [Else]),
 		    {error, "backend_not_supported"}
 	    end;
         {error, Reason} ->
@@ -124,7 +124,7 @@ close_table(Name) ->
 		leveldb ->
 		    enterdb_lib:close_leveldb_db(Table);
 		Else ->
-		    ?debug("enterdb:close_db: {backend, ~p} not supported", [Else]),
+		    ?debug("enterdb:close_table: {backend, ~p} not supported", [Else]),
 		    {error, "backend_not_supported"}
 	    end;
         {error, Reason} ->
@@ -227,7 +227,7 @@ atomic_delete_table(Name) ->
 		leveldb ->
 		    ok = enterdb_lib:delete_leveldb_db(Table);
 		Else ->
-		    ?debug("enterdb:close_db: {backend, ~p} not supported", [Else]),
+		    ?debug("enterdb:delete_table: {backend, ~p} not supported", [Else]),
 		    {error, "backend_not_supported"}
 	    end;
 	[] ->
