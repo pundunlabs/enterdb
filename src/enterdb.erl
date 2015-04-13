@@ -10,13 +10,13 @@
 
 %% API
 -export([create_table/5,
-         open_db/1,
-	 close_db/1,
+         open_table/1,
+	 close_table/1,
 	 read/2,
          write/3,
          delete/2,
 	 read_range/3,
-	 delete_db/1]).
+	 delete_table/1]).
 
 -export([load_test/0,
 	 write_loop/1]).
@@ -41,15 +41,15 @@ write_loop(N) when N > 0 ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Creates a table that is defined by Name, Key, Columns and optionally
-%% Indexes.
-%% Key is a list and if list has more than one element, then the key 
-%% will ba a compound key.
-%% Columns list consist of name of each column as atom and inclusion of
-%% key columns are optional.
-%% Indexes list are optional and an index table will be created for each
+%% Creates a table that is defined by Name, KeyDef, ColumnsDef and
+%% optionally IndexesDef.
+%% KeyDef is a list and if list has more than one element, then the key 
+%% will be a compound key.
+%% ColumnsDef list consist of name of each column as atom. Inclusion of
+%% key in ColumnsDef list is optional.
+%% IndexesDef list are optional and an index table will be created for each
 %% coulmn provided in this argument. Any given index column is not
-%% neccesarly included in Columns.
+%% neccesarly included in ColumnsDef list.
 %% @end
 %%--------------------------------------------------------------------
 -spec create_table(Name :: string(), KeyDef :: [atom()],
@@ -85,11 +85,11 @@ create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Open an existing enterdb database.
+%% Open an existing enterdb database table.
 %% @end
 %%--------------------------------------------------------------------
--spec open_db(Name :: string())-> ok | {error, Reason :: term()}.
-open_db(Name) ->
+-spec open_table(Name :: string())-> ok | {error, Reason :: term()}.
+open_table(Name) ->
     case enterdb_db:transaction(fun() -> mnesia:read(enterdb_table, Name) end) of
         {atomic, []} ->
             {error, "no_table"};
@@ -109,11 +109,11 @@ open_db(Name) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Close an existing enterdb database.
+%% Close an existing enterdb database table.
 %% @end
 %%--------------------------------------------------------------------
--spec close_db(Name :: string())-> ok | {error, Reason :: term()}.
-close_db(Name) ->
+-spec close_table(Name :: string())-> ok | {error, Reason :: term()}.
+close_table(Name) ->
     case enterdb_db:transaction(fun() -> mnesia:read(enterdb_table, Name) end) of
         {atomic, []} ->
             {error, "no_table"};
@@ -190,7 +190,8 @@ delete(Name, Key)->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Reads a Range of Keys from table with name Name and returns mac Limit items
+%% Reads a Range of Keys from table with name Name and returns max
+%% Limit items from each local shard of the table
 %% @end
 %%--------------------------------------------------------------------
 -spec read_range(Name :: string(),
@@ -202,12 +203,12 @@ read_range(Name, Range, Limit) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Delete a database completely. Ensures the database is closed before deletion.
+%% Delete a database table completely. Ensures the table is closed before deletion.
 %% @end
 %%--------------------------------------------------------------------
--spec delete_db(Name :: string()) -> ok | {error, Reason :: term()}.
-delete_db(Name) ->
-    case enterdb_db:transaction(fun() -> atomic_delete_db(Name)  end) of
+-spec delete_table(Name :: string()) -> ok | {error, Reason :: term()}.
+delete_table(Name) ->
+    case enterdb_db:transaction(fun() -> atomic_delete_table(Name)  end) of
         {atomic, ok} ->
             ok;
         {atomic, {error, Reason}} ->
@@ -216,8 +217,8 @@ delete_db(Name) ->
             {error, Reason}
     end.
 
--spec atomic_delete_db(Name :: string()) -> ok | {error, Reason :: term()}.
-atomic_delete_db(Name) ->
+-spec atomic_delete_table(Name :: string()) -> ok | {error, Reason :: term()}.
+atomic_delete_table(Name) ->
     case mnesia:read(enterdb_table, Name) of
 	[Table] ->
 	    Options = Table#enterdb_table.options,

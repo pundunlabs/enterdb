@@ -20,7 +20,8 @@
 %%% _________________________________________________________________________
 %%%
 %%%
-%%%   TODO: <Description of module>
+%%%   EnterDB Server that manages application configuration, wrapping tables
+%%% and possible other operations required to be done sequentially.
 %%%
 %%% _________________________________________________________________________
 
@@ -117,7 +118,7 @@ init([]) ->
                         end
                   end,
     CONF_PATH = gb_conf:get_param("enterdb.json", db_path),
-    
+
     DB_PATH =
 	case CONF_PATH of
 	    [$/|_] ->
