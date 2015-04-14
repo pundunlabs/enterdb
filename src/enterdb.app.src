@@ -1,7 +1,7 @@
 {application, enterdb,
  [{description, "Enterdb the key-value storage"},
-  {vsn, "%VSN%"},
-  {modules, [%MODULES%]},
+  {vsn, "0.1"},
+  {modules, []},
   {registered, []},
   {applications, [kernel, stdlib, sasl, gb_log]},
   {mod, {enterdb_app,[]}}
