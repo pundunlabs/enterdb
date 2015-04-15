@@ -129,9 +129,14 @@ init([]) ->
     ok = filelib:ensure_dir(DB_PATH),
     ?debug("DB_PATH: ~p", [DB_PATH]),
     ets:new(wrapper_registry, [protected, named_table, {keypos, 2}]),
-    ok = open_tables(),
-    {ok, #state{db_path = DB_PATH,
-                num_of_local_shards = NumOfShards}}.
+    case mnesia:wait_for_tables([enterdb_table], 20000) of
+            {timeout,   RemainingTabs} ->
+              {stop, {no_exists,RemainingTabs}};
+            ok ->
+		ok = open_tables(),
+		{ok, #state{db_path = DB_PATH,
+			    num_of_local_shards = NumOfShards}}
+    end.
 
 %%--------------------------------------------------------------------
 %% @private

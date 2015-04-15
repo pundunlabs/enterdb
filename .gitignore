@@ -30,3 +30,6 @@ erl_crash.dump
 
 # ignore .plts (Dialyzer PLT directory)
 .plts
+
+# ignore .rebar folder
+.rebar
