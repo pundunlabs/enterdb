@@ -1,0 +1,8 @@
+# ENTERDB Application configuration file
+---
+app_name : enterdb
+notify_cb: [enterdb_server, notify]
+verify_cb: [enterdb_server, verify]
+params	 :
+    db_path : "data/enterdb" # Relative or Absolute path to db
+    num_of_local_shards : 16 # Number of local shards per db table

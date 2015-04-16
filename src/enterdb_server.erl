@@ -106,10 +106,13 @@ wrap_level(Mod, Name, Key, TimeMargin)->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
-    NumOfShards = case gb_conf:get_param("enterdb.json", num_of_local_shards, "default") of
-                      "default" ->
+    NumOfShards = case gb_conf:get_param("enterdb.yaml", num_of_local_shards) of
+                      undefined ->
+			  ?debug("num_of_local_shards not configured!", []),
                           erlang:system_info(schedulers);
-                      IntStr ->
+                      Int when is_integer(Int) ->
+			Int;
+		      IntStr ->
                         case catch list_to_integer(IntStr) of
                             Int when is_integer(Int) ->
                                 Int;
@@ -117,7 +120,7 @@ init([]) ->
                                 erlang:system_info(schedulers)
                         end
                   end,
-    CONF_PATH = gb_conf:get_param("enterdb.json", db_path),
+    CONF_PATH = gb_conf:get_param("enterdb.yaml", db_path),
 
     DB_PATH =
 	case CONF_PATH of
