@@ -10,7 +10,7 @@
 
 %% API
 -export([verify_create_table_args/1,
-         get_shards/3,
+         get_shards/4,
          create_table/1,
          open_leveldb_db/1,
 	 close_leveldb_db/1,
@@ -147,8 +147,13 @@ verify_table_options([{wrapped, {FileMargin, TimeMargin}}|Rest]) when is_integer
 								      is_integer( TimeMargin ) andalso
 								      TimeMargin > 0 ->
     verify_table_options(Rest);
+verify_table_options([{mem_wrapped, {BucketSpan, NumBuckets}}|Rest]) when is_integer( BucketSpan ) andalso
+									  BucketSpan > 0 andalso
+									  is_integer( NumBuckets ) andalso
+									  NumBuckets > 0 ->
+    verify_table_options(Rest);
 verify_table_options([Elem|_])->
-    {error, {Elem, "unknown_option"}}.
+    {error, {Elem, "invalid_option"}}.
 
 -spec check_if_table_exists(Name::string()) -> ok | {error, Reason::term()}.
 check_if_table_exists(Name)->
@@ -168,9 +173,10 @@ check_if_table_exists(Name)->
 %%--------------------------------------------------------------------
 -spec get_shards(Name :: string(),
 		 NumOfShards :: pos_integer(),
-		 Wrapped :: undefined | wrapper()) ->
+		 Wrapped :: undefined | wrapper(),
+		 MemWrapped :: undefined | mem_wrapper()) ->
     {ok, [#enterdb_shard{}]}.
-get_shards(Name, NumOfShards, undefined) ->
+get_shards(Name, NumOfShards, undefined, _MemWrapped) ->
     Shards = [lists:concat([Name,"_shard",N]) ||N <- lists:seq(0, NumOfShards-1)],
     Options = [{algorithm, sha}, {strategy, uniform}],
     gb_hash:create_ring(Name, Shards, Options),
@@ -178,13 +184,14 @@ get_shards(Name, NumOfShards, undefined) ->
 				    subdir = Name}
 		     || ShardName <- Shards],
     {ok, EnterdbShards};
-get_shards(Name, NumOfShards, {FileMargin, TimeMargin}) ->
+get_shards(Name, NumOfShards, {FileMargin, TimeMargin}, MemWrapped) ->
     Levels = [lists:concat([Name,"_lev",N]) ||N <- lists:seq(0, FileMargin-1)],
     
     LeveledShards = [ {L,[ lists:concat([L,"_shard",N])
 			    || N <- lists:seq(0, NumOfShards-1)] }
 			|| L <- Levels ],
-    gb_hash:create_ring(Name, Levels, [{algorithm, {tda, FileMargin, TimeMargin}},
+    TableType = get_table_type(MemWrapped),
+    gb_hash:create_ring(Name, Levels, [{algorithm, {TableType, FileMargin, TimeMargin}},
 				       {strategy, timedivision}]),
     Options = [{algorithm, sha}, {strategy, uniform}],
     Shards =
@@ -198,6 +205,11 @@ get_shards(Name, NumOfShards, {FileMargin, TimeMargin}) ->
 			EnterdbShards ++ Acc
 		    end, [], LeveledShards),
     {ok, Shards}.
+
+get_table_type(undefined) ->
+    tda;
+get_table_type({_,_}) ->
+    mem_tda.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -214,8 +226,19 @@ create_table(#enterdb_table{options = Opts} = EnterdbTable)->
                     ?debug("Could not create leveldb database, error: ~p~n", [Reason]),
                     {error, Reason}
             end;
+        ets_leveldb ->
+            %% init mem_wrp table
+	    Res = enterdb_mem:init_tab(EnterdbTable),
+	    ?debug("enterdb_mem:init_tab(~p) returned ~p", [EnterdbTable, Res]),
+
+	    case create_leveldb_db(EnterdbTable) of
+                ok -> write_enterdb_table(EnterdbTable);
+                {error, Reason} ->
+                    ?debug("Could not create leveldb database, error: ~p~n", [Reason]),
+                    {error, Reason}
+            end;
         Else ->
-            ?debug("Could not create ~p database, error: not_supported yet.~n", [Else]),
+	    ?debug("Could not create ~p database, error: not_supported yet.~n", [Else]),
             {error, "no_supported_backend"}
     end.
 

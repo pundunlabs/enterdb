@@ -17,13 +17,17 @@ MODULES = \
     enterdb_lib \
     enterdb_simple_sup \
     enterdb_ldb_worker \
-    gb_chash
+    gb_chash \
+    enterdb_mem \
+    enterdb_mem_wrp_mgr \
+    enterdb_mem_wrp \
 
 ERL_BEAMS = $(MODULES:%=$(EBIN)/%.beam)
 
 INCLUDE_DIRS = \
 	../include \
 	../../gb_log/include \
+	../../gb_hash/include \
 
 ERL_INCLUDES=$(INCLUDE_DIRS:%=-I %)
 

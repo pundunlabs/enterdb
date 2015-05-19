@@ -3,6 +3,8 @@
 -export([open_table/1,
 	 delete_table/1,
 	 create_wrapping_table/1,
+	 create_mem_wrapping_table/1,
+	 create_mem_wrapping_table_2/1,
 	 read/2,
 	 read_range/4,
 	 write/1,
@@ -48,6 +50,42 @@ create_wrapping_table(Name) ->
 	       {data_model,binary},
 	       {time_ordered, true},
 	       {wrapped, {16, 60}}], 
+    enterdb:create_table(Name, Keys, Columns, Indexes, Options).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Creates a mem_wrapping table which has a compound key with timestamp
+%% and imsi, and wrapping on files based on timestamp in the key.
+%% @end
+%%--------------------------------------------------------------------
+-spec create_mem_wrapping_table(Name :: string()) -> ok.
+create_mem_wrapping_table(Name) ->
+    Keys = [ts, imsi],
+    Columns = [value],
+    Indexes = [],
+    Options = [{backend, ets_leveldb},
+	       {data_model,binary},
+	       {time_ordered, true},
+	       {mem_wrapped, {5, 12}},
+	       {wrapped, {16, 60}}],
+    enterdb:create_table(Name, Keys, Columns, Indexes, Options).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Creates a mem_wrapping table which has a compound key with timestamp
+%% and imsi, and wrapping on files based on timestamp in the key.
+%% @end
+%%--------------------------------------------------------------------
+-spec create_mem_wrapping_table_2(Name :: string()) -> ok.
+create_mem_wrapping_table_2(Name) ->
+    Keys = [ts, imsi],
+    Columns = [value1, value2],
+    Indexes = [],
+    Options = [{backend, ets_leveldb},
+	       {data_model,binary},
+	       {time_ordered, true},
+	       {mem_wrapped, {2, 3}},
+	       {wrapped, {16, 60}}],
     enterdb:create_table(Name, Keys, Columns, Indexes, Options).
 
 %%--------------------------------------------------------------------
@@ -104,7 +142,7 @@ read_range(Name, StartKey, EndKey, Limit) ->
     {ok, Pid :: pid()} |
     {error, Reason :: term()}.
 write_loop(Name, N, Interval) when N > 0 ->
-    {ok, erlang:spawn(?MODULE, write_server, [Name, N, Interval*1000])}.
+    {ok, erlang:spawn(?MODULE, write_server, [Name, N, Interval])}.
 
 write_server(Name, N, Milliseconds) when N > 0 ->
     receive
@@ -116,4 +154,5 @@ write_server(Name, N, Milliseconds) when N > 0 ->
 	    write_server(Name, N-1, Milliseconds)
     end;
 write_server(_,_,_) ->
+    io:format("write_server done ~p~n", [self()]),
     ok.

@@ -13,10 +13,14 @@
 
 -type file_margin() :: pos_integer().
 -type time_margin() :: pos_integer().
--type wrapper() :: {file_margin(), time_margin()}.
+-type bucket_size() :: pos_integer().
+-type num_buckets() :: pos_integer().
+-type mem_wrapper() :: {bucket_size(), num_buckets()}.
+-type wrapper()	    :: {file_margin(), time_margin()}.
 
 -type table_option() :: [{time_ordered, boolean()} |
                          {wrapped, wrapper()} |
+			 {mem_wrapped, mem_wrapper()} |
 			 {backend, backend()} |
                          {data_model, data_model()}].
 

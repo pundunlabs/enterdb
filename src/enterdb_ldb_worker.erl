@@ -2,7 +2,7 @@
 %%% @author erdem <erdem@sitting>
 %%% @copyright (C) 2015, erdem
 %%% @doc
-%%%
+%%% LevelDB backend worker module
 %%% @end
 %%% Created : 16 Feb 2015 by erdem <erdem@sitting>
 %%%-------------------------------------------------------------------
