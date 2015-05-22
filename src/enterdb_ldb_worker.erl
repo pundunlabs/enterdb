@@ -23,8 +23,11 @@
 	 delete_db/1,
 	 read_range_binary/3,
 	 read_range_term/3,
+	 read_range_n_binary/3,
 	 make_app_kvp/2,
-	 recreate_shard/1]).
+	 recreate_shard/1,
+	 approximate_sizes/2,
+	 approximate_size/1]).
 
 -define(SERVER, ?MODULE).
 
@@ -54,7 +57,7 @@
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Starts the server
+%% Starts a server that manages an enterdb shard with leveldb backend.
 %% @end
 %%--------------------------------------------------------------------
 -spec start_link(Args :: [{atom(), term()} | atom()]) ->
@@ -122,12 +125,11 @@ delete_db(Shard) ->
 %%--------------------------------------------------------------------
 -spec read_range_binary(Shard :: string(),
 			Range :: key_range(),
-			Limit :: pos_integer()) -> {ok, [{binary(), binary()}]} |
-						    {error, Reason :: term()}.
+			Limit :: pos_integer()) ->
+    {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
 read_range_binary(Shard, Range, Limit) ->
     ServerRef = list_to_atom(Shard),
     gen_server:call(ServerRef, {read_range, Range, Limit, binary}).
-
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -137,11 +139,25 @@ read_range_binary(Shard, Range, Limit) ->
 %%--------------------------------------------------------------------
 -spec read_range_term(Shard :: string(),
 		      Range :: key_range(),
-		      Limit :: pos_integer()) -> {ok, [{binary(), binary()}]} |
-						 {error, Reason :: term()}.
+		      Limit :: pos_integer()) ->
+    {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
 read_range_term(Shard, Range, Limit) ->
     ServerRef = list_to_atom(Shard),
     gen_server:call(ServerRef, {read_range, Range, Limit, term}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Read N number of keys from a given shard and return read
+%% items in binary format.
+%% @end
+%%--------------------------------------------------------------------
+-spec read_range_n_binary(Shard :: string(),
+			  StartKey :: key(),
+			  N :: pos_integer()) ->
+    {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
+read_range_n_binary(Shard, StartKey, N) ->
+    ServerRef = list_to_atom(Shard),
+    gen_server:call(ServerRef, {read_range_n, StartKey, N, binary}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -151,33 +167,62 @@ read_range_term(Shard, Range, Limit) ->
 %%--------------------------------------------------------------------
 -spec make_app_kvp(Shard :: string(),
 		   KVP :: {binary(), binary()} |
-			  [{binary(), binary()}]) -> {ok, [{binary(), binary()}]} |
-						     {error, Reason :: term()}.
+			  [{binary(), binary()}]) ->
+    {ok, [{key(), value()}]} | {error, Reason :: term()}.
 make_app_kvp(Shard, KVP) ->
     ServerRef = list_to_atom(Shard),
-    {ok, KeyDef, ColumnsDef} = gen_server:call(ServerRef, get_key_columns_def),
+    {ok, DataModel, KeyDef, ColumnsDef} =
+	gen_server:call(ServerRef, get_data_model),
     AppKVP =
-    case KVP of
-	[_|_] ->
-	    [{make_app_key(KeyDef, binary_to_term(BK)), binary_to_term(BV)} || {BK, BV} <- KVP];
-	{BinKey, BinValue} ->
-	    {make_app_key(KeyDef, binary_to_term(BinKey)), binary_to_term(BinValue)};
-	[] ->
-	    [];
-	_ ->
-	    {error, {invalid_arg, KVP}}
-    end,
+	case KVP of
+	    [_|_] ->
+		[begin
+		    K = make_app_key(KeyDef, BK),
+		    V = make_app_value(DataModel, ColumnsDef, BV),
+		    {K, V}
+		 end || {BK, BV} <- KVP];
+	    {BinKey, BinValue} ->
+		{make_app_key(KeyDef, BinKey),
+		 make_app_value(DataModel, ColumnsDef, BinValue)};
+	    [] ->
+		[];
+	    _ ->
+		{error, {invalid_arg, KVP}}
+	end,
     {ok, AppKVP}.
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Recreate the shard by destroying the leveldb db and re-open a new one
+%% Recreate the shard by destroying the leveldb db and re-open a new
+%% one
 %% @end
 %%--------------------------------------------------------------------
 -spec recreate_shard(Shard :: string()) -> ok.
 recreate_shard(Shard) ->
     ServerRef = list_to_atom(Shard),
     gen_server:call(ServerRef, recreate_shard).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Approximate the size of leveldb db in bytes for given key ranges.
+%% @end
+%%--------------------------------------------------------------------
+-spec approximate_sizes(Shard :: string(), Ranges :: key_range()) ->
+    {ok, Sizes :: [pos_integer()]} | {error, Reason :: term()}.
+approximate_sizes(Shard, Ranges) ->
+    ServerRef = list_to_atom(Shard),
+    gen_server:call(ServerRef, {approximate_sizes, Ranges}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Approximate the size of leveldb db in bytes.
+%% @end
+%%--------------------------------------------------------------------
+-spec approximate_size(Shard :: string()) ->
+    {ok, Size :: pos_integer()} | {error, Reason :: term()}.
+approximate_size(Shard) ->
+    ServerRef = list_to_atom(Shard),
+    gen_server:call(ServerRef, approximate_size).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -219,7 +264,8 @@ init(Args) ->
                 {error, Reason} ->
                     {stop, {error, Reason}};
                 {ok, DB} ->
-                    ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Name, resource = DB}),
+		    ELR = #enterdb_ldb_resource{name = Name, resource = DB},
+                    ok = write_enterdb_ldb_resource(ELR),
 		    ReadOptionsRec = build_leveldb_readoptions([]),
                     {ok, ReadOptions} = leveldb:readoptions(ReadOptionsRec),
                     WriteOptionsRec = build_leveldb_writeoptions([]),
@@ -264,19 +310,21 @@ init(Args) ->
 handle_call({read, Key}, _From,
             State = #state{db_ref = DB,
                            readoptions = ReadOptions,
-                           key = KeyDef}) ->
+                           key = KeyDef,
+			   columns = ColumnsDef,
+			   data_model = DataModel}) ->
     Reply = 
-    case make_key(KeyDef, Key) of
-        {ok, DbKey} ->
-	    case leveldb:get(DB, ReadOptions, DbKey) of
-		{ok, BinData} ->
-		    {ok, binary_to_term(BinData)};
-		{error, Reason} ->
-		    {error, Reason}
-	    end;
-        {error, Reason} ->
-            {error, Reason}
-    end,
+	case make_key(KeyDef, Key) of
+	    {ok, DbKey} ->
+		case leveldb:get(DB, ReadOptions, DbKey) of
+		    {ok, BinData} ->
+			{ok, make_app_value(DataModel, ColumnsDef, BinData)};
+		    {error, Reason} ->
+			{error, Reason}
+		end;
+	    {error, Reason} ->
+		{error, Reason}
+	end,
     {reply, Reply, State};
 handle_call({write, Key, Columns}, From,
 	    State = #state{is_empty = true,
@@ -291,7 +339,7 @@ handle_call({write, Key, Columns}, _From,
                            key = KeyDef,
                            columns = ColumnsDef,
                            indexes = IndexesDef,
-                           time_ordered = TimeOrdered,
+                           time_ordered = _TimeOrdered,
                            data_model = DataModel}) ->
     Reply = 
     case make_key(KeyDef, Key) of
@@ -327,28 +375,43 @@ handle_call({read_range, {StartKey, EndKey}, Limit, Type}, _From,
 	     State = #state{db_ref = DB,
 			    options = Options,
 			    readoptions = ReadOptions,
-			    key = KeyDef}) when Limit > 0 ->
+			    key = KeyDef,
+			    columns = ColumnsDef,
+			    data_model = DataModel}) when Limit > 0 ->
     
     {ok, DbStartKey} = make_key(KeyDef, StartKey),
     {ok, DbEndKey} = make_key(KeyDef, EndKey),
-    
     Reply =
-    case leveldb:read_range(DB, Options, ReadOptions, {DbStartKey, DbEndKey}, Limit) of
-	{ok, KVL} ->
-	    case Type of
-		binary ->
-		    {ok, KVL};
-		term ->
-		    {ok, [ {make_app_key(KeyDef, binary_to_term(BK)), binary_to_term(BV)} || {BK, BV} <- KVL]}
-	    end;
-	{error, Reason} ->
-	    {error, Reason}
-    end,
+	case leveldb:read_range(DB, Options, ReadOptions,
+				{DbStartKey, DbEndKey}, Limit) of
+	    {ok, KVL} ->
+		{ok, format_kvl(Type, KVL, KeyDef, ColumnsDef, DataModel)};
+	    {error, Reason} ->
+		{error, Reason}
+	end,
     {reply, Reply, State};
-handle_call(get_key_columns_def, _From, State = #state{key = KeyDef, columns = ColumnsDef}) ->
-    Reply = {ok, KeyDef, ColumnsDef},
+handle_call({read_range_n, StartKey, N, Type}, _From,
+	     State = #state{db_ref = DB,
+			    readoptions = ReadOptions,
+			    key = KeyDef,
+			    columns = ColumnsDef,
+			    data_model = DataModel}) when N >= 0 ->
+    
+    {ok, DbStartKey} = make_key(KeyDef, StartKey),
+    Reply =
+	case leveldb:read_range_n(DB, ReadOptions, DbStartKey, N) of
+	    {ok, KVL} ->
+		{ok, format_kvl(Type, KVL, KeyDef, ColumnsDef, DataModel)};
+	    {error, Reason} ->
+		{error, Reason}
+	end,
     {reply, Reply, State};
-handle_call(delete_db, _From, State = #state{db_ref= DB,
+handle_call(get_data_model, _From, State = #state{key = KeyDef,
+						  columns = ColumnsDef,
+						  data_model = DataModel}) ->
+    Reply = {ok, DataModel, KeyDef, ColumnsDef},
+    {reply, Reply, State};
+handle_call(delete_db, _From, State = #state{db_ref = DB,
 					     options = Options,
 					     name = Name,
 					     path = Path,
@@ -359,7 +422,7 @@ handle_call(delete_db, _From, State = #state{db_ref= DB,
     FullPath = filename:join([Path, Subdir, Name]),
     ok = leveldb:destroy_db(FullPath, Options),
     {stop, normal, ok, State#state{db_ref = undefined}};
-handle_call(recreate_shard, _From, State = #state{db_ref= DB,
+handle_call(recreate_shard, _From, State = #state{db_ref = DB,
 						  options = Options,
 						  name = Name,
 						  path = Path,
@@ -389,6 +452,13 @@ handle_call(recreate_shard, _From, State = #state{db_ref= DB,
 			    options = NewOptions,
 			    is_empty = true,
 			    options_pl = NewOptionsPL}};
+handle_call({approximate_sizes, Ranges}, _From, #state{db_ref = DB} = State) ->
+    {ok, Sizes} = leveldb:approximate_sizes(DB, Ranges),
+    {reply, {ok, Sizes}, State};
+handle_call(approximate_size, _From, #state{db_ref = DB,
+					    readoptions = ReadOptions} = State) ->
+    {ok, Size} = leveldb:approximate_size(DB, ReadOptions),
+    {reply, {ok, Size}, State};
 handle_call(_Request, _From, State) ->
     Reply = error_logger:warning_msg("unkown request:~p, from: ~p, gen_server state: ~p",
                                      [_Request, _From, State]),
@@ -485,28 +555,28 @@ build_leveldb_writeoptions(OptionsPL) ->
 %% Make key according to table configuration and provided values.
 %% @end
 %%--------------------------------------------------------------------
--spec make_key(Key::[atom()],
-               WKey::[{atom(), term()}]) -> {ok, DbKey::binary} |
-                                            {error, Reason::term()}.
-make_key(Key, WKey) ->
+-spec make_key(KeyDef :: [atom()],
+               Key :: [{atom(), term()}]) ->
+    {ok, DbKey :: binary} | {error, Reason :: term()}.
+make_key(KeyDef, Key) ->
+    KeyDefLen = length(KeyDef),
     KeyLen = length(Key),
-    WKeyLen = length(WKey),
-    if KeyLen == WKeyLen ->
-	make_key(Key, WKey, []);
+    if KeyDefLen == KeyLen ->
+	make_key(KeyDef, Key, []);
        true ->
         {error, "key_mismatch"}
     end.
 
--spec make_key(Key::[atom()],
-               WKey::[{atom(), term()}],
-               DBKetList::[term()]) -> ok | {error, Reason::term()}.
+-spec make_key(KeyDef :: [atom()],
+               Key :: [{atom(), term()}],
+               DBKetList :: [term()]) -> ok | {error, Reason::term()}.
 make_key([], _, DbKeyList) ->
     Tuple = list_to_tuple(lists:reverse(DbKeyList)),
     {ok, term_to_binary(Tuple)};
-make_key([Field|Rest], WKey, DbKeyList) ->
-    case lists:keyfind(Field, 1, WKey) of
+make_key([Field | Rest], Key, DbKeyList) ->
+    case lists:keyfind(Field, 1, Key) of
         {_, Value} ->
-            make_key(Rest, WKey, [Value|DbKeyList]);
+            make_key(Rest, Key, [Value | DbKeyList]);
         false ->
             {error, "key_mismatch"}
     end.
@@ -516,80 +586,91 @@ make_key([Field|Rest], WKey, DbKeyList) ->
 %% Make app key according to table configuration and provided values.
 %% @end
 %%--------------------------------------------------------------------
--spec make_app_key(KeyDef::[atom()],
-		   DbKey::tuple()) -> {ok, AppKey::key()} |
-				      {error, Reason::term()}.
+-spec make_app_key(KeyDef :: [atom()],
+		   DbKey :: binary()) ->
+    AppKey :: key().
 make_app_key(KeyDef, DbKey)->
-    make_app_key(KeyDef, tuple_to_list(DbKey), []).
-
--spec make_app_key(KeyDef::[atom()],
-                   DbKey::tuple(),
-		   Acc :: [{atom, term()}]) -> {ok, AppKey::key()} |
-		                               {error, Reason::term()}.
-make_app_key([], [], Acc)->
-    lists:reverse(Acc);
-make_app_key([Field | KeyDef], [KeyVal | DbKey], Acc)->
-    make_app_key(KeyDef, DbKey, [{Field, KeyVal} | Acc]).
-
+    lists:zip(KeyDef, tuple_to_list(binary_to_term(DbKey))).
 
 %%--------------------------------------------------------------------
 %% @doc
 %% Make value according to table configuration and provided values.
 %% @end
 %%--------------------------------------------------------------------
--spec make_value(DataModel::data_model(),
-                 Columns::[atom()],
-                 WColumns::[{atom(), term()}])-> {ok, DbValue::binary()} |
-                                                 {error, Reason::term()}.
-make_value(binary, _, [Data]) ->
-    {ok, term_to_binary(Data)};
-make_value(binary, _, _) ->
-    {error, "invalid_value"};
-make_value(array, Columns, WColumns) ->
-    make_array_value(Columns, WColumns);
-make_value(hash, Columns, WColumns) ->
-    make_hash_value(Columns, WColumns).
+-spec make_value(DataModel :: data_model(),
+                 Columnsdef :: [atom()],
+                 Columns :: [{atom(), term()}])->
+    {ok, DbValue :: binary()} | {error, Reason :: term()}.
+make_value(binary, _, Columns) ->
+    {ok, term_to_binary(Columns)};
+make_value(array, ColumnsDef, Columns) ->
+    make_array_value(ColumnsDef, Columns);
+make_value(hash, ColumnsDef, Columns) ->
+    make_hash_value(ColumnsDef, Columns).
 
--spec make_array_value(Columns::[atom()],
-                       WColumns::[{atom(), term()}]) -> 
-                            {ok, DbValue::binary()} | 
-                            {error, Reason::term()}.
-make_array_value(Columns, WColumns) ->
+-spec make_array_value(ColumnsDef :: [atom()],
+                       Columns :: [{atom(), term()}]) ->
+    {ok, DbValue :: binary()} | {error, Reason :: term()}.
+make_array_value(ColumnsDef, Columns) ->
+    ColDefLen = length(ColumnsDef),
     ColLen = length(Columns),
-    WColLen = length(WColumns),
-    if ColLen == WColLen ->
-        make_array_value(Columns, WColumns, []);
+    if ColDefLen == ColLen ->
+        make_array_value(ColumnsDef, Columns, []);
        true ->
         {error, "column_mismatch"}
     end.
 
--spec make_array_value(Columns::[atom()],
-                       WColumns::[{atom(), term()}],
-                       DbValueList::[term()]) -> {ok, DbValue::binary()} |
-                                                {error, Reason::term()}.
-make_array_value([], _WColumns, DbValueList) ->
+-spec make_array_value(ColumnsDef :: [atom()],
+                       Columns :: [{atom(), term()}],
+                       DbValueList :: [term()]) ->
+    {ok, DbValue :: binary()} | {error, Reason :: term()}.
+make_array_value([], _Columns, DbValueList) ->
     Tuple = list_to_tuple(lists:reverse(DbValueList)),
     {ok, term_to_binary(Tuple)};
-make_array_value([Field|Rest], WColumns, DbValueList) ->
-    case lists:keyfind(Field, 1, WColumns) of
+make_array_value([Field|Rest], Columns, DbValueList) ->
+    case lists:keyfind(Field, 1, Columns) of
         {_, Value} ->
-            make_array_value(Rest, WColumns, [Value|DbValueList]);
+            make_array_value(Rest, Columns, [Value|DbValueList]);
         false ->
             {error, "column_mismatch"}
     end.
 
 
--spec make_hash_value(Columns::[atom()],
-                      WColumns::[{atom(), term()}]) -> 
-                            {ok, DbValue::binary()} | 
-                            {error, Reason::term()}.
-make_hash_value(_Columns, WColumns) ->
-    Map = maps:from_list(WColumns),
+-spec make_hash_value(ColumnsDef :: [atom()],
+                      Columns :: [{atom(), term()}]) ->
+    {ok, DbValue :: binary()} | {error, Reason :: term()}.
+make_hash_value(_ColumnsDef, Columns) ->
+    Map = maps:from_list(Columns),
     {ok, term_to_binary(Map)}.
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Make application value according to table configuration and
+%% columns definition values.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_app_value(DataModel :: data_model(),
+		     ColumnsDef :: [atom()],
+		     DBValue :: binary()) ->
+    Columns :: [term()].
+make_app_value(DataModel, ColumnsDef, DBValue) ->
+    format_app_value(DataModel, ColumnsDef, binary_to_term(DBValue)).
+
+-spec format_app_value(DataModel :: data_model(),
+		       ColumnsDef :: [atom()],
+		       Value :: term()) ->
+    Columns :: [{atom(), term()}].
+format_app_value(binary, _, Columns) ->
+    Columns;
+format_app_value(array, ColumnsDef, Value) ->
+    Columns = tuple_to_list(Value),
+    lists:zip(ColumnsDef, Columns);
+format_app_value(hash, _, Value) ->
+    maps:to_list(Value).
+
 -spec make_indexes(Indexes::[atom()],
-                   Columns::[atom()] ) -> {ok, DbIndexes::[{atom(),term()}]} |
-                                          {error, Reason::term()}.
+                   Columns::[atom()] ) ->
+    {ok, DbIndexes::[{atom(),term()}]} | {error, Reason::term()}.
 make_indexes([],_) ->
     {ok, []};
 make_indexes(_, _)->
@@ -659,3 +740,16 @@ delete_enterdb_ldb_resource(Name) ->
         {aborted, Reason} ->
            {error, {aborted, Reason}}
     end.
+
+-spec format_kvl(Type :: binary | term, KVL :: [kvp()],
+		 KeyDef :: [atom()],
+		 ColumnsDef ::[atom()],
+		 DataModel :: atom()) -> [kvp()].
+format_kvl(binary, KVL, _KeyDef, _ColumnsDef, _DataModel) ->
+    KVL;
+format_kvl(term, KVL, KeyDef, ColumnsDef, DataModel) ->
+    [begin
+	K = make_app_key(KeyDef, BK),
+	V = make_app_value(DataModel, ColumnsDef, BV),
+	{K, V}
+     end || {BK, BV} <- KVL].

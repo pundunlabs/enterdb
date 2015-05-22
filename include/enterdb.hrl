@@ -28,7 +28,7 @@
 		      pos_integer(),
 		      pos_integer()}.
 
--record(enterdb_shard, {name :: atom(),
+-record(enterdb_shard, {name :: string(),
 			subdir :: string()}).
 
 -record(enterdb_table, {name :: string(),
@@ -40,6 +40,10 @@
                         shards :: [#enterdb_shard{}]
                        }).
 
--record(enterdb_ldb_resource, {name :: atom(),
+-record(enterdb_ldb_resource, {name :: string(),
 			       resource :: binary()
 			      }).
+
+-record(enterdb_it_resource, {name :: string(),
+			      resource :: binary()
+			     }).

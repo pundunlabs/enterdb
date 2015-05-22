@@ -15,7 +15,9 @@
          open_leveldb_db/1,
 	 close_leveldb_db/1,
 	 delete_leveldb_db/1,
-	 read_range/3]).
+	 read_range/3,
+	 read_range_n/3,
+	 approximate_size/2]).
 
 -include("enterdb.hrl").
 -include("gb_log.hrl").
@@ -378,12 +380,14 @@ delete_hash_ring(Name) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Reads a Range of Keys from table with name Name and returns mac Limit items
+%% Reads a Range of Keys from table with name Name and returns max
+%% Limit items.
 %% @end
 %%--------------------------------------------------------------------
 -spec read_range(Name :: string(),
 		 Range :: key_range(),
-		 Limit :: pos_integer()) -> {ok, [kvp()]} | {error, Reason::term()}.
+		 Limit :: pos_integer()) ->
+    {ok, [kvp()]} | {error, Reason::term()}.
 read_range(Name, Range, Limit) ->
     case gb_hash:get_nodes(Name) of
 	undefined ->
@@ -401,17 +405,19 @@ read_range(Name, Range, Limit) ->
 	    read_range_on_shards(Name, Shards, Range, Limit)
     end.
 
+
 -spec read_range_on_shards(Name :: string(),
-			   Shards :: [term],
+			   Shards :: [string()],
 			   Range :: key_range(),
-			   Limit :: pos_integer()) -> {ok, [kvp()]} | {error, Reason::term()}.
+			   Limit :: pos_integer()) ->
+    {ok, [kvp()]} | {error, Reason :: term()}.
 read_range_on_shards(Name, Shards, Range, Limit)->
     KVLs =
 	[begin
 	    {ok, KVL} = enterdb_ldb_worker:read_range_binary(Shard, Range, Limit),
 	    KVL
 	 end || Shard <- Shards],
-    {ok , MergedKVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
+    {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
     {ok, AnyShard} = gb_hash:find_node(Name, Range),
     enterdb_ldb_worker:make_app_kvp(AnyShard, MergedKVL).
 
@@ -431,3 +437,96 @@ get_level_range_acc(StartLevel, [StartLevel | _Levels], Acc) ->
     [StartLevel|Acc];
 get_level_range_acc(StartLevel, [AnyLevel | Levels], Acc) ->
     get_level_range_acc(StartLevel, Levels, [AnyLevel | Acc]).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Reads a N number of Keys from table with name Name starting from
+%% StartKey and returns.
+%% @end
+%%--------------------------------------------------------------------
+-spec read_range_n(Name :: string(),
+		   StartKey :: key(),
+		   N :: pos_integer()) ->
+    {ok, [kvp()]} | {error, Reason::term()}.
+read_range_n(Name, StartKey, N) ->
+    case gb_hash:get_nodes(Name) of
+	undefined ->
+	    {error, "no_table"};
+	{ok, {level, Levels}} ->
+	    {ok, {level, StartLevel}} = gb_hash:find_node(Name, StartKey),
+	    OrderedLevels = order_levels(StartLevel, Levels),
+	    read_range_n_on_levels(OrderedLevels, StartKey, N, []);
+	{ok, Shards} ->
+	    read_range_n_on_shards(Shards, StartKey, N)
+    end.
+
+-spec read_range_n_on_levels(Levels :: [string()],
+			     StartKey :: key(),
+			     N :: pos_integer(),
+			     Acc :: [kvp()]) ->
+    {ok, [kvp()]} | {error, Reason :: term()}.
+read_range_n_on_levels([], _StartKey, _N, Acc) ->
+    {ok, Acc};
+read_range_n_on_levels([Level|Rest], StartKey, N, Acc) ->
+    {ok, Shards} = gb_hash:get_nodes(Level),
+    {ok, KVL} = read_range_n_on_shards(Shards, StartKey, N),
+    Len = length(KVL),
+    if Len =< N ->
+	    read_range_n_on_levels(Rest, StartKey, N-Len,
+				   lists:append(Acc, KVL));
+	true ->
+	    AddKVL = lists:sublist(KVL, N),
+	    {ok, lists:append(Acc, AddKVL)}
+    end.
+
+-spec read_range_n_on_shards(Shards :: [string()],
+			     StartKey :: key(),
+			     N :: pos_integer()) ->
+    {ok, [kvp()]} | {error, Reason :: term()}.
+read_range_n_on_shards(Shards, StartKey, N) ->
+    %%To be more efficient we can read less number of records from each shard.
+    %%NofShards = length(Shards),
+    %%Part = (N div NofShards) + 1,
+    %%To be safe, currently we try to read N from each shard.
+    KVLs =
+	[begin
+	    {ok, KVL} = enterdb_ldb_worker:read_range_n_binary(Shard, StartKey, N),
+	    KVL
+	 end || Shard <- Shards],
+    {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
+    N_KVP = lists:sublist(MergedKVL, N),
+    enterdb_ldb_worker:make_app_kvp(hd(Shards), N_KVP).
+
+-spec order_levels(StartLevel :: string(), Levels :: [string()]) ->
+    OrderedLevels :: [string()].
+order_levels(StartLevel, [StartLevel|Rest]) ->
+     lists:reverse(lists:append(Rest,[StartLevel]));
+order_levels(StartLevel, [Level|Rest]) ->
+     order_levels(StartLevel, lists:append(Rest,[Level])).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Get byte size from each shard of a table and return the sum.
+%% @end
+%%--------------------------------------------------------------------
+-spec approximate_size(Backend :: atom(), Shards :: [#enterdb_shard{}]) ->
+    {ok, Size :: pos_integer()} | {error, Reason :: term()}.
+approximate_size(leveldb, Shards) ->
+    Sizes = [begin
+		{ok, Size} = enterdb_ldb_worker:approximate_size(Shard),
+		Size
+	     end || #enterdb_shard{name = Shard} <- Shards],
+    ?debug("Sizes of all shards: ~p", [Sizes]),
+    sum_up_sizes(Sizes, 0);
+approximate_size(Backend, _) ->
+    ?debug("Size approximation is not supported for backend: ~p", [Backend]),
+    {error, "backend_not_supported"}.
+
+-spec sum_up_sizes(Sizes :: [pos_integer()], Sum :: pos_integer()) ->
+    {ok, Size :: pos_integer()}.
+sum_up_sizes([], Sum) ->
+    {ok, Sum};
+sum_up_sizes([Int | Rest], Sum) when is_integer(Int) ->
+    sum_up_sizes(Rest, Sum + Int);
+sum_up_sizes([_ | Rest], Sum) ->
+    sum_up_sizes(Rest, Sum).

@@ -186,11 +186,7 @@ handle_cast({wrap_level, Mod, Name, Key, TimeMargin}, State) ->
 		    [#wrapper_registry{wrapped_ts = Wrapped_Ts,
 			               wrapped_level = Level}] ->
 			TDiff = timer:now_diff(Ts, Wrapped_Ts) / 1000000,
-			if TDiff < TimeMargin ->
-			    false;
-			   true ->
-			    true
-			end;
+			(TDiff > TimeMargin);
 		    _ ->
 			true
 		end,

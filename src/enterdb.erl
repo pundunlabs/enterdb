@@ -18,7 +18,9 @@
          delete/2,
 	 read_range/3,
 	 delete_table/1,
-	 write_to_disk/3]).
+	 write_to_disk/3,
+	 read_range_n/3,
+	 table_info/1]).
 
 -export([load_test/0,
 	 write_loop/1]).
@@ -299,6 +301,19 @@ read_range(Name, Range, Limit) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Reads N nuber of Keys from table with name Name starting form
+%% StartKey.
+%% @end
+%%--------------------------------------------------------------------
+-spec read_range_n(Name :: string(),
+		   StartKey :: key(),
+		   N :: pos_integer()) ->
+    {ok, [kvp()]} | {error, Reason :: term()}.
+read_range_n(Name, StartKey, N) ->
+    enterdb_lib:read_range_n(Name, StartKey, N).
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Delete a database table completely. Ensures the table is closed before deletion.
 %% @end
 %%--------------------------------------------------------------------
@@ -311,6 +326,36 @@ delete_table(Name) ->
 	    {error, Reason};
 	{aborted, Reason} ->
             {error, Reason}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Get information on table's configuration and size of the stored.
+%% data in the table
+%% @end
+%%--------------------------------------------------------------------
+-spec table_info(Name :: string()) ->
+    [{atom(), term()}] | {error, Reason :: term()}.
+table_info(Name) ->
+    case mnesia:dirty_read(enterdb_table, Name) of
+	[#enterdb_table{name = Name,
+			path = Path,
+			key = KeyDefinition,
+			columns = ColumnsDefinition,
+			indexes = IndexesDefinition,
+			options = Options,
+			shards = Shards
+			}] ->
+	    Backend = proplists:get_value(backend, Options),
+	    {ok, Size} = enterdb_lib:approximate_size(Backend, Shards),
+	    [{name, Name},
+	     {path, Path},
+	     {key, KeyDefinition},
+	     {columns, ColumnsDefinition},
+	     {indexes, IndexesDefinition},
+	     {size, Size} | Options];
+	[] ->
+	    {error, "no_table"}
     end.
 
 -spec atomic_delete_table(Name :: string()) -> ok | {error, Reason :: term()}.
