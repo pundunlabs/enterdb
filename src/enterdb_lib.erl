@@ -229,7 +229,7 @@ create_table(#enterdb_table{options = Opts} = EnterdbTable)->
         ets_leveldb ->
             %% init mem_wrp table
 	    Res = enterdb_mem:init_tab(EnterdbTable),
-	    ?debug("enterdb_mem:init_tab(~p) returned ~p", [EnterdbTable, Res]),
+	    ?debug("enterdb_mem:init_tab returned ~p", [Res]),
 
 	    case create_leveldb_db(EnterdbTable) of
                 ok -> write_enterdb_table(EnterdbTable);
