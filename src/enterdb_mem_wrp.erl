@@ -25,7 +25,7 @@ write_(Tab, Key, Data, TSBucket) ->
     case get_ets_table(Tab, TSBucket) of
 	{error, _} = E ->
 	    E;
-	{EtsTab, wrapping} ->
+	{_EtsTab, wrapping} ->
 	    {error, wrapping};
 	{EtsTab, _} ->
 	    ets:insert(EtsTab, {Key, Data})
@@ -51,7 +51,8 @@ read_(Tab, Key, TSBucket) ->
 
 get_value(Key, [{Key, V}], _) ->
     {ok, V};
-
+get_value(_Key, [], _) ->
+    {ok, []};
 get_value(_,_, wrapping) ->
     {error, wrapping}.
 
