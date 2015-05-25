@@ -18,7 +18,7 @@ start_link(Backend) ->
 init([leveldb]) ->
     {ok, {{simple_one_for_one, 0, 1},
           [{enterdb_ldb_worker, {enterdb_ldb_worker, start_link, []},
-            temporary, 2000, worker, [enterdb_ldb_worker]}]}}.
+            temporary, 2000, worker, [enterdb_ldb_worker]}]}};
 init([leveldb_it]) ->
     {ok, {{simple_one_for_one, 0, 1},
           [{enterdb_lit_worker, {enterdb_lit_worker, start_link, []},
