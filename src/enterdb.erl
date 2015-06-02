@@ -17,10 +17,17 @@
 	 write/3,
          delete/2,
 	 read_range/3,
+	 read_range_n/3,
 	 delete_table/1,
 	 write_to_disk/3,
-	 read_range_n/3,
-	 table_info/1]).
+	 table_info/1,
+	 table_info/2,
+	 first/1,
+	 last/1,
+	 seek/2,
+	 next/1,
+	 prev/1
+	 ]).
 
 -export([load_test/0,
 	 write_loop/1]).
@@ -68,7 +75,7 @@ create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
 					       {columns, ColumnsDef},
 					       {indexes,IndexesDef},
 					       {options, Options}]) of
-	{ok, EnterdbTable} ->
+	{ok, EnterdbTab} ->
 	    case enterdb_server:get_state_params() of
 		{ok, PropList}  ->
 		    DB_PATH	= proplists:get_value(db_path, PropList),
@@ -82,8 +89,10 @@ create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
 							  NumOfShards,
 							  Wrapped,
 							  MemWrapped),
-		    NewEDBT = EnterdbTable#enterdb_table{path = DB_PATH,
-							 shards = Shards},
+		    Comp = proplists:get_value(comparator, Options, descending),
+		    NewEDBT = EnterdbTab#enterdb_table{comparator = Comp,
+						       path = DB_PATH,
+						       shards = Shards},
 		    enterdb_lib:create_table(NewEDBT);
 		Else ->
 		    {error, Else}
@@ -289,15 +298,16 @@ delete(Name, Key)->
 %%--------------------------------------------------------------------
 %% @doc
 %% Reads a Range of Keys from table with name Name and returns max
-%% Limit items from each local shard of the table
+%% Chunk items from each local shard of the table
 %% @end
 %%--------------------------------------------------------------------
 -spec read_range(Name :: string(),
 		 Range :: key_range(),
-		 Limit :: pos_integer()) -> {ok, [kvp()]} |
-					    {error, Reason :: term()}.
-read_range(Name, Range, Limit) ->
-    enterdb_lib:read_range(Name, Range, Limit).
+		 Chunk :: pos_integer()) ->
+    {ok, [kvp()], Cont :: complete | key()} |
+    {error, Reason :: term()}.
+read_range(Name, Range, Chunk) ->
+    enterdb_lib:read_range(Name, Range, Chunk).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -330,7 +340,7 @@ delete_table(Name) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Get information on table's configuration and size of the stored.
+%% Get information on table's configuration and size of the stored
 %% data in the table
 %% @end
 %%--------------------------------------------------------------------
@@ -343,6 +353,7 @@ table_info(Name) ->
 			key = KeyDefinition,
 			columns = ColumnsDefinition,
 			indexes = IndexesDefinition,
+			comparator = Comp,
 			options = Options,
 			shards = Shards
 			}] ->
@@ -353,10 +364,96 @@ table_info(Name) ->
 	     {key, KeyDefinition},
 	     {columns, ColumnsDefinition},
 	     {indexes, IndexesDefinition},
+	     {comparator, Comp},
 	     {size, Size} | Options];
 	[] ->
 	    {error, "no_table"}
     end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Get information on table for given parameters.
+%% @end
+%%--------------------------------------------------------------------
+-spec table_info(Name :: string(), Parameters :: [atom()]) ->
+    [{atom(), term()}] | {error, Reason :: term()}.
+table_info(Name, Parameters) ->
+    case mnesia:dirty_read(enterdb_table, Name) of
+	[#enterdb_table{name = Name,
+			path = Path,
+			key = KeyDefinition,
+			columns = ColumnsDefinition,
+			indexes = IndexesDefinition,
+			comparator = Comp,
+			options = Options,
+			shards = Shards
+			}] ->
+	    List = [{name, Name},
+		    {path, Path},
+		    {key, KeyDefinition},
+		    {columns, ColumnsDefinition},
+		    {indexes, IndexesDefinition},
+		    {comparator, Comp},
+		    {shards, Shards} | Options],
+	    [ proplists:lookup(P, List) || P <- Parameters];
+	[] ->
+	    {error, "no_table"}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Get the first Key/Value from table that is specified by Name.
+%% @end
+%%--------------------------------------------------------------------
+-spec first(Name :: string()) ->
+    {ok, KVP :: kvp(), Ref :: pid()} |
+    {error, Reason :: invalid | term()}.
+first(Name) ->
+    enterdb_lit_worker:first(Name).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Get the last Key/Value from table that is specified by Name.
+%% @end
+%%--------------------------------------------------------------------
+-spec last(Name :: string()) ->
+    {ok, KVP :: kvp(), Ref :: pid()} |
+    {error, Reason :: invalid | term()}.
+last(Name) ->
+    enterdb_lit_worker:last(Name).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Get the sought Key/Value from table that is specified by Name.
+%% @end
+%%--------------------------------------------------------------------
+-spec seek(Name :: string(), Key :: key()) ->
+    {ok, KVP :: kvp(), Ref :: pid()} |
+    {error, Reason :: invalid | term()}.
+seek(Name, Key) ->
+    enterdb_lit_worker:seek(Name, Key).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Get the next Key/Value from table that is specified by iterator
+%% reference Ref.
+%% @end
+%%--------------------------------------------------------------------
+-spec next(Ref :: pid()) ->
+    {ok, KVP :: kvp()} | {error, Reason :: invalid | term()}.
+next(Ref) ->
+    enterdb_lit_worker:next(Ref).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Get the prevoius Key/Value from table that is specified by iterator
+%% reference Ref.
+%% @end
+%%--------------------------------------------------------------------
+-spec prev(Ref :: pid()) ->
+    {ok, KVP :: kvp()} | {error, Reason :: invalid | term()}.
+prev(Ref) ->
+    enterdb_lit_worker:prev(Ref).
 
 -spec atomic_delete_table(Name :: string()) -> ok | {error, Reason :: term()}.
 atomic_delete_table(Name) ->

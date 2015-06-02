@@ -8,7 +8,7 @@ start_link(leveldb) ->
     supervisor:start_link({local, enterdb_ldb_sup},
                           ?MODULE, [leveldb]);
 start_link(leveldb_it) ->
-    supervisor:start_link({local, enterdb_it_sup},
+    supervisor:start_link({local, enterdb_lit_sup},
                           ?MODULE, [leveldb_it]);
 start_link(Backend) ->
     error_logger:error_msg("Enterdb backend: ~p not supoorted yet.~n",

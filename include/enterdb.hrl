@@ -28,6 +28,10 @@
 		      pos_integer(),
 		      pos_integer()}.
 
+-type op() :: first | last | {seek, key()} | next | prev.
+-type it() :: binary().
+-type comparator() :: ascending | descending.
+
 -record(enterdb_shard, {name :: string(),
 			subdir :: string()}).
 
@@ -37,13 +41,10 @@
                         columns :: [atom()],
                         indexes :: [atom()],
                         options :: [table_option()],
+			comparator :: ascending | descending,
                         shards :: [#enterdb_shard{}]
                        }).
 
 -record(enterdb_ldb_resource, {name :: string(),
 			       resource :: binary()
 			      }).
-
--record(enterdb_it_resource, {name :: string(),
-			      resource :: binary()
-			     }).

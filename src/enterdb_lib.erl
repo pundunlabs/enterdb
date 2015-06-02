@@ -19,6 +19,13 @@
 	 read_range_n/3,
 	 approximate_size/2]).
 
+-export([make_db_key/2,
+	 make_db_value/3,
+	 make_db_indexes/2,
+	 make_app_key/2,
+	 make_app_value/3,
+	 make_app_kvp/4]).
+
 -include("enterdb.hrl").
 -include("gb_log.hrl").
 
@@ -264,8 +271,9 @@ write_enterdb_table(EnterdbTable) ->
 %%--------------------------------------------------------------------
 -spec create_leveldb_db(EnterdbTable :: #enterdb_table{}) ->
     ok | {error, Reason :: term()}.
-create_leveldb_db(EDBT = #enterdb_table{shards = Shards}) ->
-    create_leveldb_db([{comparator, 1},
+create_leveldb_db(EDBT = #enterdb_table{comparator = Comp,
+					shards = Shards}) ->
+    create_leveldb_db([{comparator, Comp},
 		       {create_if_missing, true},
                        {error_if_exists, true}], EDBT, Shards).
 
@@ -293,8 +301,9 @@ create_leveldb_db(Options, EDBT,
 %% @end
 %%--------------------------------------------------------------------
 -spec open_leveldb_db(Table :: #enterdb_table{})-> ok | {error, Reason :: term()}.
-open_leveldb_db(EDBT = #enterdb_table{shards = Shards}) ->
-    Options = [{comparator, 1},
+open_leveldb_db(EDBT = #enterdb_table{comparator = Comp,
+				      shards = Shards}) ->
+    Options = [{comparator, Comp},
 	       {create_if_missing, false},
                {error_if_exists, false}],
     open_leveldb_db(Options, EDBT, Shards).
@@ -381,14 +390,15 @@ delete_hash_ring(Name) ->
 %%--------------------------------------------------------------------
 %% @doc
 %% Reads a Range of Keys from table with name Name and returns max
-%% Limit items.
+%% Chunk items.
 %% @end
 %%--------------------------------------------------------------------
 -spec read_range(Name :: string(),
 		 Range :: key_range(),
-		 Limit :: pos_integer()) ->
-    {ok, [kvp()]} | {error, Reason::term()}.
-read_range(Name, Range, Limit) ->
+		 Chunk :: pos_integer()) ->
+    {ok, [kvp()], Cont :: complete | key()} |
+    {error, Reason::term()}.
+read_range(Name, Range, Chunk) ->
     case gb_hash:get_nodes(Name) of
 	undefined ->
 	    {error, "no_table"};
@@ -399,27 +409,74 @@ read_range(Name, Range, Limit) ->
 	    LevelRange = get_level_range(StartLevel, EndLevel, Levels),
 	    LevelsOfShards = [begin {ok, Ss} = gb_hash:get_nodes(L), Ss end
 				|| L <- LevelRange],
-	    RangeResults = [read_range_on_shards(hd(LevelRange), LSs, Range, Limit) || LSs <- LevelsOfShards],
+	    RangeResults = [read_range_on_shards(hd(LevelRange), LSs, Range, Chunk) || LSs <- LevelsOfShards],
 	    lists:append([L || {ok, L} <- RangeResults]);
 	{ok, Shards} ->
-	    read_range_on_shards(Name, Shards, Range, Limit)
+	    read_range_on_shards(Name, Shards, Range, Chunk)
     end.
 
 
 -spec read_range_on_shards(Name :: string(),
 			   Shards :: [string()],
 			   Range :: key_range(),
-			   Limit :: pos_integer()) ->
-    {ok, [kvp()]} | {error, Reason :: term()}.
-read_range_on_shards(Name, Shards, Range, Limit)->
-    KVLs =
+			   Chunk :: pos_integer()) ->
+    {ok, [kvp()], Cont :: complete | key()} | {error, Reason :: term()}.
+read_range_on_shards(Name, Shards, Range, Chunk)->
+    KVLs_and_Conts =
 	[begin
-	    {ok, KVL} = enterdb_ldb_worker:read_range_binary(Shard, Range, Limit),
-	    KVL
+	    {ok, KVL, Cont} = enterdb_ldb_worker:read_range_binary(Shard, Range, Chunk),
+	    {KVL, Cont}
 	 end || Shard <- Shards],
-    {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
-    {ok, AnyShard} = gb_hash:find_node(Name, Range),
-    enterdb_ldb_worker:make_app_kvp(AnyShard, MergedKVL).
+    {KVLs, Conts} = lists:unzip(KVLs_and_Conts),
+
+    Args = enterdb:table_info(Name,[data_model,key,columns,comparator]),
+    DataModel = proplists:get_value(data_model, Args),
+    KeyDef = proplists:get_value(key, Args),
+    ColumnsDef = proplists:get_value(columns, Args),
+    Comparator = proplists:get_value(comparator, Args),
+
+    ContKeys = [K || K <- Conts, K =/= complete],
+    {ok, KVL, ContKey} = merge_and_cut_kvls(KeyDef, Comparator,
+					    KVLs, ContKeys),
+
+    {ok, ResultKVL} = make_app_kvp(DataModel, KeyDef, ColumnsDef, KVL),
+    {ok, ResultKVL, ContKey}.
+
+-spec merge_and_cut_kvls(KeyDef :: [atom()],
+			 Comparator :: comparator(),
+			 KVLs :: [[kvp()]],
+			 ContKeys :: [binary()]) ->
+    {ok, KVL :: [kvp()]}.
+merge_and_cut_kvls(_KeyDef, _Comparator, KVLs, []) ->
+   {ok, KVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
+   {ok, KVL, complete};
+merge_and_cut_kvls(KeyDef, Comparator, KVLs, ContKeys) ->
+    {Cont, _} = ContKVP = reduce_cont(Comparator, ContKeys),
+    {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls( [[ContKVP]|KVLs] ),
+    ContKey =  make_app_key(KeyDef, Cont),
+    {ok, cut_kvl_at(Cont, MergedKVL), ContKey}.
+
+-spec reduce_cont(Comparator :: comparator(),
+		  Conts :: [binary()]) -> key().
+reduce_cont(Comparator, ContKeys) ->
+    Dir = comparator_to_dir(Comparator),
+    SortableKVPs = [{K, <<>>} || K <- ContKeys],
+    {ok, Sorted} = leveldb_utils:sort_kvl( Dir, SortableKVPs ),
+    hd(Sorted).
+
+-spec cut_kvl_at(Cont :: binary(), KVL :: [kvp()]) ->
+    CutKVL :: [kvp()].
+cut_kvl_at(Bin, KVL) ->
+    cut_kvl_at(Bin, KVL, []).
+
+-spec cut_kvl_at(Cont :: binary(), KVL :: [kvp()], Acc :: [kvp()]) ->
+    CutKVL :: [kvp()].
+cut_kvl_at(_Bin, [], Acc) ->
+    lists:reverse(Acc);
+cut_kvl_at(Bin, [{Bin, _} | _], Acc) ->
+    lists:reverse(Acc);
+cut_kvl_at(Bin, [KVP | Rest], Acc) ->
+    cut_kvl_at(Bin, Rest, [KVP | Acc]).
 
 -spec get_level_range(StartLevel :: string(),
 		      EndLevel :: string(),
@@ -455,35 +512,37 @@ read_range_n(Name, StartKey, N) ->
 	{ok, {level, Levels}} ->
 	    {ok, {level, StartLevel}} = gb_hash:find_node(Name, StartKey),
 	    OrderedLevels = order_levels(StartLevel, Levels),
-	    read_range_n_on_levels(OrderedLevels, StartKey, N, []);
+	    read_range_n_on_levels(Name, OrderedLevels, StartKey, N, []);
 	{ok, Shards} ->
-	    read_range_n_on_shards(Shards, StartKey, N)
+	    read_range_n_on_shards(Name, Shards, StartKey, N)
     end.
 
--spec read_range_n_on_levels(Levels :: [string()],
+-spec read_range_n_on_levels(Name :: string(),
+			     Levels :: [string()],
 			     StartKey :: key(),
 			     N :: pos_integer(),
 			     Acc :: [kvp()]) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
-read_range_n_on_levels([], _StartKey, _N, Acc) ->
+read_range_n_on_levels(_Name, [], _StartKey, _N, Acc) ->
     {ok, Acc};
-read_range_n_on_levels([Level|Rest], StartKey, N, Acc) ->
+read_range_n_on_levels(Name, [Level|Rest], StartKey, N, Acc) ->
     {ok, Shards} = gb_hash:get_nodes(Level),
-    {ok, KVL} = read_range_n_on_shards(Shards, StartKey, N),
+    {ok, KVL} = read_range_n_on_shards(Name, Shards, StartKey, N),
     Len = length(KVL),
     if Len =< N ->
-	    read_range_n_on_levels(Rest, StartKey, N-Len,
+	    read_range_n_on_levels(Name, Rest, StartKey, N-Len,
 				   lists:append(Acc, KVL));
 	true ->
 	    AddKVL = lists:sublist(KVL, N),
 	    {ok, lists:append(Acc, AddKVL)}
     end.
 
--spec read_range_n_on_shards(Shards :: [string()],
+-spec read_range_n_on_shards(Name :: string(),
+			     Shards :: [string()],
 			     StartKey :: key(),
 			     N :: pos_integer()) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
-read_range_n_on_shards(Shards, StartKey, N) ->
+read_range_n_on_shards(Name, Shards, StartKey, N) ->
     %%To be more efficient we can read less number of records from each shard.
     %%NofShards = length(Shards),
     %%Part = (N div NofShards) + 1,
@@ -495,7 +554,11 @@ read_range_n_on_shards(Shards, StartKey, N) ->
 	 end || Shard <- Shards],
     {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
     N_KVP = lists:sublist(MergedKVL, N),
-    enterdb_ldb_worker:make_app_kvp(hd(Shards), N_KVP).
+    Args = enterdb:table_info(Name,[data_model,key,columns]),
+    DataModel = proplists:get_value(data_model, Args),
+    KeyDef = proplists:get_value(key, Args),
+    ColumnsDef = proplists:get_value(columns, Args),
+    make_app_kvp(DataModel, KeyDef, ColumnsDef, N_KVP).
 
 -spec order_levels(StartLevel :: string(), Levels :: [string()]) ->
     OrderedLevels :: [string()].
@@ -530,3 +593,175 @@ sum_up_sizes([Int | Rest], Sum) when is_integer(Int) ->
     sum_up_sizes(Rest, Sum + Int);
 sum_up_sizes([_ | Rest], Sum) ->
     sum_up_sizes(Rest, Sum).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Make key according to KeyDef defined in table configuration and
+%% provided values in Key.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_db_key(KeyDef :: [atom()],
+		  Key :: [{atom(), term()}]) ->
+    {ok, DbKey :: binary} | {error, Reason :: term()}.
+make_db_key(KeyDef, Key) ->
+    KeyDefLen = length(KeyDef),
+    KeyLen = length(Key),
+    if KeyDefLen == KeyLen ->
+	make_db_key(KeyDef, Key, []);
+       true ->
+        {error, "key_mismatch"}
+    end.
+
+-spec make_db_key(KeyDef :: [atom()],
+		  Key :: [{atom(), term()}],
+		  DBKetList :: [term()]) ->
+    ok | {error, Reason::term()}.
+make_db_key([], _, DbKeyList) ->
+    Tuple = list_to_tuple(lists:reverse(DbKeyList)),
+    {ok, term_to_binary(Tuple)};
+make_db_key([Field | Rest], Key, DbKeyList) ->
+    case lists:keyfind(Field, 1, Key) of
+        {_, Value} ->
+            make_db_key(Rest, Key, [Value | DbKeyList]);
+        false ->
+            {error, "key_mismatch"}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Make DB value according to DataModel and Columns Definition that is
+%% in table configuration and provided values in Columns.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_db_value(DataModel :: data_model(),
+		    Columnsdef :: [atom()],
+		    Columns :: [{atom(), term()}])->
+    {ok, DbValue :: binary()} | {error, Reason :: term()}.
+make_db_value(binary, _, Columns) ->
+    {ok, term_to_binary(Columns)};
+make_db_value(array, ColumnsDef, Columns) ->
+    make_db_array_value(ColumnsDef, Columns);
+make_db_value(hash, ColumnsDef, Columns) ->
+    make_db_hash_value(ColumnsDef, Columns).
+
+-spec make_db_array_value(ColumnsDef :: [atom()],
+			  Columns :: [{atom(), term()}]) ->
+    {ok, DbValue :: binary()} | {error, Reason :: term()}.
+make_db_array_value(ColumnsDef, Columns) ->
+    ColDefLen = length(ColumnsDef),
+    ColLen = length(Columns),
+    if ColDefLen == ColLen ->
+        make_db_array_value(ColumnsDef, Columns, []);
+       true ->
+        {error, "column_mismatch"}
+    end.
+
+-spec make_db_array_value(ColumnsDef :: [atom()],
+		          Columns :: [{atom(), term()}],
+		          DbValueList :: [term()]) ->
+    {ok, DbValue :: binary()} | {error, Reason :: term()}.
+make_db_array_value([], _Columns, DbValueList) ->
+    Tuple = list_to_tuple(lists:reverse(DbValueList)),
+    {ok, term_to_binary(Tuple)};
+make_db_array_value([Field|Rest], Columns, DbValueList) ->
+    case lists:keyfind(Field, 1, Columns) of
+        {_, Value} ->
+            make_db_array_value(Rest, Columns, [Value|DbValueList]);
+        false ->
+            {error, "column_mismatch"}
+    end.
+
+-spec make_db_hash_value(ColumnsDef :: [atom()],
+		         Columns :: [{atom(), term()}]) ->
+    {ok, DbValue :: binary()} | {error, Reason :: term()}.
+make_db_hash_value(_ColumnsDef, Columns) ->
+    Map = maps:from_list(Columns),
+    {ok, term_to_binary(Map)}.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Make DB Indexes according to Index Definitons defined in table
+%% configuration and provided Cloumns.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_db_indexes(Indexes::[atom()],
+		      Columns::[atom()] ) ->
+    {ok, DbIndexes::[{atom(),term()}]} | {error, Reason::term()}.
+make_db_indexes([],_) ->
+    {ok, []};
+make_db_indexes(_, _)->
+    {error, "not_supported_yet"}.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Make app key according to Key Definition defined in table
+%% configuration and provided value DBKey.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_app_key(KeyDef :: [atom()],
+		   DbKey :: binary()) ->
+    AppKey :: key().
+make_app_key(KeyDef, DbKey)->
+    lists:zip(KeyDef, tuple_to_list(binary_to_term(DbKey))).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Make application value according to Columns Definition defined in
+%% table configuration and DB Value.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_app_value(DataModel :: data_model(),
+		     ColumnsDef :: [atom()],
+		     DBValue :: binary()) ->
+    Columns :: [term()].
+make_app_value(DataModel, ColumnsDef, DBValue) ->
+    format_app_value(DataModel, ColumnsDef, binary_to_term(DBValue)).
+
+-spec format_app_value(DataModel :: data_model(),
+		       ColumnsDef :: [atom()],
+		       Value :: term()) ->
+    Columns :: [{atom(), term()}].
+format_app_value(binary, _, Columns) ->
+    Columns;
+format_app_value(array, ColumnsDef, Value) ->
+    Columns = tuple_to_list(Value),
+    lists:zip(ColumnsDef, Columns);
+format_app_value(hash, _, Value) ->
+    maps:to_list(Value).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Format a key/value list or key/value pair of binaries
+%% according to table's data model.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_app_kvp(DataModel :: data_model(),
+		   KeyDef :: [atom()],
+		   ColumnsDef :: [atom()],
+		   KVP :: {binary(), binary()} |
+			  [{binary(), binary()}]) ->
+    {ok, [{key(), value()}]} | {error, Reason :: term()}.
+make_app_kvp(DataModel, KeyDef, ColumnsDef, KVP) ->
+    AppKVP =
+	case KVP of
+	    [_|_] ->
+		[begin
+		    K = enterdb_lib:make_app_key(KeyDef, BK),
+		    V = enterdb_lib:make_app_value(DataModel, ColumnsDef, BV),
+		    {K, V}
+		 end || {BK, BV} <- KVP];
+	    {BinKey, BinValue} ->
+		{enterdb_lib:make_app_key(KeyDef, BinKey),
+		 enterdb_lib:make_app_value(DataModel, ColumnsDef, BinValue)};
+	    [] ->
+		[];
+	    _ ->
+		{error, {invalid_arg, KVP}}
+	end,
+    {ok, AppKVP}.
+
+-spec comparator_to_dir(Comparator :: ascending | descending) -> 0 | 1.
+comparator_to_dir(ascending) ->
+    1;
+comparator_to_dir(descending) ->
+    0.
