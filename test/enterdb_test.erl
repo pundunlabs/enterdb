@@ -2,6 +2,7 @@
 
 -export([open_table/1,
 	 delete_table/1,
+	 create_table/1,
 	 create_wrapping_table/1,
 	 create_mem_wrapping_table/1,
 	 create_mem_wrapping_table_2/1,
@@ -34,6 +35,21 @@ open_table(Name) ->
 -spec delete_table(Name :: string()) -> ok.
 delete_table(Name) ->
     enterdb:delete_table(Name).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Creates a database table which has a compound key with timestamp
+%% and imsi, and wrapping on files based on timestamp in the key.
+%% @end
+%%--------------------------------------------------------------------
+-spec create_table(Name :: string()) -> ok.
+create_table(Name) ->
+    Keys = [ts, imsi],
+    Columns = [value],
+    Indexes = [],
+    Options = [{type, leveldb},
+	       {data_model,binary}],
+    enterdb:create_table(Name, Keys, Columns, Indexes, Options).
 
 %%--------------------------------------------------------------------
 %% @doc

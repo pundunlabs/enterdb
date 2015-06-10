@@ -41,7 +41,8 @@
 	 terminate/2, code_change/3]).
 
 -export([get_state_params/0,
-	 wrap_level/4]).
+	 wrap_level/4,
+	 get_db_path/0]).
 
 -define(SERVER, ?MODULE). 
 
@@ -74,6 +75,17 @@ start_link() ->
 -spec get_state_params() -> {ok, [{Attr :: atom(), Val :: atom()}]}.
 get_state_params() ->
     gen_server:call(enterdb_server, get_state_params).
+
+-spec get_db_path() -> string().
+get_db_path() ->
+    CONF_PATH = gb_conf:get_param("enterdb.yaml", db_path),
+    _DB_PATH =
+	case CONF_PATH of
+	    [$/|_] ->
+		CONF_PATH;
+	    _ ->
+		filename:join(gb_conf_env:proddir(), CONF_PATH)
+	end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -120,23 +132,15 @@ init([]) ->
                                 erlang:system_info(schedulers)
                         end
                   end,
-    CONF_PATH = gb_conf:get_param("enterdb.yaml", db_path),
-
-    DB_PATH =
-	case CONF_PATH of
-	    [$/|_] ->
-		CONF_PATH;
-	    _ ->
-		filename:join(gb_conf_env:proddir(), CONF_PATH)
-	end,
+    DB_PATH = get_db_path(),
     ok = filelib:ensure_dir(DB_PATH),
     ?debug("DB_PATH: ~p", [DB_PATH]),
     ets:new(wrapper_registry, [protected, named_table, {keypos, 2}]),
-    case mnesia:wait_for_tables([enterdb_table], 20000) of
+    case mnesia:wait_for_tables([enterdb_table, enterdb_stab], 20000) of
             {timeout,   RemainingTabs} ->
               {stop, {no_exists,RemainingTabs}};
             ok ->
-		ok = open_tables(),
+		ok = open_shards(),
 		{ok, #state{db_path = DB_PATH,
 			    num_of_local_shards = NumOfShards}}
     end.
@@ -236,7 +240,8 @@ handle_info(_Info, State) ->
 %% @end
 %%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
-    ok.
+   ?debug("enterdb shutting down.", []),
+   ok.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -268,6 +273,19 @@ open_tables() ->
     end.
 %%--------------------------------------------------------------------
 %% @doc
+%% Open existing database table shards.
+%% @end
+%%--------------------------------------------------------------------
+-spec open_shards() -> ok | {error, Reason :: term()}.
+open_shards() ->
+    case enterdb_db:transaction(fun() -> mnesia:all_keys(enterdb_stab) end) of
+	{atomic, DBList} ->
+	    open_shards(DBList);
+	{error, Reason} ->
+	    {error, Reason}
+    end.
+%%--------------------------------------------------------------------
+%% @doc
 %% Open database tables those are specified by the given list of db names.
 %% @end
 %%--------------------------------------------------------------------
@@ -279,6 +297,22 @@ open_tables([Name | Rest]) ->
     case enterdb:open_table(Name) of
 	ok ->
 	    open_tables(Rest);
+	{error, Reason} ->
+	    {error, Reason}
+    end.
+%%--------------------------------------------------------------------
+%% @doc
+%% Open database table shards for this node
+%% @end
+%%--------------------------------------------------------------------
+-spec open_shards(ShardList :: [string()]) -> ok | {error, Reason :: term()}.
+open_shards([]) ->
+    ok;
+open_shards([Shard | Rest]) ->
+    ?debug("Opening Shard: ~p",[Shard]),
+    case enterdb_lib:open_shard(Shard) of
+	ok ->
+	    open_shards(Rest);
 	{error, Reason} ->
 	    {error, Reason}
     end.

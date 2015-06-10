@@ -59,7 +59,7 @@ init([]) ->
     SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
 
     EdbServer	    = {enterdb_server, {enterdb_server, start_link, []},
-	             permanent, 2000, worker, [enterdb_server]},
+	             permanent, 20000, worker, [enterdb_server]},
     EdbMemMgrServer = {enterdb_mem_wrp_mgr, {enterdb_mem_wrp_mgr, start_link, []},
 	             permanent, 2000, worker, [enterdb_mem_wrp_mgr]},
     EdbLDBSup    = {enterdb_ldb_sup,

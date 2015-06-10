@@ -22,11 +22,13 @@
                          {wrapped, wrapper()} |
 			 {mem_wrapped, mem_wrapper()} |
 			 {backend, backend()} |
-                         {data_model, data_model()}].
+                         {data_model, data_model()} |
+			 {shards, integer()} |
+			 {nodes, [atom()]}].
 
--type timestamp() :: {pos_integer(),
-		      pos_integer(),
-		      pos_integer()}.
+-type timestamp() :: {pos_integer(),  %% mega seconds &
+		      pos_integer(),  %% seconds &
+		      pos_integer()}. %% micro seconds since start of epoch(UNIX)
 
 -type op() :: first | last | {seek, key()} | next | prev.
 -type it() :: binary().
@@ -40,10 +42,19 @@
                         key :: [atom()],
                         columns :: [atom()],
                         indexes :: [atom()],
-                        options :: [table_option()],
 			comparator :: ascending | descending,
-                        shards :: [#enterdb_shard{}]
-                       }).
+                        type	:: atom(),
+			options :: [table_option()],
+                        shards :: []}).
+%% enterdb shard tab
+-record(enterdb_stab, {shard,
+		       name,
+		       type,
+		       key,
+		       columns,
+		       indexes,
+		       comparator,
+		       data_model}).
 
 -record(enterdb_ldb_resource, {name :: string(),
 			       resource :: binary()

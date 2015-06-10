@@ -26,7 +26,8 @@
 %%--------------------------------------------------------------------
 -spec create_tables(Nodes :: [node()]) -> ok | {error, Reason :: any()}.
 create_tables(Nodes) ->
-    [create_table(Nodes, T) || T <- [enterdb_table,
+    [create_table(Nodes, T) || T <- [enterdb_stab,
+				     enterdb_table,
 				     enterdb_ldb_resource]].
 
 %%--------------------------------------------------------------------
@@ -47,6 +48,17 @@ transaction(Fun) ->
 %%% Internal functions
 %%%===================================================================
 -spec create_table(Nodes::[node()], Name::atom()) -> ok | {error, Reason::term()}.
+create_table(Nodes, Name) when Name == enterdb_stab ->
+    TabDef = [{access_mode, read_write},
+              {attributes, record_info(fields, enterdb_stab)},
+              {disc_copies, Nodes},
+              {local_content, true}, %% data is local only to this node
+	      {load_order, 49},
+              {record_name, Name},
+              {type, set}
+             ],
+    mnesia:create_table(Name, TabDef);
+
 create_table(Nodes, Name) when Name == enterdb_table->
     TabDef = [{access_mode, read_write},
               {attributes, record_info(fields, enterdb_table)},

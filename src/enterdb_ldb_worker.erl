@@ -48,7 +48,7 @@
 		data_model,
 		path,
 		subdir,
-		tab_name,
+		shard_name,
 		options_pl}).
 
 %%%===================================================================
@@ -219,27 +219,23 @@ get_iterator(Shard) ->
 init(Args) ->
     Name = proplists:get_value(name, Args),
     Subdir = proplists:get_value(subdir, Args),
+    Path = enterdb_server:get_db_path(),
     ok = ensure_closed(Name),
  
     OptionsPL = proplists:get_value(options, Args),
     
     TabRec = proplists:get_value(tab_rec, Args),
-    #enterdb_table{name = TabName,
-		   path = Path,
-                   key = Key,
-                   columns = Columns,
-                   indexes = Indexes,
-                   options = TabOptions} = TabRec,
-
-    TimeOrdered = proplists:get_value(time_ordered, TabOptions),
-    Wrapped = proplists:get_value(wrapped, TabOptions, undefined),
-    DataModel = proplists:get_value(data_model, TabOptions),
+    #enterdb_stab{shard = ShardName,
+                  key = Key,
+		  columns = Columns,
+		  indexes = Indexes,
+		  data_model = DataModel} = TabRec,
 
     OptionsRec = build_leveldb_options(OptionsPL),
 
     case leveldb:options(OptionsRec) of
         {ok, Options} ->
-            FullPath = filename:join([Path, Subdir, Name]),
+            FullPath = filename:join([Path, Subdir, ShardName]),
             ok = filelib:ensure_dir(FullPath),
 	    case leveldb:open_db(Options, FullPath) of
                 {error, Reason} ->
@@ -262,12 +258,10 @@ init(Args) ->
                                 indexes = Indexes,
                                 %%TODO: Add leveldb:is_empty(DB) to check. Use iterator. 
 				is_empty = true,
-				time_ordered = TimeOrdered,
-                                wrapped = Wrapped,
 				data_model = DataModel,
                                 path = Path,
 				subdir = Subdir,
-				tab_name = TabName,
+				shard_name = ShardName,
 				options_pl = OptionsPL}}
             end;
         {error, Reason} ->
@@ -288,104 +282,39 @@ init(Args) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call({read, Key}, _From,
+handle_call({read, DBKey}, _From,
             State = #state{db_ref = DB,
-                           readoptions = ReadOptions,
-                           key = KeyDef,
-			   columns = ColumnsDef,
-			   data_model = DataModel}) ->
-    Reply = 
-	case enterdb_lib:make_db_key(KeyDef, Key) of
-	    {ok, DbKey} ->
-		case leveldb:get(DB, ReadOptions, DbKey) of
-		    {ok, BinData} ->
-			{ok, enterdb_lib:make_app_value(DataModel, ColumnsDef, BinData)};
-		    {error, Reason} ->
-			{error, Reason}
-		end;
-	    {error, Reason} ->
-		{error, Reason}
-	end,
+                           readoptions = ReadOptions}) ->
+    Reply = leveldb:get(DB, ReadOptions, DBKey),
     {reply, Reply, State};
 handle_call({write, Key, Columns}, From,
 	    State = #state{is_empty = true,
 			   wrapped = {_, TimeMargin},
-			   tab_name = TabName}) ->
-    ok = enterdb_server:wrap_level(?MODULE, TabName, Key, TimeMargin),
+			    shard_name = ShardName}) ->
+    ok = enterdb_server:wrap_level(?MODULE, ShardName, Key, TimeMargin),
     handle_call({write, Key, Columns}, From,
 		State#state{is_empty = false});
-handle_call({write, Key, Columns}, _From,
-            State = #state{db_ref = DB,
-                           writeoptions = WriteOptions,
-                           key = KeyDef,
-                           columns = ColumnsDef,
-                           indexes = IndexesDef,
-                           time_ordered = _TimeOrdered,
-                           data_model = DataModel}) ->
-    Reply = 
-    case enterdb_lib:make_db_key(KeyDef, Key) of
-        {ok, DbKey} ->
-            case enterdb_lib:make_db_value(DataModel, ColumnsDef, Columns) of
-                {ok, DbValue} ->
-                    case enterdb_lib:make_db_indexes(IndexesDef, ColumnsDef) of
-                        {ok, DbIndexes} ->
-                            leveldb:put(DB, WriteOptions, DbKey, DbValue);
-                        {error, Reason} ->
-                            {error, Reason}
-                    end;
-                {error, Reason} ->
-                    {error, Reason}
-            end;
-        {error, Reason} ->
-            {error, Reason}
-    end,
+handle_call({write, Key, Columns}, _From, State) ->
+    #state{db_ref = DB,
+           writeoptions = WriteOptions} = State,
+    Reply = leveldb:put(DB, WriteOptions, Key, Columns),
     {reply, Reply, State};
-handle_call({delete, Key}, _From,
-            State = #state{db_ref = DB,
-                           writeoptions = WriteOptions,
-                           key = KeyDef}) ->
-    Reply = 
-    case enterdb_lib:make_db_key(KeyDef, Key) of
-        {ok, DbKey} ->
-            leveldb:delete(DB, WriteOptions, DbKey);
-        {error, Reason} ->
-            {error, Reason}
-    end,
+handle_call({delete, DBKey}, _From, State) ->
+    #state{db_ref = DB,
+           writeoptions = WriteOptions,
+           key = KeyDef} = State,
+    Reply = leveldb:delete(DB, WriteOptions, DBKey),
     {reply, Reply, State};
-handle_call({read_range, {StartKey, EndKey}, Chunk, Type}, _From,
-	     State = #state{db_ref = DB,
-			    options = Options,
-			    readoptions = ReadOptions,
-			    key = KeyDef,
-			    columns = ColumnsDef,
-			    data_model = DataModel}) when Chunk > 0 ->
-    
-    {ok, DbStartKey} = enterdb_lib:make_db_key(KeyDef, StartKey),
-    {ok, DbEndKey} = enterdb_lib:make_db_key(KeyDef, EndKey),
-    Reply =
-	case leveldb:read_range(DB, Options, ReadOptions,
-				{DbStartKey, DbEndKey}, Chunk) of
-	    {ok, KVL, Cont} ->
-		{ok, format_kvl(Type, KVL, KeyDef, ColumnsDef, DataModel), Cont};
-	    {error, Reason} ->
-		{error, Reason}
-	end,
+handle_call({read_range, Keys, Chunk, Type}, _From, State) when Chunk > 0 ->
+   #state{db_ref = DB,
+	  options = Options,
+	  readoptions = ReadOptions} = State,
+    Reply = leveldb:read_range(DB, Options, ReadOptions, Keys, Chunk),
     {reply, Reply, State};
-handle_call({read_range_n, StartKey, N, Type}, _From,
-	     State = #state{db_ref = DB,
-			    readoptions = ReadOptions,
-			    key = KeyDef,
-			    columns = ColumnsDef,
-			    data_model = DataModel}) when N >= 0 ->
-    
-    {ok, DbStartKey} = enterdb_lib:make_db_key(KeyDef, StartKey),
-    Reply =
-	case leveldb:read_range_n(DB, ReadOptions, DbStartKey, N) of
-	    {ok, KVL} ->
-		{ok, format_kvl(Type, KVL, KeyDef, ColumnsDef, DataModel)};
-	    {error, Reason} ->
-		{error, Reason}
-	end,
+handle_call({read_range_n, StartKey, N, _Type}, _From, State) when N >= 0 ->
+    #state{db_ref = DB,
+	   readoptions = ReadOptions} = State,
+    Reply = leveldb:read_range_n(DB, ReadOptions, StartKey, N),
     {reply, Reply, State};
 handle_call(get_data_model, _From, State = #state{key = KeyDef,
 						  columns = ColumnsDef,
@@ -428,25 +357,26 @@ handle_call(recreate_shard, _From, State = #state{db_ref = DB,
     {ok, NewDB} = leveldb:open_db(NewOptions, FullPath),
     ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Name,
 							  resource = NewDB}),
-
     {reply, ok, State#state{db_ref = NewDB,
 			    options = NewOptions,
 			    is_empty = true,
 			    options_pl = NewOptionsPL}};
 handle_call({approximate_sizes, Ranges}, _From, #state{db_ref = DB} = State) ->
-    {ok, Sizes} = leveldb:approximate_sizes(DB, Ranges),
-    {reply, {ok, Sizes}, State};
-handle_call(approximate_size, _From, #state{db_ref = DB,
-					    readoptions = ReadOptions} = State) ->
-    {ok, Size} = leveldb:approximate_size(DB, ReadOptions),
-    {reply, {ok, Size}, State};
-handle_call(get_iterator, _From, #state{db_ref = DB,
-					readoptions = ReadOptions} = State) ->
-    Return = leveldb:iterator(DB, ReadOptions),
-    {reply, Return, State};
-handle_call(_Request, _From, State) ->
-    Reply = error_logger:warning_msg("unkown request:~p, from: ~p, gen_server state: ~p", [_Request, _From, State]),
-    {reply, Reply, State}.
+    R = leveldb:approximate_sizes(DB, Ranges),
+    {reply, R, State};
+handle_call(approximate_size, _From, State) ->
+    #state{db_ref = DB,
+	   readoptions = ReadOptions} = State,
+    R = leveldb:approximate_size(DB, ReadOptions),
+    {reply, R, State};
+handle_call(get_iterator, _From, State) ->
+    #state{db_ref = DB,
+	   readoptions = ReadOptions} = State,
+    R = leveldb:iterator(DB, ReadOptions),
+    {reply, R, State};
+handle_call(Req, From, State) ->
+    R = ?warning("unkown request:~p, from: ~p, state: ~p", [Req, From, State]),
+    {reply, R, State}.
 
 %%--------------------------------------------------------------------
 %% @private

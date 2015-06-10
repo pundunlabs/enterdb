@@ -16,9 +16,9 @@ start_link(Backend) ->
     {error, "not_supported"}.
 
 init([leveldb]) ->
-    {ok, {{simple_one_for_one, 0, 1},
+    {ok, {{simple_one_for_one, 10, 5},
           [{enterdb_ldb_worker, {enterdb_ldb_worker, start_link, []},
-            temporary, 2000, worker, [enterdb_ldb_worker]}]}};
+            transient, 2000, worker, [enterdb_ldb_worker]}]}};
 init([leveldb_it]) ->
     {ok, {{simple_one_for_one, 0, 1},
           [{enterdb_lit_worker, {enterdb_lit_worker, start_link, []},

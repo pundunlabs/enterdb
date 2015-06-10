@@ -1,5 +1,4 @@
-%%%-------------------------------------------------------------------
-%%% @author erdem aksu <erdem@sitting>
+%%%------------------------------------------------------------%%% @author erdem aksu <erdem@sitting>
 %%% @copyright (C) 2015, Mobile Arts AB
 %%% @doc
 %%% Enterdb the key/value storage.
@@ -10,7 +9,7 @@
 
 %% API
 -export([verify_create_table_args/1,
-         get_shards/4,
+         get_shards/3,
          create_table/1,
          open_leveldb_db/1,
 	 close_leveldb_db/1,
@@ -20,11 +19,24 @@
 	 approximate_size/2]).
 
 -export([make_db_key/2,
+	 make_key/2,
+	 make_key_columns/3,
 	 make_db_value/3,
 	 make_db_indexes/2,
 	 make_app_key/2,
+	 make_app_value/2,
 	 make_app_value/3,
 	 make_app_kvp/4]).
+
+-export([do_create_shard/2,
+         do_open_shard/2,
+	 open_shard/1,
+	 create_leveldb_shard/2,
+	 open_leveldb_shard/2,
+	 close_leveldb_shard/1,
+	 write_enterdb_table/1,
+	 get_details/1,
+	 get_table_options/1]).
 
 -include("enterdb.hrl").
 -include("gb_log.hrl").
@@ -127,6 +139,20 @@ verify_name([_Char|Rest], Acc) ->
 verify_name([], _) ->
     ok.
 
+%%-------------------------------------------------------------------
+%% @doc
+%% Get details about a shard
+%% @end
+%%-------------------------------------------------------------------
+-spec get_details(string()) -> #enterdb_stab{} | {error, Reason::term()}.
+get_details(Shard) ->
+    case mnesia:dirty_read(enterdb_stab, Shard) of
+	[ShardTab] ->
+	    ShardTab;
+	_ ->
+	    {error, no_such_table}
+    end.
+
 -spec add_index_fields_to_columns(Indexes::[atom()], Columns::[atom()])-> {ok, NewColumns::[atom()]}.
 add_index_fields_to_columns([], Columns)->
     {ok, Columns};
@@ -136,33 +162,63 @@ add_index_fields_to_columns([Elem|Rest], Columns)->
             add_index_fields_to_columns(Rest, Columns);
         fasle ->
             add_index_fields_to_columns(Rest, Columns++[Elem])
-end.
+    end.
 
 -spec verify_table_options(Options::[table_option()]) -> ok | {error, Reason::term()}.
-verify_table_options([]) ->
-    ok;
-verify_table_options([{time_ordered, Bool}|Rest]) when Bool == true;
-                                                       Bool == false ->
+verify_table_options([{time_ordered, Bool}|Rest])
+when is_boolean(Bool) ->
     verify_table_options(Rest);
-verify_table_options([{backend, Backend}|Rest]) when Backend == leveldb;
-                                                     Backend == ets_leveldb ->
+
+%% Nodes
+verify_table_options([{nodes, Nodes}|Rest])
+when is_list(Nodes) ->
     verify_table_options(Rest);
-verify_table_options([{data_model, DM}|Rest]) when DM == binary;
-                                                   DM == array;
-                                                   DM == hash ->
+
+%% Number of Shards
+verify_table_options([{shards, NumOfShards}|Rest])
+when is_integer(NumOfShards), NumOfShards > 0 ->
     verify_table_options(Rest);
-verify_table_options([{wrapped, {FileMargin, TimeMargin}}|Rest]) when is_integer( FileMargin ) andalso
-								      FileMargin > 0 andalso
-								      is_integer( TimeMargin ) andalso
-								      TimeMargin > 0 ->
-    verify_table_options(Rest);
-verify_table_options([{mem_wrapped, {BucketSpan, NumBuckets}}|Rest]) when is_integer( BucketSpan ) andalso
-									  BucketSpan > 0 andalso
-									  is_integer( NumBuckets ) andalso
-									  NumBuckets > 0 ->
-    verify_table_options(Rest);
+
+%% Table types
+verify_table_options([{type, Type}|Rest])
+    when
+	 Type =:= leveldb;
+         Type =:= ets_leveldb;
+	 Type =:= leveldb_wrapped;
+	 Type =:= ets_levedb_wrapped
+    ->
+	verify_table_options(Rest);
+
+%% Data Model
+verify_table_options([{data_model, DM}|Rest])
+    when
+	DM == binary;
+        DM == array;
+        DM == hash
+    ->
+	verify_table_options(Rest);
+
+%% Wrapping details for leveldb parts
+verify_table_options([{wrapped, {FileMargin, TimeMargin}}|Rest])
+    when
+	is_integer( FileMargin ), FileMargin > 0,
+	is_integer( TimeMargin ), TimeMargin > 0
+    ->
+	verify_table_options(Rest);
+
+%% wrapping details for ets part of wrapped db
+verify_table_options([{mem_wrapped, {BucketSpan, NumBuckets}}|Rest])
+    when
+	is_integer( BucketSpan ), BucketSpan > 0,
+	is_integer( NumBuckets ), NumBuckets > 0
+    ->
+	verify_table_options(Rest);
+%% Bad Option
 verify_table_options([Elem|_])->
-    {error, {Elem, "invalid_option"}}.
+    {error, {Elem, "invalid_option"}};
+%% All Options OK
+verify_table_options([]) ->
+    ok.
 
 -spec check_if_table_exists(Name::string()) -> ok | {error, Reason::term()}.
 check_if_table_exists(Name)->
@@ -177,80 +233,168 @@ check_if_table_exists(Name)->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Create and return list of #enterdb_shard records for local sharding.
+%% Get tables options based on shared name
+%% @end
+%%--------------------------------------------------------------------
+get_table_options(Shard) ->
+    TD = get_details(Shard),
+    case mnesia:dirty_read(enterdb_table, TD#enterdb_stab.name) of
+	[#enterdb_table{options = Options}] ->
+	    {ok, Options};
+	_ ->
+	    {error, no_table}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Allocate nodes to shard and return list of {node(), Shard}
+%% @end
+%%--------------------------------------------------------------------
+allocate_nodes(Nodes, Shards) ->
+    allocate_node(Nodes, Shards, 1, []).
+%% helper function to allocate node to shard
+allocate_node(Nodes, [Shard | R], N, Aux) ->
+    NShard = {lists:nth(N, Nodes), Shard},
+    allocate_node(Nodes, R, N+1 rem (length(Nodes)), [NShard | Aux]);
+allocate_node(_, [], _N, Aux) ->
+    lists:reverse(Aux).
+%%--------------------------------------------------------------------
+%% @doc
+%% Create and return list of #enterdb_shard records for all shards
 %% @end
 %%--------------------------------------------------------------------
 -spec get_shards(Name :: string(),
 		 NumOfShards :: pos_integer(),
-		 Wrapped :: undefined | wrapper(),
-		 MemWrapped :: undefined | mem_wrapper()) ->
-    {ok, [#enterdb_shard{}]}.
-get_shards(Name, NumOfShards, undefined, _MemWrapped) ->
+		 Nodes :: [node()]) ->  {ok, [{node(), string()}]}.
+get_shards(Name, NumOfShards, Nodes) ->
     Shards = [lists:concat([Name,"_shard",N]) ||N <- lists:seq(0, NumOfShards-1)],
     Options = [{algorithm, sha}, {strategy, uniform}],
-    gb_hash:create_ring(Name, Shards, Options),
-    EnterdbShards = [#enterdb_shard{name = ShardName,
-				    subdir = Name}
-		     || ShardName <- Shards],
-    {ok, EnterdbShards};
-get_shards(Name, NumOfShards, {FileMargin, TimeMargin}, MemWrapped) ->
-    Levels = [lists:concat([Name,"_lev",N]) ||N <- lists:seq(0, FileMargin-1)],
-    
-    LeveledShards = [ {L,[ lists:concat([L,"_shard",N])
-			    || N <- lists:seq(0, NumOfShards-1)] }
-			|| L <- Levels ],
-    TableType = get_table_type(MemWrapped),
-    gb_hash:create_ring(Name, Levels, [{algorithm, {TableType, FileMargin, TimeMargin}},
-				       {strategy, timedivision}]),
-    Options = [{algorithm, sha}, {strategy, uniform}],
-    Shards =
-	lists:foldl(fun({NameLev, Ss}, Acc) ->
-			gb_hash:create_ring(NameLev, Ss, Options),
-			Subdir =  Name++"/"++NameLev,
-			EnterdbShards =
-			    [#enterdb_shard{name = ShardName,
-					    subdir = Subdir}
-			     || ShardName <- Ss],
-			EnterdbShards ++ Acc
-		    end, [], LeveledShards),
-    {ok, Shards}.
-
-get_table_type(undefined) ->
-    tda;
-get_table_type({_,_}) ->
-    mem_tda.
+    AllocatedShards = allocate_nodes(Nodes, Shards),
+    %% TODO: move creation of ring to application also handling distribution
+    gb_hash:create_ring(Name, AllocatedShards, Options),
+    {ok, AllocatedShards}.
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Create table according to table specification
+%% Call create table (shard) for each shard
 %% @end
 %%--------------------------------------------------------------------
 -spec create_table(EnterdbTable::#enterdb_table{}) -> ok | {error, Reason::term()}. 
-create_table(#enterdb_table{options = Opts} = EnterdbTable)->
-    case proplists:get_value(backend, Opts) of
-        leveldb ->
-            case create_leveldb_db(EnterdbTable) of
-                ok -> write_enterdb_table(EnterdbTable);
-                {error, Reason} ->
-                    ?debug("Could not create leveldb database, error: ~p~n", [Reason]),
-                    {error, Reason}
-            end;
-        ets_leveldb ->
-            %% init mem_wrp table
-	    Res = enterdb_mem:init_tab(EnterdbTable),
-	    ?debug("enterdb_mem:init_tab returned ~p", [Res]),
+create_table(#enterdb_table{shards = Shards} = EnterdbTable)->
+     ShardRes =
+	[ rpc:call(Node, ?MODULE, do_create_shard, [Shard, EnterdbTable])
+	    || {Node, Shard} <- Shards ],
+    case lists:usort(ShardRes) of
+	[ok] -> %% all shards was created, lets write enterdb_table
+	    SchemaRes =
+		[ rpc:call(Node, ?MODULE, write_enterdb_table, [EnterdbTable])
+		    || Node <- lists:usort([Node || {Node, _} <- Shards])],
+		%% TODO: do error handling (rollback and such)
+		lists:usort(SchemaRes);
 
-	    case create_leveldb_db(EnterdbTable) of
-                ok -> write_enterdb_table(EnterdbTable);
-                {error, Reason} ->
-                    ?debug("Could not create leveldb database, error: ~p~n", [Reason]),
-                    {error, Reason}
-            end;
-        Else ->
-	    ?debug("Could not create ~p database, error: not_supported yet.~n", [Else]),
-            {error, "no_supported_backend"}
+	[R] -> %% all shards replied the same
+	    R;
+	Error ->
+	    {error, Error}
     end.
 
+do_create_shard(Shard, EDBT) ->
+    Options = EDBT#enterdb_table.options,
+    DataModel = proplists:get_value(data_model, Options),
+    ESTAB =
+	#enterdb_stab{shard = Shard,
+		      name = EDBT#enterdb_table.name,
+		      type = EDBT#enterdb_table.type,
+		      key  = EDBT#enterdb_table.key,
+		      columns = EDBT#enterdb_table.columns,
+		      indexes = EDBT#enterdb_table.indexes,
+		      comparator = EDBT#enterdb_table.comparator,
+		      data_model = DataModel},
+    do_create_shard_type(Shard, ESTAB),
+    write_shard_table(ESTAB).
+
+do_create_shard_type(Shard, #enterdb_stab{type = Type} = EDBT)
+					when Type =:= leveldb ->
+    create_leveldb_shard(Shard, EDBT);
+
+do_create_shard_type(Shard, #enterdb_stab{type = Type} = EDBT)
+					when Type =:= ets_leveldb ->
+    %% TODO: init LRU-Cache here as well
+    create_leveldb_shard(Shard, EDBT);
+
+do_create_shard_type(Shard, #enterdb_stab{type = Type} = EDBT)
+					when Type =:= ets_leveldb_wrapped ->
+    Res = enterdb_mem:init_tab(Shard, EDBT),
+    ?debug("enterdb_mem:init_tab returned ~p", [Res]),
+    create_leveldb_shard(Shard, EDBT).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Open an existing enterdb database shard.
+%% @end
+%%--------------------------------------------------------------------
+-spec open_shard(Name :: string())-> ok | {error, Reason :: term()}.
+open_shard(Name) ->
+    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_stab, Name) end) of
+        {atomic, []} ->
+            {error, "no_table"};
+        {atomic, [ShardTab]} ->
+	     do_open_shard(Name, ShardTab);
+	{error, Reason} ->
+            {error, Reason}
+    end.
+
+%% Open existing shard locally
+do_open_shard(Shard, #enterdb_stab{type = Type} = EDBT)
+				      when Type =:= leveldb ->
+    open_leveldb_shard(Shard, EDBT);
+
+do_open_shard(Shard, #enterdb_stab{type = Type} = EDBT)
+					when Type =:= ets_leveldb ->
+    %% TODO: init LRU-Cache here as well
+    open_leveldb_shard(Shard, EDBT);
+
+do_open_shard(Shard, #enterdb_stab{type = Type} = EDBT)
+					when Type =:= ets_leveldb_wrapped ->
+    Res = enterdb_mem:init_tab(Shard, EDBT),
+    ?debug("enterdb_mem:init_tab returned ~p", [Res]),
+    open_leveldb_shard(Shard, EDBT).
+
+%% create leveldb shard
+%% TODO: move out to levedb specific lib.
+create_leveldb_shard(Shard, EDBT) ->
+    Options = [{comparator, EDBT#enterdb_stab.comparator},
+	       {create_if_missing, true},
+	       {error_if_exists, true}],
+    ChildArgs = [{name, Shard}, {subdir, EDBT#enterdb_stab.name},
+                 {options, Options}, {tab_rec, EDBT}],
+    {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
+    ok.
+
+%% open leveldb shard
+%% TODO: move out to levedb specific lib.
+open_leveldb_shard(Shard, EDBT) ->
+    Options = [{comparator, EDBT#enterdb_stab.comparator},
+	       {create_if_missing, false},
+	       {error_if_exists, false}],
+    ChildArgs = [{name, Shard}, {subdir, EDBT#enterdb_stab.name},
+                 {options, Options}, {tab_rec, EDBT}],
+    {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
+    ok.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Store the #enterdb_table entry in mnesia disc_copy
+%% @end
+%%--------------------------------------------------------------------
+-spec write_shard_table(EnterdbShard::#enterdb_stab{}) -> ok | {error, Reason :: term()}.
+write_shard_table(EnterdbShard) ->
+    case enterdb_db:transaction(fun() -> mnesia:write(EnterdbShard) end) of
+        {atomic, ok} ->
+            ok;
+        {aborted, Reason} ->
+           {error, {aborted, Reason}}
+    end. 
 %%--------------------------------------------------------------------
 %% @doc
 %% Store the #enterdb_table entry in mnesia disc_copy
@@ -263,36 +407,6 @@ write_enterdb_table(EnterdbTable) ->
             ok;
         {aborted, Reason} ->
            {error, {aborted, Reason}}
-    end. 
-%%--------------------------------------------------------------------
-%% @doc
-%% Create leveldb database that is specified by EnterdbTable.
-%% @end
-%%--------------------------------------------------------------------
--spec create_leveldb_db(EnterdbTable :: #enterdb_table{}) ->
-    ok | {error, Reason :: term()}.
-create_leveldb_db(EDBT = #enterdb_table{comparator = Comp,
-					shards = Shards}) ->
-    create_leveldb_db([{comparator, Comp},
-		       {create_if_missing, true},
-                       {error_if_exists, true}], EDBT, Shards).
-
--spec create_leveldb_db(Options :: [term()],
-			EDBT :: #enterdb_table{},
-			Shards :: [#enterdb_shard{}]) ->
-    ok | {error, Reason :: term()}.
-create_leveldb_db(_Options, _EDBT, []) ->
-    ok;
-create_leveldb_db(Options, EDBT,
-		  [#enterdb_shard{name = ShardName,
-				  subdir = Subdir} | Rest]) ->
-    ChildArgs = [{name, ShardName}, {subdir, Subdir},
-                 {options, Options}, {tab_rec, EDBT}],
-    case supervisor:start_child(enterdb_ldb_sup, [ChildArgs]) of
-        {ok, _Pid} ->
-            create_leveldb_db(Options, EDBT, Rest);
-        {error, Reason} ->
-            {error, Reason}
     end.
 
 %%--------------------------------------------------------------------
@@ -351,6 +465,15 @@ close_leveldb_db(EDBT, [#enterdb_shard{name = Name} | Rest]) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Close an existing leveldb shard specified by name.
+%% @end
+%%--------------------------------------------------------------------
+-spec close_leveldb_shard(Shard :: string())-> ok | {error, Reason :: term()}.
+close_leveldb_shard(Shard) ->
+    %% Terminating simple_one_for_one child requires OTP_REL >= R14B03
+    supervisor:terminate_child(enterdb_ldb_sup, list_to_atom(Shard)).
+%%--------------------------------------------------------------------
+%% @doc
 %% Delete an existing leveldb database specified by #enterdb_table{}.
 %% This function should be called within a mnesia transaction.
 %% @end
@@ -402,15 +525,6 @@ read_range(Name, Range, Chunk) ->
     case gb_hash:get_nodes(Name) of
 	undefined ->
 	    {error, "no_table"};
-	{ok, {level, Levels}} ->
-	    {Start, End} = Range,
-	    {ok, {level, StartLevel}} = gb_hash:find_node(Name, Start),
-	    {ok, {level, EndLevel}} = gb_hash:find_node(Name, End),
-	    LevelRange = get_level_range(StartLevel, EndLevel, Levels),
-	    LevelsOfShards = [begin {ok, Ss} = gb_hash:get_nodes(L), Ss end
-				|| L <- LevelRange],
-	    RangeResults = [read_range_on_shards(hd(LevelRange), LSs, Range, Chunk) || LSs <- LevelsOfShards],
-	    lists:append([L || {ok, L} <- RangeResults]);
 	{ok, Shards} ->
 	    read_range_on_shards(Name, Shards, Range, Chunk)
     end.
@@ -422,16 +536,21 @@ read_range(Name, Range, Chunk) ->
 			   Chunk :: pos_integer()) ->
     {ok, [kvp()], Cont :: complete | key()} | {error, Reason :: term()}.
 read_range_on_shards(Name, Shards, Range, Chunk)->
+    Args = enterdb:table_info(Name,[data_model,key,columns,comparator]),
+    KeyDef = proplists:get_value(key, Args),
+    {StartKey, StopKey} = Range,
+    {ok, StartKeyDB} = make_db_key(KeyDef, StartKey),
+    {ok, StopKeyDB}  = make_db_key(KeyDef, StopKey),
+    RangeDB = {StartKeyDB, StopKeyDB},
     KVLs_and_Conts =
 	[begin
-	    {ok, KVL, Cont} = enterdb_ldb_worker:read_range_binary(Shard, Range, Chunk),
+	    {ok, KVL, Cont} =
+		rpc:call(Node,enterdb_ldb_worker,read_range_binary,[Shard, RangeDB, Chunk]),
 	    {KVL, Cont}
-	 end || Shard <- Shards],
+	 end || {Node, Shard} <- Shards],
     {KVLs, Conts} = lists:unzip(KVLs_and_Conts),
 
-    Args = enterdb:table_info(Name,[data_model,key,columns,comparator]),
     DataModel = proplists:get_value(data_model, Args),
-    KeyDef = proplists:get_value(key, Args),
     ColumnsDef = proplists:get_value(columns, Args),
     Comparator = proplists:get_value(comparator, Args),
 
@@ -496,7 +615,7 @@ get_level_range_acc(StartLevel, [AnyLevel | Levels], Acc) ->
     get_level_range_acc(StartLevel, Levels, [AnyLevel | Acc]).
 
 %%--------------------------------------------------------------------
-%% @doc
+%%]c
 %% Reads a N number of Keys from table with name Name starting from
 %% StartKey and returns.
 %% @end
@@ -509,10 +628,6 @@ read_range_n(Name, StartKey, N) ->
     case gb_hash:get_nodes(Name) of
 	undefined ->
 	    {error, "no_table"};
-	{ok, {level, Levels}} ->
-	    {ok, {level, StartLevel}} = gb_hash:find_node(Name, StartKey),
-	    OrderedLevels = order_levels(StartLevel, Levels),
-	    read_range_n_on_levels(Name, OrderedLevels, StartKey, N, []);
 	{ok, Shards} ->
 	    read_range_n_on_shards(Name, Shards, StartKey, N)
     end.
@@ -547,16 +662,19 @@ read_range_n_on_shards(Name, Shards, StartKey, N) ->
     %%NofShards = length(Shards),
     %%Part = (N div NofShards) + 1,
     %%To be safe, currently we try to read N from each shard.
+    Args = enterdb:table_info(Name,[data_model,key,columns]),
+    KeyDef = proplists:get_value(key, Args),
+    {ok, StartKeyDB} = make_db_key(KeyDef, StartKey),
+
     KVLs =
 	[begin
-	    {ok, KVL} = enterdb_ldb_worker:read_range_n_binary(Shard, StartKey, N),
+	    {ok, KVL} =
+		rpc:call(Node, enterdb_ldb_worker, read_range_n_binary, [Shard, StartKeyDB, N]),
 	    KVL
-	 end || Shard <- Shards],
+	 end || {Node, Shard} <- Shards],
     {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
     N_KVP = lists:sublist(MergedKVL, N),
-    Args = enterdb:table_info(Name,[data_model,key,columns]),
     DataModel = proplists:get_value(data_model, Args),
-    KeyDef = proplists:get_value(key, Args),
     ColumnsDef = proplists:get_value(columns, Args),
     make_app_kvp(DataModel, KeyDef, ColumnsDef, N_KVP).
 
@@ -593,8 +711,44 @@ sum_up_sizes([Int | Rest], Sum) when is_integer(Int) ->
     sum_up_sizes(Rest, Sum + Int);
 sum_up_sizes([_ | Rest], Sum) ->
     sum_up_sizes(Rest, Sum).
+%%--------------------------------------------------------------------
+%% @doc
+%% Make key according to KeyDef defined in table configuration.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_key(TD :: #enterdb_stab{},
+		       Key :: [{atom(), term()}]) ->
+    {ok, DbKey :: binary} | {error, Reason :: term()}.
+make_key(TD, Key) ->
+    make_db_key(TD#enterdb_stab.key, Key).
 
 %%--------------------------------------------------------------------
+%% @doc
+%% Make key according to KeyDef defined in table configuration and also
+%% columns according to DataModel and Columns definition.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_key_columns(TD :: #enterdb_stab{},
+		       Key :: [{atom(), term()}],
+		       Columns :: term()) ->
+    {ok, DbKey :: binary, Columns :: binary} | {error, Reason :: term()}.
+make_key_columns(TD, Key, Columns) ->
+    case make_db_key(TD#enterdb_stab.key, Key) of
+	{error, E} ->
+	    {error, E};
+	{ok, DBKey} ->
+	    make_key_columns_help(DBKey, TD, Columns)
+    end.
+make_key_columns_help(DBKey, TD, Columns) ->
+    case make_db_value(TD#enterdb_stab.data_model,
+		       TD#enterdb_stab.columns, Columns) of
+	{error, E} ->
+	    {error, E};
+	{ok, DBValue} ->
+	    {ok, DBKey, DBValue}
+    end.
+
+%%-------------------------------------------------------------------
 %% @doc
 %% Make key according to KeyDef defined in table configuration and
 %% provided values in Key.
@@ -708,12 +862,33 @@ make_app_key(KeyDef, DbKey)->
 %% @doc
 %% Make application value according to Columns Definition defined in
 %% table configuration and DB Value.
+%% Takes internal record #enterdb_stab{} as argument carrying model and
+%% columns definitions.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_app_value(TD :: #enterdb_stab{},
+		     DBValue :: {ok, binary()} | {error, Reason::term()})->
+    Columns :: [term()].
+make_app_value(_TD, {error, R}) ->
+    {error, R};
+make_app_value(TD, {ok, DBValue}) ->
+    #enterdb_stab{data_model = DataModel,
+		  columns    = ColumnsDef} = TD,
+    make_app_value(DataModel, ColumnsDef, DBValue).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Make application value according to Columns Definition defined in
+%% table configuration and DB Value.
 %% @end
 %%--------------------------------------------------------------------
 -spec make_app_value(DataModel :: data_model(),
 		     ColumnsDef :: [atom()],
 		     DBValue :: binary()) ->
     Columns :: [term()].
+
+make_app_value(DataModel, ColumnsDef, DBValue) when not is_binary(DBValue)  ->
+    format_app_value(DataModel, ColumnsDef, DBValue);
 make_app_value(DataModel, ColumnsDef, DBValue) ->
     format_app_value(DataModel, ColumnsDef, binary_to_term(DBValue)).
 

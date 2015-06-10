@@ -12,6 +12,7 @@
 -export([create_table/5,
          open_table/1,
 	 close_table/1,
+	 close_shard/1,
 	 read/2,
          read_from_disk/2,
 	 write/3,
@@ -28,6 +29,11 @@
 	 next/1,
 	 prev/1
 	 ]).
+
+-export([do_write/3,
+	 do_read/2,
+	 do_write_to_disk/3,
+	 do_read_from_disk/2]).
 
 -export([load_test/0,
 	 write_loop/1]).
@@ -48,9 +54,6 @@ write_loop(N) when N > 0 ->
     enterdb:write("test_range", [{ts, os:timestamp()}],[{value, Bin}]),
     write_loop(N-1).
 
-%%%===================================================================
-%%% API
-%%===================================================================
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -78,21 +81,20 @@ create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
 	{ok, EnterdbTab} ->
 	    case enterdb_server:get_state_params() of
 		{ok, PropList}  ->
-		    DB_PATH	= proplists:get_value(db_path, PropList),
-		    NumOfShards = proplists:get_value(num_of_local_shards, PropList),
+		    NumOfShards0 = proplists:get_value(num_of_local_shards, PropList),
 		    %% Specific table options
-		    Wrapped	= proplists:get_value(wrapped, Options, undefined),
-		    MemWrapped	= proplists:get_value(mem_wrapped, Options, undefined),
-		    ?debug("Get Shards for: ~p, #:~p, wrapped: ~p, memwrapped ~p",
-			    [Name, NumOfShards, Wrapped, MemWrapped]),
+		    Type	= proplists:get_value(type, Options, leveldb),
+		    NumOfShards	= proplists:get_value(shards, Options, NumOfShards0),
+		    Nodes	= proplists:get_value(nodes, Options, [node()]),
+		    Comp = proplists:get_value(comparator, Options, descending),
 		    {ok, Shards} = enterdb_lib:get_shards(Name,
 							  NumOfShards,
-							  Wrapped,
-							  MemWrapped),
-		    Comp = proplists:get_value(comparator, Options, descending),
+							  Nodes),
+		    ?debug("table allocated shards ~p", [Shards]),
 		    NewEDBT = EnterdbTab#enterdb_table{comparator = Comp,
-						       path = DB_PATH,
-						       shards = Shards},
+						       shards = Shards,
+						       type = Type},
+
 		    enterdb_lib:create_table(NewEDBT);
 		Else ->
 		    {error, Else}
@@ -154,6 +156,28 @@ close_table(Name) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Close an existing enterdb database shard.
+%% @end
+%%--------------------------------------------------------------------
+-spec close_shard(Name :: string())-> ok | {error, Reason :: term()}.
+close_shard(Shard) ->
+    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_stab, Shard) end) of
+        {atomic, []} ->
+            {error, "no_table"};
+        {atomic, [Shard]} ->
+	    do_close_shard(Shard);
+	{error, Reason} ->
+            {error, Reason}
+    end.
+
+do_close_shard(#enterdb_stab{shard = Shard, type = ets_leveldb}) ->
+    %% enterdb_mem_wrp_mgr:dump_shard(Shard), %% TODO: implement dump_shard for mem_wrp
+    enterdb_lib:close_leveldb_shard(Shard);
+do_close_shard(#enterdb_stab{shard = Shard, type = leveldb}) ->
+    enterdb_lib:close_leveldb_shard(Shard).
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Reads Key from table with name Name
 %% @end
 %%--------------------------------------------------------------------
@@ -161,58 +185,56 @@ close_table(Name) ->
            Key :: key()) -> {ok, value()} |
                           {error, Reason :: term()}.
 read(Name, Key) ->
-    case mochiglobal:get(list_to_atom(Name)) of
-        undefined ->
-            {error, "no_table"};
-	#gb_hash_func{type = Type, ring = Ring}  ->
-	    read_type(Type, Ring, Name, Key)
+    case gb_hash:get_node(Name, Key) of
+	{ok, {Node, Shard}} ->
+	    rpc:call(Node, ?MODULE, do_read, [Shard, Key]);
+	_ ->
+	    {error, "no_table"}
     end.
-
 -spec read_from_disk(Name :: string(),
 		     Key :: key()) -> ok | {error, Reason :: term()}.
-read_from_disk(Name, Key) ->
-    case mochiglobal:get(list_to_atom(Name)) of
-	undefind ->
-	    {error, "no_table"};
-	#gb_hash_func{type = Type, ring = Ring} ->
-	    read_type_from_disk(Type, Ring, Name, Key)
+read_from_disk(Tab, Key) ->
+    case gb_hash:get_node(Tab, Key) of
+	{ok, {Node, Shard}} ->
+	    rpc:call(Node, ?MODULE, do_read_from_disk, [Shard, Key]);
+	_ ->
+	    {error, "no_table"}
     end.
 
-read_type_from_disk({_,FileMargin, TimeMargin}, Ring, Name, Key) ->
-   read_type({tda, FileMargin, TimeMargin}, Ring, Name, Key).
+do_read(Shard, Key) ->
+    TD = enterdb_lib:get_details(Shard),
+    case enterdb_lib:make_key(TD, Key) of
+	{ok, DBKey} ->
+	    enterdb_lib:make_app_value(TD, do_read(TD, Shard, DBKey));
+	E ->
+	    E
+    end.
 
-read_type({mem_tda, FileMargin, TimeMargin}, Ring, Name, Key) ->
-    case find_timestamp_in_key(Key) of
-	undefined ->
-	    undefined;
-	{ok, Ts} ->
-	    case enterdb_mem_wrp:read(Name, Ts, Key) of
-		{error, _} = _E ->
-		    %% Read from disk backend
-		    Bucket = tda(FileMargin, TimeMargin, Ts),
-		    {_, Level} = lists:keyfind(Bucket, 1, Ring),
-		    %% Take another turn to find which shard for the level-table to be used.
-		    {ok, Shard} = gb_hash:find_node(Level, Key),
-		    enterdb_ldb_worker:read(Shard, Key);
-		Res ->
-		    Res
-	    end
-    end;
-read_type({tda, FileMargin, TimeMargin}, Ring, _Name, Key) ->
-    case find_timestamp_in_key(Key) of
-	undefined ->
-	    undefined;
-	{ok, Ts} ->
-	    Bucket = tda(FileMargin, TimeMargin, Ts),
-	    {_, Level} = lists:keyfind(Bucket, 1, Ring),
-	    %% Take another turn to find which shard for the level-table to be used.
-	    {ok, Shard} = gb_hash:find_node(Level, Key),
-	    enterdb_ldb_worker:read(Shard, Key)
-    end;
+do_read_from_disk(Shard, Key) ->
+    TD = enterdb_lib:get_details(Shard),
+    case enterdb_lib:make_key(TD, Key) of
+	{ok, DBKey} ->
+	    enterdb_lib:make_app_value(TD, do_read_from_disk(TD, Shard, DBKey));
+	E ->
+	    E
+    end.
 
-read_type(Type, Ring, _Name, Key) ->
-    {ok, Shard} = gb_hash:find_node(Ring, Type, Key),
-    enterdb_ldb_worker:read(Shard, Key).
+do_read(_TD = #enterdb_stab{type = leveldb}, ShardTab, Key) ->
+    enterdb_ldb_worker:read(ShardTab, Key);
+do_read({error, R}, _, _) ->
+    {error, R};
+do_read(#enterdb_stab{type = Type}, _ShardTab, _Key) ->
+    {error, {read_not_supported, Type}}.
+
+do_read_from_disk(TD = #enterdb_stab{type = Type}, ShardTab, Key) when
+						    Type =:= ets_leveldb;
+						    Type =:= ets_leveldb_wrapped ->
+    enterdb_ldb_worker:read(TD, ShardTab, Key);
+
+%% Use ordinary read for table type
+do_read_from_disk(TD, ShardTab, Key) ->
+    do_read(TD, ShardTab, Key).
+
 %%--------------------------------------------------------------------
 %% @doc
 %% Writes Key/Columns to table with name Name
@@ -221,60 +243,91 @@ read_type(Type, Ring, _Name, Key) ->
 -spec write(Name :: string(),
             Key :: key(),
             Columns :: [column()]) -> ok | {error, Reason :: term()}.
-write(Name, Key, Columns) ->
-    case mochiglobal:get(list_to_atom(Name)) of
-        undefined ->
-            {error, "no_table"};
-	#gb_hash_func{type = Type, ring = Ring}  ->
-	    write_type(Type, Ring, Name, Key, Columns)
+write(Tab, Key, Columns) ->
+    case gb_hash:get_node(Tab,Key) of
+	{ok, {Node, Shard}} ->
+	    rpc:call(Node, ?MODULE, do_write, [Shard, Key, Columns]);
+	_ ->
+	    {error, "no_table"}
+
     end.
 
 -spec write_to_disk(Name :: string(),
 		    Key :: key(),
 		    Columns :: [column()]) -> ok | {error, Reason :: term()}.
-write_to_disk(Name, Key, Columns) ->
-    case mochiglobal:get(list_to_atom(Name)) of
-	undefind ->
-	    {error, "no_table"};
-	#gb_hash_func{type = Type, ring = Ring} ->
-	    write_type_to_disk(Type, Ring, Name, Key, Columns)
+write_to_disk(Tab, Key, Columns) ->
+    case gb_hash:get_node(Tab, Key) of
+	{ok, {Node, Shard}} ->
+	    rpc:call(Node, ?MODULE, do_write_to_disk, [Shard, Key, Columns]);
+	_ ->
+	    {error, "no_table"}
+    end.
+do_write_to_disk(Shard, Key, Columns) ->
+    TD = enterdb_lib:get_details(Shard),
+    case enterdb_lib:make_key_columns(TD, Key, Columns) of
+	{ok, DBKey, DBColumns} ->
+	    do_write_to_disk(TD, Shard, DBKey, DBColumns);
+	E ->
+	    E
     end.
 
-write_type_to_disk({mem_tda, FileMargin, TimeMargin}, Ring, Name, Key, Columns) ->
-    %% Skip mem cache and write directly to disk (tda type)
-    write_type({tda, FileMargin, TimeMargin}, Ring, Name, Key, Columns).
+do_write(Shard, Key, Columns) ->
+    TD = enterdb_lib:get_details(Shard),
+    case enterdb_lib:make_key_columns(TD, Key, Columns) of
+	{ok, DBKey, DBColumns} ->
+	    do_write(TD, Shard, DBKey, DBColumns);
+	E ->
+	    E
+    end.
 
-write_type({mem_tda, FileMargin, TimeMargin}, Ring, Name, Key, Columns) ->
+do_write(_TD = #enterdb_stab{type = Type}, ShardTab, Key, Columns)
+when Type =:= ets_leveldb_wrapped ->
     case find_timestamp_in_key(Key) of
 	undefined ->
 	    undefined;
 	{ok, Ts} ->
-	    case enterdb_mem_wrp:write(Name, Ts, Key, Columns) of
+	    case enterdb_mem_wrp:write(ShardTab, Ts, Key, Columns) of
 		{error, _} = _E ->
 		    %% Write to disk backend
-		    Bucket = tda(FileMargin, TimeMargin, Ts),
-		    {_, Level} = lists:keyfind(Bucket, 1, Ring),
-		    %% Take another turn to find which shard for the level-table to be used.
-		    {ok, Shard} = gb_hash:find_node(Level, Key),
-		    enterdb_ldb_worker:write(Shard, Key, Columns);
+		    enterdb_ldb_wrp:write(Ts, ShardTab, Key, Columns);
 		Res ->
 		    Res
 	    end
     end;
-write_type({tda, FileMargin, TimeMargin}, Ring, _Name, Key, Columns) ->
+do_write(_TD = #enterdb_stab{type = leveldb_wrapped}, ShardTab, Key, Columns) ->
     case find_timestamp_in_key(Key) of
 	undefined ->
 	    undefined;
 	{ok, Ts} ->
-	    Bucket = tda(FileMargin, TimeMargin, Ts),
-	    {_, Level} = lists:keyfind(Bucket, 1, Ring),
-	    %% Take another turn to find which shard for the level-table to be used.
-	    {ok, Shard} = gb_hash:find_node(Level, Key),
-	    enterdb_ldb_worker:write(Shard, Key, Columns)
+	    enterdb_ldb_wrp:write(Ts, ShardTab, Key, Columns)
     end;
-write_type(Type, Ring, _Name, Key, Columns) ->
-    {ok, Shard} = gb_hash:find_node(Ring, Type, Key),
-    enterdb_ldb_worker:write(Shard, Key, Columns).
+do_write(_TD = #enterdb_stab{type = ets_leveldb}, _Tab, _Key, _Columns) ->
+    ok;
+do_write(_TD = #enterdb_stab{type = leveldb}, ShardTab, Key, Columns) ->
+    enterdb_ldb_worker:write(ShardTab, Key, Columns);
+
+do_write({error, R}, _, _Key, _Columns) ->
+    {error, R};
+
+do_write(TD, Tab, Key, _Columns) ->
+    ?debug("could not write ~p", [{TD, Tab, Key}]),
+    {error, {bad_tab, {Tab,TD}}}.
+
+do_write_to_disk(_TD = #enterdb_stab{type = Type}, ShardTab, Key, Columns)
+when Type =:= ets_leveldb_wrapped ->
+    case find_timestamp_in_key(Key) of
+	undefined ->
+	    undefined;
+	{ok, Ts} ->
+	    %% Write to disk backend
+	    TimeMargin = 1, %% TODO: fix this
+	    FileMargin = 1, %% TODO: fix this
+	    enterdb_ldb_wrp:write(Ts, ShardTab, Key, Columns)
+    end;
+
+do_write_to_disk(TD, ShardTab, Key, Columns) ->
+    do_write(TD, ShardTab, Key, Columns).
+
 
 %%--------------------------------------------------------------------
 %% @doc
