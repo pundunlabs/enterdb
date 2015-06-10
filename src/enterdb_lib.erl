@@ -874,7 +874,7 @@ make_app_value(_TD, {error, R}) ->
 make_app_value(TD, {ok, DBValue}) ->
     #enterdb_stab{data_model = DataModel,
 		  columns    = ColumnsDef} = TD,
-    make_app_value(DataModel, ColumnsDef, DBValue).
+    {ok, make_app_value(DataModel, ColumnsDef, DBValue)}.
 
 %%--------------------------------------------------------------------
 %% @doc
