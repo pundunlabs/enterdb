@@ -694,9 +694,10 @@ order_levels(StartLevel, [Level|Rest]) ->
     {ok, Size :: pos_integer()} | {error, Reason :: term()}.
 approximate_size(leveldb, Shards) ->
     Sizes = [begin
-		{ok, Size} = enterdb_ldb_worker:approximate_size(Shard),
+		{ok, Size} =
+		    rpc:call(Node, enterdb_ldb_worker, approximate_size, [Shard]),
 		Size
-	     end || #enterdb_shard{name = Shard} <- Shards],
+	     end || {Node, Shard} <- Shards],
     ?debug("Sizes of all shards: ~p", [Sizes]),
     sum_up_sizes(Sizes, 0);
 approximate_size(Backend, _) ->

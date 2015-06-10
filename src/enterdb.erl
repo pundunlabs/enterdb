@@ -410,10 +410,9 @@ table_info(Name) ->
 			options = Options,
 			shards = Shards
 			}] ->
-	    Backend = proplists:get_value(backend, Options),
-	    {ok, Size} = enterdb_lib:approximate_size(Backend, Shards),
+	    Type = proplists:get_value(type, Options),
+	    {ok, Size} = enterdb_lib:approximate_size(Type, Shards),
 	    [{name, Name},
-	     {path, Path},
 	     {key, KeyDefinition},
 	     {columns, ColumnsDefinition},
 	     {indexes, IndexesDefinition},
