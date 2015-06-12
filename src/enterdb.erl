@@ -115,16 +115,16 @@ open_table(Name) ->
             {error, "no_table"};
         {atomic, [Table]} ->
 	    Options = Table#enterdb_table.options,
-	    Backend = proplists:get_value(backend, Options),
-            case Backend of
+	    Type = proplists:get_value(type, Options),
+            case Type of
 		leveldb ->
 		    enterdb_lib:open_leveldb_db(Table);
 		ets_leveldb ->
 		    enterdb_mem:init_tab(Name, Options),
 		    enterdb_lib:open_leveldb_db(Table);
 		Else ->
-		    ?debug("enterdb:open_table: {backend, ~p} not supported", [Else]),
-		    {error, "backend_not_supported"}
+		    ?debug("enterdb:open_table: {type, ~p} not supported", [Else]),
+		    {error, "type_not_supported"}
 	    end;
         {error, Reason} ->
             {error, Reason}
@@ -142,13 +142,13 @@ close_table(Name) ->
             {error, "no_table"};
         {atomic, [Table]} ->
 	    Options = Table#enterdb_table.options,
-	    Backend = proplists:get_value(backend, Options),
-            case Backend of
+	    Type = proplists:get_value(type, Options),
+            case Type of
 		leveldb ->
 		    enterdb_lib:close_leveldb_db(Table);
 		Else ->
-		    ?debug("enterdb:close_table: {backend, ~p} not supported", [Else]),
-		    {error, "backend_not_supported"}
+		    ?debug("enterdb:close_table: {type, ~p} not supported", [Else]),
+		    {error, "type_not_supported"}
 	    end;
         {error, Reason} ->
             {error, Reason}
@@ -512,15 +512,15 @@ atomic_delete_table(Name) ->
     case mnesia:read(enterdb_table, Name) of
 	[Table] ->
 	    Options = Table#enterdb_table.options,
-	    Backend = proplists:get_value(backend, Options),
-	    case Backend of
+	    Type = proplists:get_value(type, Options),
+	    case Type of
 		leveldb ->
 		    ok = enterdb_lib:delete_leveldb_db(Table);
 		ets_leveldb ->
 		    ok = enterdb_lib:delete_leveldb_db(Table);
 		Else ->
-		    ?debug("enterdb:delete_table: {backend, ~p} not supported", [Else]),
-		    {error, "backend_not_supported"}
+		    ?debug("enterdb:delete_table: {type, ~p} not supported", [Else]),
+		    {error, "type_not_supported"}
 	    end;
 	[] ->
 	    {error, "no_table"}

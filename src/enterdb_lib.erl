@@ -700,9 +700,9 @@ approximate_size(leveldb, Shards) ->
 	     end || {Node, Shard} <- Shards],
     ?debug("Sizes of all shards: ~p", [Sizes]),
     sum_up_sizes(Sizes, 0);
-approximate_size(Backend, _) ->
-    ?debug("Size approximation is not supported for backend: ~p", [Backend]),
-    {error, "backend_not_supported"}.
+approximate_size(Type, _) ->
+    ?debug("Size approximation is not supported for type: ~p", [Type]),
+    {error, "type_not_supported"}.
 
 -spec sum_up_sizes(Sizes :: [pos_integer()], Sum :: pos_integer()) ->
     {ok, Size :: pos_integer()}.

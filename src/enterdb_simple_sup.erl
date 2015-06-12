@@ -10,9 +10,9 @@ start_link(leveldb) ->
 start_link(leveldb_it) ->
     supervisor:start_link({local, enterdb_lit_sup},
                           ?MODULE, [leveldb_it]);
-start_link(Backend) ->
-    error_logger:error_msg("Enterdb backend: ~p not supoorted yet.~n",
-                           [Backend]),
+start_link(Type) ->
+    error_logger:error_msg("Enterdb backend type: ~p not supoorted yet.~n",
+                           [Type]),
     {error, "not_supported"}.
 
 init([leveldb]) ->

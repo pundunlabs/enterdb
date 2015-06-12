@@ -8,7 +8,11 @@
 -type kvp() :: {key(), value()}.
 -type column() :: {atom(), term()}.
 
--type backend() :: leveldb | ets_leveldb.
+-type type() :: leveldb |
+		ets_leveldb |
+		leveldb_wrapped |
+		ets_leveldb_wrapped.
+
 -type data_model() :: binary | array | hash.
 
 -type file_margin() :: pos_integer().
@@ -21,7 +25,7 @@
 -type table_option() :: [{time_ordered, boolean()} |
                          {wrapped, wrapper()} |
 			 {mem_wrapped, mem_wrapper()} |
-			 {backend, backend()} |
+			 {type, type()} |
                          {data_model, data_model()} |
 			 {shards, integer()} |
 			 {nodes, [atom()]}].
