@@ -92,7 +92,7 @@ create_write_read_delete(Name) ->
 
     %% delete table
     ok = enterdb:delete_table(Name),
-    {error, "no_table"} = enterdb:table_info("hepp"),
+    {error, "no_table"} = enterdb:table_info(Name),
     ok.
 
 %%--------------------------------------------------------------------
