@@ -260,19 +260,6 @@ code_change(_OldVsn, State, _Extra) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Open existing database tables.
-%% @end
-%%--------------------------------------------------------------------
--spec open_tables() -> ok | {error, Reason :: term()}.
-open_tables() ->
-    case enterdb_db:transaction(fun() -> mnesia:all_keys(enterdb_table) end) of
-	{atomic, DBList} ->
-	    open_tables(DBList);
-	{error, Reason} ->
-	    {error, Reason}
-    end.
-%%--------------------------------------------------------------------
-%% @doc
 %% Open existing database table shards.
 %% @end
 %%--------------------------------------------------------------------
@@ -281,22 +268,6 @@ open_shards() ->
     case enterdb_db:transaction(fun() -> mnesia:all_keys(enterdb_stab) end) of
 	{atomic, DBList} ->
 	    open_shards(DBList);
-	{error, Reason} ->
-	    {error, Reason}
-    end.
-%%--------------------------------------------------------------------
-%% @doc
-%% Open database tables those are specified by the given list of db names.
-%% @end
-%%--------------------------------------------------------------------
--spec open_tables(DBList :: [string()]) -> ok | {error, Reason :: term()}.
-open_tables([]) ->
-    ok;
-open_tables([Name | Rest]) ->
-    ?debug("Opening table: ~p",[Name]),
-    case enterdb:open_table(Name) of
-	ok ->
-	    open_tables(Rest);
 	{error, Reason} ->
 	    {error, Reason}
     end.
