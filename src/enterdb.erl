@@ -33,7 +33,8 @@
 -export([do_write/3,
 	 do_read/2,
 	 do_write_to_disk/3,
-	 do_read_from_disk/2]).
+	 do_read_from_disk/2,
+	 do_delete/2]).
 
 -export([load_test/0,
 	 write_loop/1]).
@@ -343,16 +344,33 @@ do_write_to_disk(TD, ShardTab, Key, Columns) ->
 -spec delete(Name :: string(),
              Key :: key()) -> ok |
                             {error, Reason :: term()}.
-delete(Name, Key)->
-    case gb_hash:find_node(Name, Key) of
-        undefined ->
-            {error, "no_table"};
-	{ok, {level, Level}} ->
-	    {ok, Shard} = gb_hash:find_node(Level, Key),
-	    enterdb_ldb_worker:delete(Shard, Key); 
-        {ok, Shard} ->
-            enterdb_ldb_worker:delete(Shard, Key)
+delete(Tab, Key) ->
+    case enterdb_lib:get_tab_def(Tab) of
+	TD = #enterdb_table{} ->
+	    DBKey = enterdb_lib:make_key(TD, Key),
+	    delete_(Tab, DBKey);
+	{error, _} = R ->
+	    R
     end.
+
+delete_(Tab, {ok, DBKey}) ->
+    {ok, {Node, Shard}} = gb_hash:get_node(Tab, DBKey),
+    rpc:call(Node, ?MODULE, do_delete, [Shard, DBKey]);
+
+delete_(_Tab, {error, _} = E) ->
+    E.
+
+do_delete(Shard, DBKey) ->
+    TD = enterdb_lib:get_shard_def(Shard),
+    do_delete(TD, Shard, DBKey).
+
+%% internal read based on table / shard type
+do_delete(_TD = #enterdb_stab{type = leveldb}, ShardTab, Key) ->
+    enterdb_ldb_worker:delete(ShardTab, Key);
+do_delete(_TD = #enterdb_stab{type = Type}, _ShardTab, _Key) ->
+    {error, {delete_not_supported, Type}};
+do_delete({error, R}, _, _) ->
+    {error, R}.
 
 %%--------------------------------------------------------------------
 %% @doc
