@@ -6,6 +6,7 @@
 	 create_wrapping_table/1,
 	 create_mem_wrapping_table/1,
 	 create_mem_wrapping_table_2/1,
+	 create_write_read_delete/1,
 	 read/2,
 	 read_range/4,
 	 write/1,
@@ -50,6 +51,49 @@ create_table(Name) ->
     Options = [{type, leveldb},
 	       {data_model,binary}],
     enterdb:create_table(Name, Keys, Columns, Indexes, Options).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Creates a database table which has a compound key with timestamp
+%% and imsi, and wrapping on files based on timestamp in the key.
+%% @end
+%%--------------------------------------------------------------------
+-spec create_write_read_delete(Name :: string()) -> ok.
+create_write_read_delete(Name) ->
+    Keys = [ts, imsi],
+    Columns = [value],
+    Indexes = [],
+    Options = [{type, leveldb},
+	       {data_model,binary}],
+    ok = enterdb:create_table(Name, Keys, Columns, Indexes, Options),
+    %% write data 1
+    TS = {ts, {1,2,3}},
+    Data = ["data hej!"],
+    IMSI = {imsi, "hej"},
+    ok = enterdb:write(Name, [IMSI, TS], Data),
+    {ok, Data} = enterdb:read(Name, [IMSI, TS]),
+    {ok, Data} = enterdb:read(Name, [TS, IMSI]),
+
+    %% write data 2
+    Data2 = ["data hej2!"],
+    IMSI2 = {imsi, "hej2"},
+    ok = enterdb:write(Name, [IMSI2, TS], Data2),
+
+    %% write data 3
+    Data3 = ["data hej3!"],
+    IMSI3 = {imsi, "hej3"},
+    ok = enterdb:write(Name, [IMSI3, TS], Data3),
+
+    %% read range
+    {ok,[{[TS,IMSI3],Data3},
+	 {[TS,IMSI2],Data2},
+	 {[TS,IMSI] ,Data}]} =
+	enterdb:read_range_n(Name, [IMSI3, TS], 3),
+
+    %% delete table
+    ok = enterdb:delete_table(Name),
+    {error, "no_table"} = enterdb:table_info("hepp"),
+    ok.
 
 %%--------------------------------------------------------------------
 %% @doc
