@@ -13,7 +13,6 @@
          create_table/1,
          open_leveldb_db/1,
 	 close_leveldb_db/1,
-	 delete_leveldb_db/1,
 	 read_range/3,
 	 read_range_n/3,
 	 approximate_size/2]).
@@ -35,8 +34,13 @@
 	 open_leveldb_shard/2,
 	 close_leveldb_shard/1,
 	 write_enterdb_table/1,
-	 get_details/1,
-	 get_table_options/1]).
+	 get_shard_def/1,
+	 get_tab_def/1,
+	 get_table_options/1,
+	 delete_shards/1,
+	 delete_shard/1,
+	 cleanup_table/2,
+	 cleanup_table_help/1]).
 
 -include("enterdb.hrl").
 -include("gb_log.hrl").
@@ -141,11 +145,25 @@ verify_name([], _) ->
 
 %%-------------------------------------------------------------------
 %% @doc
-%% Get details about a shard
+%% Get table definition
 %% @end
 %%-------------------------------------------------------------------
--spec get_details(string()) -> #enterdb_stab{} | {error, Reason::term()}.
-get_details(Shard) ->
+-spec get_tab_def(string()) -> #enterdb_table{} | {error, Reason::term()}.
+get_tab_def(Tab) ->
+    case mnesia:dirty_read(enterdb_table, Tab) of
+	[TabDef] ->
+	    TabDef;
+	_ ->
+	    {error, no_such_table}
+    end.
+
+%%-------------------------------------------------------------------
+%% @doc
+%% Get shard definition
+%% @end
+%%-------------------------------------------------------------------
+-spec get_shard_def(string()) -> #enterdb_stab{} | {error, Reason::term()}.
+get_shard_def(Shard) ->
     case mnesia:dirty_read(enterdb_stab, Shard) of
 	[ShardTab] ->
 	    ShardTab;
@@ -237,13 +255,24 @@ check_if_table_exists(Name)->
 %% @end
 %%--------------------------------------------------------------------
 get_table_options(Shard) ->
-    TD = get_details(Shard),
+    TD = get_shard_def(Shard),
     case mnesia:dirty_read(enterdb_table, TD#enterdb_stab.name) of
 	[#enterdb_table{options = Options}] ->
 	    {ok, Options};
 	_ ->
 	    {error, no_table}
     end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Check response for error
+%% @end
+%%--------------------------------------------------------------------
+-spec check_error_response(RespList :: list) ->  ok| {error, RespList :: list }.
+check_error_response([ok]) ->
+    ok;
+check_error_response(ResponseList) ->
+    {error, ResponseList}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -290,7 +319,7 @@ create_table(#enterdb_table{shards = Shards} = EnterdbTable)->
 		[ rpc:call(Node, ?MODULE, write_enterdb_table, [EnterdbTable])
 		    || Node <- lists:usort([Node || {Node, _} <- Shards])],
 		%% TODO: do error handling (rollback and such)
-		lists:usort(SchemaRes);
+		check_error_response(lists:usort(SchemaRes));
 
 	[R] -> %% all shards replied the same
 	    R;
@@ -472,43 +501,44 @@ close_leveldb_db(EDBT, [#enterdb_shard{name = Name} | Rest]) ->
 close_leveldb_shard(Shard) ->
     %% Terminating simple_one_for_one child requires OTP_REL >= R14B03
     supervisor:terminate_child(enterdb_ldb_sup, list_to_atom(Shard)).
+
 %%--------------------------------------------------------------------
 %% @doc
-%% Delete an existing leveldb database specified by #enterdb_table{}.
+%% Delete an existing table shards.
 %% This function should be called within a mnesia transaction.
 %% @end
 %%--------------------------------------------------------------------
--spec delete_leveldb_db(Table :: #enterdb_table{})-> ok | {error, Reason :: term()}.
-delete_leveldb_db(#enterdb_table{name = Name, shards = Shards}) ->
-    ok = delete_leveldb_db_shards(Shards),
-    ok = delete_hash_ring(Name),
-    mnesia:delete(enterdb_table, Name, write).
+-spec delete_shards([{Node :: atom, Shard :: string()}])-> ok | {error, Reason :: term()}.
+delete_shards([{Node, Shard} | Rest]) ->
+    rpc:call(Node, ?MODULE, delete_shard, [Shard]),
+    delete_shards(Rest);
+delete_shards([]) ->
+    ok.
 
--spec delete_leveldb_db_shards(Shards :: [#enterdb_shard{}]) ->
-    ok | {error, Reason :: term()}.
-delete_leveldb_db_shards([]) ->
-    ok;
-delete_leveldb_db_shards([#enterdb_shard{name = Name} | Rest]) ->
-    ok = enterdb_ldb_worker:delete_db(Name),
-    delete_leveldb_db_shards(Rest).
+delete_shard(Shard) ->
+    SD = get_shard_def(Shard),
+    ok = delete_shard_help(SD),
+    mnesia:dirty_delete(enterdb_stab, Shard).
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Delete the compiled and stored hash rings for given table by Name.
-%% @end
-%%--------------------------------------------------------------------
--spec delete_hash_ring(Name :: string())->
-    ok | {error, Reason :: term()}.
-delete_hash_ring(Name) ->
-    case gb_hash:get_nodes(Name) of
-	undefined ->
-	    {error, "no_table"};
-	{ok, {level, Levels}} ->
-	    [ ok = gb_hash:delete_ring(L) || L <- Levels ],
-	    ok = gb_hash:delete_ring(Name);
-	{ok, _Shards} ->
-	    ok = gb_hash:delete_ring(Name)
+
+%% add delete per type
+delete_shard_help(#enterdb_stab{shard = Name, type = leveldb}) ->
+    enterdb_ldb_worker:delete_db(Name),
+    ok.
+
+cleanup_table(Name, Shards) ->
+    Nodes = lists:usort([Node || {Node, _} <- Shards]),
+    AllRes = [rpc:call(Node, ?MODULE, cleanup_table_help, [Name]) || Node <- Nodes],
+    case lists:usort(AllRes) of
+	[Res] ->
+	    Res;
+	E ->
+	    E
     end.
+
+cleanup_table_help(Name) ->
+    mnesia:dirty_delete(enterdb_table, Name),
+    gb_hash:delete_ring(Name).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -717,11 +747,11 @@ sum_up_sizes([_ | Rest], Sum) ->
 %% Make key according to KeyDef defined in table configuration.
 %% @end
 %%--------------------------------------------------------------------
--spec make_key(TD :: #enterdb_stab{},
+-spec make_key(TD :: #enterdb_table{},
 		       Key :: [{atom(), term()}]) ->
     {ok, DbKey :: binary} | {error, Reason :: term()}.
 make_key(TD, Key) ->
-    make_db_key(TD#enterdb_stab.key, Key).
+    make_db_key(TD#enterdb_table.key, Key).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -729,20 +759,20 @@ make_key(TD, Key) ->
 %% columns according to DataModel and Columns definition.
 %% @end
 %%--------------------------------------------------------------------
--spec make_key_columns(TD :: #enterdb_stab{},
+-spec make_key_columns(TableDef :: #enterdb_table{},
 		       Key :: [{atom(), term()}],
 		       Columns :: term()) ->
     {ok, DbKey :: binary, Columns :: binary} | {error, Reason :: term()}.
 make_key_columns(TD, Key, Columns) ->
-    case make_db_key(TD#enterdb_stab.key, Key) of
+    case make_db_key(TD#enterdb_table.key, Key) of
 	{error, E} ->
 	    {error, E};
 	{ok, DBKey} ->
 	    make_key_columns_help(DBKey, TD, Columns)
     end.
 make_key_columns_help(DBKey, TD, Columns) ->
-    case make_db_value(TD#enterdb_stab.data_model,
-		       TD#enterdb_stab.columns, Columns) of
+    case make_db_value(TD#enterdb_table.data_model,
+		       TD#enterdb_table.columns, Columns) of
 	{error, E} ->
 	    {error, E};
 	{ok, DBValue} ->

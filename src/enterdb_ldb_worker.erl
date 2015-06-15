@@ -301,11 +301,10 @@ handle_call({write, Key, Columns}, _From, State) ->
     {reply, Reply, State};
 handle_call({delete, DBKey}, _From, State) ->
     #state{db_ref = DB,
-           writeoptions = WriteOptions,
-           key = KeyDef} = State,
+           writeoptions = WriteOptions} = State,
     Reply = leveldb:delete(DB, WriteOptions, DBKey),
     {reply, Reply, State};
-handle_call({read_range, Keys, Chunk, Type}, _From, State) when Chunk > 0 ->
+handle_call({read_range, Keys, Chunk, _Type}, _From, State) when Chunk > 0 ->
    #state{db_ref = DB,
 	  options = Options,
 	  readoptions = ReadOptions} = State,
@@ -527,16 +526,3 @@ delete_enterdb_ldb_resource(Name) ->
         {aborted, Reason} ->
            {error, {aborted, Reason}}
     end.
-
--spec format_kvl(Type :: binary | term, KVL :: [kvp()],
-		 KeyDef :: [atom()],
-		 ColumnsDef ::[atom()],
-		 DataModel :: atom()) -> [kvp()].
-format_kvl(binary, KVL, _KeyDef, _ColumnsDef, _DataModel) ->
-    KVL;
-format_kvl(term, KVL, KeyDef, ColumnsDef, DataModel) ->
-    [begin
-	K = enterdb_lib:make_app_key(KeyDef, BK),
-	V = enterdb_lib:make_app_value(DataModel, ColumnsDef, BV),
-	{K, V}
-     end || {BK, BV} <- KVL].

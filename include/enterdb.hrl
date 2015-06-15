@@ -48,6 +48,7 @@
                         indexes :: [atom()],
 			comparator :: ascending | descending,
                         type	:: atom(),
+			data_model :: data_model(),
 			options :: [table_option()],
                         shards :: []}).
 %% enterdb shard tab

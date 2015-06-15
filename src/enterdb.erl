@@ -86,6 +86,7 @@ create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
 		    Type	= proplists:get_value(type, Options, leveldb),
 		    NumOfShards	= proplists:get_value(shards, Options, NumOfShards0),
 		    Nodes	= proplists:get_value(nodes, Options, [node()]),
+		    DataModel	= proplists:get_value(data_model, Options),
 		    Comp = proplists:get_value(comparator, Options, descending),
 		    {ok, Shards} = enterdb_lib:get_shards(Name,
 							  NumOfShards,
@@ -93,7 +94,8 @@ create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
 		    ?debug("table allocated shards ~p", [Shards]),
 		    NewEDBT = EnterdbTab#enterdb_table{comparator = Comp,
 						       shards = Shards,
-						       type = Type},
+						       type = Type,
+						       data_model = DataModel},
 
 		    enterdb_lib:create_table(NewEDBT);
 		Else ->
@@ -178,53 +180,60 @@ do_close_shard(#enterdb_stab{shard = Shard, type = leveldb}) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Reads Key from table with name Name
+%% Reads Key from table with name Tab
 %% @end
 %%--------------------------------------------------------------------
--spec read(Name :: string(),
-           Key :: key()) -> {ok, value()} |
-                          {error, Reason :: term()}.
-read(Name, Key) ->
-    case gb_hash:get_node(Name, Key) of
-	{ok, {Node, Shard}} ->
-	    rpc:call(Node, ?MODULE, do_read, [Shard, Key]);
-	_ ->
-	    {error, "no_table"}
+-spec read(Tab :: string(),
+           Key :: key()) -> {ok, value()} | {error, Reason :: term()}.
+read(Tab, Key) ->
+    case enterdb_lib:get_tab_def(Tab) of
+	TD = #enterdb_table{} ->
+	    DBKey = enterdb_lib:make_key(TD, Key),
+	    read_(Tab, DBKey);
+	{error, _} = R ->
+	    R
     end.
+
+read_(Tab, {ok, DBKey}) ->
+    {ok, {Node, Shard}} = gb_hash:get_node(Tab, DBKey),
+    rpc:call(Node, ?MODULE, do_read, [Shard, DBKey]);
+
+read_(_Tab, {error, _} = E) ->
+    E.
+
 -spec read_from_disk(Name :: string(),
 		     Key :: key()) -> ok | {error, Reason :: term()}.
 read_from_disk(Tab, Key) ->
-    case gb_hash:get_node(Tab, Key) of
-	{ok, {Node, Shard}} ->
-	    rpc:call(Node, ?MODULE, do_read_from_disk, [Shard, Key]);
-	_ ->
-	    {error, "no_table"}
+    case enterdb_lib:get_tab_def(Tab) of
+	TD = #enterdb_table{} ->
+	    DBKey = enterdb_lib:make_key(TD, Key),
+	    read_from_disk_(Tab, DBKey);
+	{error, _} = R ->
+	    R
     end.
+%% Key ok according to keydef
+read_from_disk_(Tab, {ok, DBKey}) ->
+    {ok, {Node, Shard}} = gb_hash:get_node(Tab, DBKey),
+    rpc:call(Node, ?MODULE, do_read_from_disk, [Shard, DBKey]);
+%% Key not ok
+read_from_disk_(_Tab, {error, _} = E) ->
+    E.
 
-do_read(Shard, Key) ->
-    TD = enterdb_lib:get_details(Shard),
-    case enterdb_lib:make_key(TD, Key) of
-	{ok, DBKey} ->
-	    enterdb_lib:make_app_value(TD, do_read(TD, Shard, DBKey));
-	E ->
-	    E
-    end.
+do_read(Shard, DBKey) ->
+    TD = enterdb_lib:get_shard_def(Shard),
+    enterdb_lib:make_app_value(TD, do_read(TD, Shard, DBKey)).
 
-do_read_from_disk(Shard, Key) ->
-    TD = enterdb_lib:get_details(Shard),
-    case enterdb_lib:make_key(TD, Key) of
-	{ok, DBKey} ->
-	    enterdb_lib:make_app_value(TD, do_read_from_disk(TD, Shard, DBKey));
-	E ->
-	    E
-    end.
+do_read_from_disk(Shard, DBKey) ->
+    TD = enterdb_lib:get_shard_def(Shard),
+    enterdb_lib:make_app_value(TD, do_read_from_disk(TD, Shard, DBKey)).
 
+%% internal read based on table / shard type
 do_read(_TD = #enterdb_stab{type = leveldb}, ShardTab, Key) ->
     enterdb_ldb_worker:read(ShardTab, Key);
+do_read(_TD = #enterdb_stab{type = Type}, _ShardTab, _Key) ->
+    {error, {read_not_supported, Type}};
 do_read({error, R}, _, _) ->
-    {error, R};
-do_read(#enterdb_stab{type = Type}, _ShardTab, _Key) ->
-    {error, {read_not_supported, Type}}.
+    {error, R}.
 
 do_read_from_disk(TD = #enterdb_stab{type = Type}, ShardTab, Key) when
 						    Type =:= ets_leveldb;
@@ -244,13 +253,19 @@ do_read_from_disk(TD, ShardTab, Key) ->
             Key :: key(),
             Columns :: [column()]) -> ok | {error, Reason :: term()}.
 write(Tab, Key, Columns) ->
-    case gb_hash:get_node(Tab,Key) of
-	{ok, {Node, Shard}} ->
-	    rpc:call(Node, ?MODULE, do_write, [Shard, Key, Columns]);
-	_ ->
-	    {error, "no_table"}
-
+    case enterdb_lib:get_tab_def(Tab) of
+	    TD = #enterdb_table{} ->
+	    DBKeyAndCols = enterdb_lib:make_key_columns(TD, Key, Columns),
+	    write_(Tab, DBKeyAndCols);
+	{error, _} = R ->
+	    R
     end.
+
+write_(Tab, {ok, DBKey, DBColumns}) ->
+    {ok, {Node, Shard}} = gb_hash:get_node(Tab, DBKey),
+    rpc:call(Node, ?MODULE, do_write, [Shard, DBKey, DBColumns]);
+write_(_Tab, {error, _} = E) ->
+    E.
 
 -spec write_to_disk(Name :: string(),
 		    Key :: key(),
@@ -262,23 +277,14 @@ write_to_disk(Tab, Key, Columns) ->
 	_ ->
 	    {error, "no_table"}
     end.
-do_write_to_disk(Shard, Key, Columns) ->
-    TD = enterdb_lib:get_details(Shard),
-    case enterdb_lib:make_key_columns(TD, Key, Columns) of
-	{ok, DBKey, DBColumns} ->
-	    do_write_to_disk(TD, Shard, DBKey, DBColumns);
-	E ->
-	    E
-    end.
 
-do_write(Shard, Key, Columns) ->
-    TD = enterdb_lib:get_details(Shard),
-    case enterdb_lib:make_key_columns(TD, Key, Columns) of
-	{ok, DBKey, DBColumns} ->
-	    do_write(TD, Shard, DBKey, DBColumns);
-	E ->
-	    E
-    end.
+do_write_to_disk(Shard, DBKey, DBColumns) ->
+    TD = enterdb_lib:get_shard_def(Shard),
+    do_write_to_disk(TD, Shard, DBKey, DBColumns).
+
+do_write(Shard, DBKey, DBColumns) ->
+    TD = enterdb_lib:get_shard_def(Shard),
+    do_write(TD, Shard, DBKey, DBColumns).
 
 do_write(_TD = #enterdb_stab{type = Type}, ShardTab, Key, Columns)
 when Type =:= ets_leveldb_wrapped ->
@@ -288,7 +294,7 @@ when Type =:= ets_leveldb_wrapped ->
 	{ok, Ts} ->
 	    case enterdb_mem_wrp:write(ShardTab, Ts, Key, Columns) of
 		{error, _} = _E ->
-		    %% Write to disk backend
+		    %% Write to disk
 		    enterdb_ldb_wrp:write(Ts, ShardTab, Key, Columns);
 		Res ->
 		    Res
@@ -319,7 +325,7 @@ when Type =:= ets_leveldb_wrapped ->
 	undefined ->
 	    undefined;
 	{ok, Ts} ->
-	    %% Write to disk backend
+	    %% Write to disk
 	    TimeMargin = 1, %% TODO: fix this
 	    FileMargin = 1, %% TODO: fix this
 	    enterdb_ldb_wrp:write(Ts, ShardTab, Key, Columns)
@@ -382,14 +388,7 @@ read_range_n(Name, StartKey, N) ->
 %%--------------------------------------------------------------------
 -spec delete_table(Name :: string()) -> ok | {error, Reason :: term()}.
 delete_table(Name) ->
-    case enterdb_db:transaction(fun() -> atomic_delete_table(Name)  end) of
-        {atomic, ok} ->
-            ok;
-        {atomic, {error, Reason}} ->
-	    {error, Reason};
-	{aborted, Reason} ->
-            {error, Reason}
-    end.
+    do_table_delete(Name).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -402,7 +401,7 @@ delete_table(Name) ->
 table_info(Name) ->
     case mnesia:dirty_read(enterdb_table, Name) of
 	[#enterdb_table{name = Name,
-			path = Path,
+			path = _Path,
 			key = KeyDefinition,
 			columns = ColumnsDefinition,
 			indexes = IndexesDefinition,
@@ -507,23 +506,15 @@ next(Ref) ->
 prev(Ref) ->
     enterdb_lit_worker:prev(Ref).
 
--spec atomic_delete_table(Name :: string()) -> ok | {error, Reason :: term()}.
-atomic_delete_table(Name) ->
-    case mnesia:read(enterdb_table, Name) of
+-spec do_table_delete(Name :: string()) -> ok | {error, Reason :: term()}.
+do_table_delete(Name) ->
+    case mnesia:dirty_read(enterdb_table, Name) of
 	[Table] ->
-	    Options = Table#enterdb_table.options,
-	    Type = proplists:get_value(type, Options),
-	    case Type of
-		leveldb ->
-		    ok = enterdb_lib:delete_leveldb_db(Table);
-		ets_leveldb ->
-		    ok = enterdb_lib:delete_leveldb_db(Table);
-		Else ->
-		    ?debug("enterdb:delete_table: {type, ~p} not supported", [Else]),
-		    {error, "type_not_supported"}
-	    end;
-	[] ->
-	    {error, "no_table"}
+	    Shards = Table#enterdb_table.shards,
+	    ok = enterdb_lib:delete_shards(Shards),
+	    ok = enterdb_lib:cleanup_table(Name, Shards);
+	_ ->
+	    {error, no_such_table}
     end.
 
 -spec find_timestamp_in_key(Key :: [{atom(), term()}]) -> undefined | {ok, Ts :: timestamp()}.
