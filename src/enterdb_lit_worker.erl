@@ -290,7 +290,8 @@ code_change(_OldVsn, State, _Extra) ->
 -spec init_iterators(Shards :: [string()]) ->
     [it()] | {error, Reason :: term()}.
 init_iterators(Shards) ->
-    [init_iterator(Shard) || Shard <- Shards].
+    Node = node(),
+    [init_iterator(Shard) || {N, Shard} <- Shards, N == Node].
 
 -spec init_iterator(Shard :: string()) ->
     It :: it().
