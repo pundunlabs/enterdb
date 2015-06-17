@@ -28,14 +28,16 @@
 create_tables(Nodes) ->
     [create_table(Nodes, T) || T <- [enterdb_stab,
 				     enterdb_table,
-				     enterdb_ldb_resource]].
+				     enterdb_ldb_resource,
+				     enterdb_lit_resource]].
 
 %%--------------------------------------------------------------------
 %% @doc
 %% Run mnesia activity with access context transaction with given fun
 %% @end
 %%--------------------------------------------------------------------
--spec transaction(Fun :: fun()) -> {aborted, Reason::term()} | {atomic, ResultOfFun::term()}.
+-spec transaction(Fun :: fun()) ->
+    {aborted, Reason :: term()} | {atomic, ResultOfFun :: term()}.
 transaction(Fun) ->
     case catch mnesia:activity(transaction, Fun) of
         {'EXIT', Reason} ->
@@ -77,6 +79,14 @@ create_table(Nodes, Name) when Name == enterdb_ldb_resource->
               {type, set}
              ],
     mnesia:create_table(Name, TabDef);
+create_table(Nodes, Name) when Name == enterdb_lit_resource->
+    TabDef = [{access_mode, read_write},
+              {attributes, record_info(fields, enterdb_lit_resource)},
+              {ram_copies, Nodes},
+              {load_order, 48},
+              {record_name, Name},
+              {type, bag}
+             ],
+    mnesia:create_table(Name, TabDef);
 create_table(_, _) ->
     {error, "Unknown table definition"}.
-

@@ -396,7 +396,7 @@ create_leveldb_shard(Shard, EDBT) ->
 	       {create_if_missing, true},
 	       {error_if_exists, true}],
     ChildArgs = [{name, Shard}, {subdir, EDBT#enterdb_stab.name},
-                 {options, Options}, {tab_rec, EDBT}],
+                 {options, Options}],
     {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
     ok.
 
@@ -407,7 +407,7 @@ open_leveldb_shard(Shard, EDBT) ->
 	       {create_if_missing, false},
 	       {error_if_exists, false}],
     ChildArgs = [{name, Shard}, {subdir, EDBT#enterdb_stab.name},
-                 {options, Options}, {tab_rec, EDBT}],
+                 {options, Options}],
     {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
     ok.
 
@@ -461,7 +461,7 @@ open_leveldb_db(Options, EDBT,
 		[#enterdb_shard{name = ShardName,
 				subdir = Subdir} | Rest]) ->
      ChildArgs = [{name, ShardName}, {subdir, Subdir},
-                  {options, Options}, {tab_rec, EDBT}],
+                  {options, Options}],
      case supervisor:start_child(enterdb_ldb_sup, [ChildArgs]) of
         {ok, _Pid} ->
             open_leveldb_db(Options, EDBT, Rest);

@@ -15,18 +15,27 @@
 
 -type data_model() :: binary | array | hash.
 
--type file_margin() :: pos_integer().
--type time_margin() :: pos_integer().
--type bucket_size() :: pos_integer().
--type num_buckets() :: pos_integer().
--type mem_wrapper() :: {bucket_size(), num_buckets()}.
--type wrapper()	    :: {file_margin(), time_margin()}.
+-type time_margin() :: {seconds, pos_integer()} |
+		       {minutes, pos_integer()} |
+		       {hours, pos_integer()} |
+		       undefined.
+
+-type size_margin() :: {bytes, pos_integer()} |
+		       undefined.
+
+-type comparator() :: ascending | descending.
+
+-record(enterdb_wrapper, {bucket_margin :: pos_integer(),
+			  time_margin :: time_margin(),
+			  size_margin :: size_margin()
+			 }).
 
 -type table_option() :: [{time_ordered, boolean()} |
-                         {wrapped, wrapper()} |
-			 {mem_wrapped, mem_wrapper()} |
+                         {wrapped, #enterdb_wrapper{}} |
+			 {mem_wrapped, #enterdb_wrapper{}} |
 			 {type, type()} |
                          {data_model, data_model()} |
+			 {comparator, comparator()} |
 			 {shards, integer()} |
 			 {nodes, [atom()]}].
 
@@ -36,31 +45,38 @@
 
 -type op() :: first | last | {seek, key()} | next | prev.
 -type it() :: binary().
--type comparator() :: ascending | descending.
 
 -record(enterdb_shard, {name :: string(),
 			subdir :: string()}).
+
+-type node_name() :: atom().
+-type shard_name() :: string().
 
 -record(enterdb_table, {name :: string(),
                         path :: string(),
                         key :: [atom()],
                         columns :: [atom()],
                         indexes :: [atom()],
-			comparator :: ascending | descending,
-                        type	:: atom(),
+			comparator :: comparator(),
+                        type	:: type(),
 			data_model :: data_model(),
 			options :: [table_option()],
-                        shards :: []}).
+                        shards :: [{node_name(), shard_name()}]}).
 %% enterdb shard tab
--record(enterdb_stab, {shard,
-		       name,
-		       type,
-		       key,
-		       columns,
-		       indexes,
-		       comparator,
-		       data_model}).
+-record(enterdb_stab, {shard :: shard_name(),
+		       name :: string(),
+		       type :: type(),
+		       key :: [atom()],
+		       columns :: [atom()],
+		       indexes :: [atom()],
+		       comparator :: comparator(),
+		       data_model :: data_model()}).
 
--record(enterdb_ldb_resource, {name :: string(),
+-record(enterdb_ldb_resource, {name :: shard_name(),
 			       resource :: binary()
 			      }).
+
+-record(enterdb_lit_resource, {name :: shard_name(),
+			       pid :: pid(),
+			       it :: binary()
+			     }).

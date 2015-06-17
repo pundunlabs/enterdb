@@ -39,16 +39,11 @@
 		readoptions,
                 writeoptions,
                 name,
-                key,
-                columns,
-                indexes,
 		is_empty,
                 time_ordered,
 		wrapped,
-		data_model,
 		path,
 		subdir,
-		shard_name,
 		options_pl}).
 
 %%%===================================================================
@@ -224,18 +219,11 @@ init(Args) ->
  
     OptionsPL = proplists:get_value(options, Args),
     
-    TabRec = proplists:get_value(tab_rec, Args),
-    #enterdb_stab{shard = ShardName,
-                  key = Key,
-		  columns = Columns,
-		  indexes = Indexes,
-		  data_model = DataModel} = TabRec,
-
     OptionsRec = build_leveldb_options(OptionsPL),
 
     case leveldb:options(OptionsRec) of
         {ok, Options} ->
-            FullPath = filename:join([Path, Subdir, ShardName]),
+            FullPath = filename:join([Path, Subdir, Name]),
             ok = filelib:ensure_dir(FullPath),
 	    case leveldb:open_db(Options, FullPath) of
                 {error, Reason} ->
@@ -253,15 +241,10 @@ init(Args) ->
 				readoptions = ReadOptions,
                                 writeoptions = WriteOptions,
                                 name = Name,
-                                key = Key,
-                                columns = Columns,
-                                indexes = Indexes,
                                 %%TODO: Add leveldb:is_empty(DB) to check. Use iterator. 
 				is_empty = true,
-				data_model = DataModel,
                                 path = Path,
 				subdir = Subdir,
-				shard_name = ShardName,
 				options_pl = OptionsPL}}
             end;
         {error, Reason} ->
@@ -288,10 +271,9 @@ handle_call({read, DBKey}, _From,
     Reply = leveldb:get(DB, ReadOptions, DBKey),
     {reply, Reply, State};
 handle_call({write, Key, Columns}, From,
-	    State = #state{is_empty = true,
-			   wrapped = {_, TimeMargin},
-			    shard_name = ShardName}) ->
-    ok = enterdb_server:wrap_level(?MODULE, ShardName, Key, TimeMargin),
+	    State = #state{name = Name, is_empty = true,
+			   wrapped = {_, TimeMargin}}) ->
+    ok = enterdb_server:wrap_level(?MODULE, Name, Key, TimeMargin),
     handle_call({write, Key, Columns}, From,
 		State#state{is_empty = false});
 handle_call({write, Key, Columns}, _From, State) ->
@@ -315,11 +297,6 @@ handle_call({read_range_n, StartKey, N, _Type}, _From, State) when N >= 0 ->
 	   readoptions = ReadOptions} = State,
     Reply = leveldb:read_range_n(DB, ReadOptions, StartKey, N),
     {reply, Reply, State};
-handle_call(get_data_model, _From, State = #state{key = KeyDef,
-						  columns = ColumnsDef,
-						  data_model = DataModel}) ->
-    Reply = {ok, DataModel, KeyDef, ColumnsDef},
-    {reply, Reply, State};
 handle_call(delete_db, _From, State = #state{db_ref = DB,
 					     options = Options,
 					     name = Name,
@@ -327,6 +304,7 @@ handle_call(delete_db, _From, State = #state{db_ref = DB,
 					     subdir = Subdir}) ->
     ?debug("Deleting shard: ~p", [Name]),
     ok = delete_enterdb_ldb_resource(Name),
+    ok = delete_enterdb_lit_resource(Name),
     ok = leveldb:close_db(DB),
     FullPath = filename:join([Path, Subdir, Name]),
     ok = leveldb:destroy_db(FullPath, Options),
@@ -368,10 +346,10 @@ handle_call(approximate_size, _From, State) ->
 	   readoptions = ReadOptions} = State,
     R = leveldb:approximate_size(DB, ReadOptions),
     {reply, R, State};
-handle_call(get_iterator, _From, State) ->
+handle_call(get_iterator, {Pid, _Tag}, State) ->
     #state{db_ref = DB,
 	   readoptions = ReadOptions} = State,
-    R = leveldb:iterator(DB, ReadOptions),
+    R = get_iterator(State#state.name, DB, ReadOptions, Pid),
     {reply, R, State};
 handle_call(Req, From, State) ->
     R = ?warning("unkown request:~p, from: ~p, state: ~p", [Req, From, State]),
@@ -400,6 +378,19 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_info({'DOWN', _Ref, process, Pid, _Info},
+	    State = #state{name = Name}) ->
+    case find_enterdb_lit_resource(Name, Pid) of
+	{ok, #enterdb_lit_resource{it = It} = R} ->
+	    mnesia:dirty_delete_object(R),
+	    Del = leveldb:delete_iterator(It),
+	    ?debug("Monitored Iterator DOWN (~p), delete_iterator -> ~p",
+		    [Pid, Del]);
+	{error, Reason} ->
+	    ?debug("Monitored Iterator DOWN (~p), it not in register: ~p",
+		    [Pid, {error, Reason}])
+    end,
+    {noreply, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -419,6 +410,7 @@ terminate(_Reason, _State = #state{db_ref = undefined}) ->
 terminate(_Reason, _State = #state{db_ref = DB,  name = Name}) ->
     ?debug("Terminating ldb worker for shard: ~p", [Name]),
     ok = delete_enterdb_ldb_resource(Name),
+    ok = delete_enterdb_lit_resource(Name),
     ok = leveldb:close_db(DB).
 
 %%--------------------------------------------------------------------
@@ -438,10 +430,72 @@ code_change(_OldVsn, State, _Extra) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Get a leveldb iterator and register the oterator resource to
+%% keep track.
+%% @end
+%%--------------------------------------------------------------------
+-spec get_iterator(Name :: string(), DB :: binary(),
+		   ReadOptions :: binary(), Pid :: pid()) ->
+    {ok, It :: binary()} | {error, Reason :: term()}.
+get_iterator(Name, DB, ReadOptions, Pid) ->
+    case leveldb:iterator(DB, ReadOptions) of
+	{ok, It} ->
+	    register_it(Name, Pid, It);
+	{error, R} ->
+	    {error, R}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Get a leveldb iterator and register the oterator resource to
+%% keep track.
+%% @end
+%%--------------------------------------------------------------------
+-spec register_it(Name :: string(), Pid :: pid(), It :: binary()) ->
+    {ok, It :: binary()} | {error, Reason :: term()}.
+register_it(Name, Pid, It) ->
+    R = #enterdb_lit_resource{name = Name, pid = Pid, it = It},
+    case mnesia:dirty_write(R) of
+	ok ->
+	    erlang:monitor(process, Pid),
+	    {ok, It};
+	_ ->
+	    Del = leveldb:delete_iterator(It),
+	    ?debug("Failed to register it, delete_iterator -> ~p", [Del]),
+	    {error, register}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Find leveldb iterator resource from register by given Name and Pid.
+%% @end
+%%--------------------------------------------------------------------
+-spec find_enterdb_lit_resource(Name :: string(), Pid :: pid()) ->
+    {ok, It :: binary()} | {error, Reason :: term()}.
+find_enterdb_lit_resource(Name, Pid) ->
+    case mnesia:dirty_read(enterdb_lit_resource, Name) of
+	[] ->
+	    {error, register};
+	List when is_list(List) ->
+	    case lists:keyfind(Pid, #enterdb_lit_resource.pid, List) of
+		#enterdb_lit_resource{} = R ->
+		    {ok, R};
+		false ->
+		    {error, register}
+	    end;
+	E ->
+	    ?debug("mnesia:dirty_read(enterdb_lit_resource, ~p) -> ~p",
+		    [Name, E]),
+	    {error, register}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Build a #leveldb_options{} record with provided proplist.
 %% @end
 %%--------------------------------------------------------------------
--spec build_leveldb_options(OptionsPL::[{atom(), term()}]) -> ok | {error, Reason::term()}.
+-spec build_leveldb_options(OptionsPL :: [{atom(), term()}]) ->
+    ok | {error, Reason :: term()}.
 build_leveldb_options(OptionsPL) ->
     leveldb_lib:build_leveldb_options(OptionsPL).
 
@@ -450,7 +504,8 @@ build_leveldb_options(OptionsPL) ->
 %% Build a #leveldb_readoptions{} record with provided proplist.
 %% @end
 %%--------------------------------------------------------------------
--spec build_leveldb_readoptions(OptionsPL::[{atom(), term()}]) -> ok | {error, Reason::term()}.
+-spec build_leveldb_readoptions(OptionsPL :: [{atom(), term()}]) ->
+    ok | {error, Reason :: term()}.
 build_leveldb_readoptions(OptionsPL) ->
     leveldb_lib:build_leveldb_readoptions(OptionsPL).
 
@@ -459,7 +514,8 @@ build_leveldb_readoptions(OptionsPL) ->
 %% Build a #leveldb_writeoptions{} record with provided proplist.
 %% @end
 %%--------------------------------------------------------------------
--spec build_leveldb_writeoptions(OptionsPL::[{atom(), term()}]) -> ok | {error, Reason::term()}.
+-spec build_leveldb_writeoptions(OptionsPL :: [{atom(), term()}]) ->
+    ok | {error, Reason::term()}.
 build_leveldb_writeoptions(OptionsPL) ->
     leveldb_lib:build_leveldb_writeoptions(OptionsPL).
 
@@ -476,6 +532,7 @@ ensure_closed(Name) ->
 	{ok, DB} ->
 	    ?debug("Old DB resource found for shard: ~p, closing and deleting..", [Name]),
 	    ok = delete_enterdb_ldb_resource(Name),
+	    ok = delete_enterdb_lit_resource(Name),
 	    ok = leveldb:close_db(DB);
 	{error, Reason} ->
 	    {error, Reason}
@@ -487,7 +544,8 @@ ensure_closed(Name) ->
 %% Store the #enterdb_ldb_resource entry in mnesia ram_copy
 %% @end
 %%--------------------------------------------------------------------
--spec write_enterdb_ldb_resource(EnterdbLdbResource::#enterdb_ldb_resource{}) -> ok | {error, Reason::term()}.
+-spec write_enterdb_ldb_resource(EnterdbLdbResource :: #enterdb_ldb_resource{}) ->
+    ok | {error, Reason :: term()}.
 write_enterdb_ldb_resource(EnterdbLdbResource) ->
     case enterdb_db:transaction(fun() -> mnesia:write(EnterdbLdbResource) end) of
         {atomic, ok} ->
@@ -501,8 +559,8 @@ write_enterdb_ldb_resource(EnterdbLdbResource) ->
 %% Read the #enterdb_ldb_resource entry in mnesia ram_copy
 %% @end
 %%--------------------------------------------------------------------
--spec read_enterdb_ldb_resource(Name :: atom()) -> {ok, Resource :: binary} |
-						    {error, Reason::term()}.
+-spec read_enterdb_ldb_resource(Name :: atom()) ->
+    {ok, Resource :: binary} | {error, Reason :: term()}.
 read_enterdb_ldb_resource(Name) ->
     case enterdb_db:transaction(fun() -> mnesia:read(enterdb_ldb_resource, Name) end) of
         {atomic, []} ->
@@ -518,11 +576,36 @@ read_enterdb_ldb_resource(Name) ->
 %% Delete the #enterdb_ldb_resource entry in mnesia ram_copy
 %% @end
 %%--------------------------------------------------------------------
--spec delete_enterdb_ldb_resource(Name :: atom()) -> ok | {error, Reason::term()}.
+-spec delete_enterdb_ldb_resource(Name :: atom()) ->
+    ok | {error, Reason :: term()}.
 delete_enterdb_ldb_resource(Name) ->
     case enterdb_db:transaction(fun() -> mnesia:delete(enterdb_ldb_resource, Name, write) end) of
         {atomic, ok} ->
             ok;
         {aborted, Reason} ->
            {error, {aborted, Reason}}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Delete the #enterdb_lit_resource entry in mnesia ram_copy and delete
+%% leveldb iterator resources.
+%% @end
+%%--------------------------------------------------------------------
+-spec delete_enterdb_lit_resource(Name :: atom()) -> ok.
+delete_enterdb_lit_resource(Name) ->
+    case mnesia:dirty_read(enterdb_lit_resource, Name) of
+	[] ->
+	    ok;
+	List when is_list(List) ->
+	    [ begin #enterdb_lit_resource{pid = Pid, it = It} = R,
+		    ok = enterdb_lit_worker:stop(Pid),
+		    leveldb:delete_iterator(It),
+		    mnesia:dirty_delete_object(R)
+	      end || R <- List],
+	      ok;
+	E ->
+	    ?debug("mnesia:dirty_read(enterdb_lit_resource, ~p) -> ~p",
+		    [Name, E]),
+	    {error, register}
     end.

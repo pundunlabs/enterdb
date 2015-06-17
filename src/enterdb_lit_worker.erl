@@ -3,7 +3,7 @@
 -behaviour(gen_server).
 
 %% API functions
--export([start_link/1]).
+-export([start_link/1, stop/1]).
 
 -export([first/1,
 	 last/1,
@@ -46,6 +46,16 @@
     {ok, Pid :: pid()} | ignore | {error, Reason :: term()}.
 start_link(Args) ->
     gen_server:start_link(?MODULE, Args, []).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Stops the server. Called by an enterdb_ldb_worker process when it
+%% resource should be deleted.
+%% @end
+%%--------------------------------------------------------------------
+-spec stop(Pid :: pid()) -> ok.
+stop(Pid) ->
+    gen_server:cast(Pid, stop).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -160,7 +170,6 @@ init(Args) ->
 			   key = Key,
 			   columns = Columns,
 			   iterators = Iterators},
-	    %register_it(State),
 	    {ok, State, 100}
     end.
 
@@ -241,6 +250,9 @@ handle_call(_Request, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_cast(stop, State) ->
+    ?debug("Received stop msg, stoping ..",[]),
+    {stop, normal, State};
 handle_cast(_Msg, State) ->
     {noreply, State, 0}.
 
@@ -270,9 +282,8 @@ handle_info(_Info, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(_Reason, #state{iterators = Iterators}) ->
-    [ leveldb:delete_iterator(It) || It <- Iterators].
-
+terminate(_Reason, _State) ->
+    ok.
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
