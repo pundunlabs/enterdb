@@ -58,8 +58,7 @@
 -spec start_link(Args :: [{atom(), term()} | atom()]) ->
     {ok, Pid :: pid()} | ignore | {error, Error :: term()}.
 start_link(Args) ->
-    Name = list_to_atom(proplists:get_value(name, Args)),
-    gen_server:start_link({local, Name}, ?MODULE, Args, []).
+    gen_server:start_link(?MODULE, Args, []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -74,7 +73,7 @@ start_link(Args) ->
            Key :: key()) -> {ok, Value :: term()} |
                             {error, Reason :: term()}.
 read(Shard, Key) ->
-    ServerRef = list_to_atom(Shard),
+    ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, {read, Key}).
 
 %%--------------------------------------------------------------------
@@ -86,7 +85,7 @@ read(Shard, Key) ->
             Key :: key(),
             Columns :: [column()]) -> ok | {error, Reason :: term()}.
 write(Shard, Key, Columns) ->
-    ServerRef = list_to_atom(Shard),
+    ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, {write, Key, Columns}).
 
 %%--------------------------------------------------------------------
@@ -98,7 +97,7 @@ write(Shard, Key, Columns) ->
 -spec delete(Shard :: string(),
              Key :: key()) -> ok | {error, Reason :: term()}.
 delete(Shard, Key) ->
-    ServerRef = list_to_atom(Shard),
+    ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, {delete, Key}).
 
 %%--------------------------------------------------------------------
@@ -109,7 +108,7 @@ delete(Shard, Key) ->
 %%--------------------------------------------------------------------
 -spec delete_db(Shard :: string()) -> ok | {error, Reason::term()}.
 delete_db(Shard) ->
-    ServerRef = list_to_atom(Shard),
+    ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, delete_db).
 
 %%--------------------------------------------------------------------
@@ -124,7 +123,7 @@ delete_db(Shard) ->
     {ok, [{binary(), binary()}], Cont :: complete | key()} |
     {error, Reason :: term()}.
 read_range_binary(Shard, Range, Chunk) ->
-    ServerRef = list_to_atom(Shard),
+    ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, {read_range, Range, Chunk, binary}).
 
 %%--------------------------------------------------------------------
@@ -139,7 +138,7 @@ read_range_binary(Shard, Range, Chunk) ->
     {ok, [{binary(), binary()}], Cont :: complete | key()} |
     {error, Reason :: term()}.
 read_range_term(Shard, Range, Chunk) ->
-    ServerRef = list_to_atom(Shard),
+    ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, {read_range, Range, Chunk, term}).
 
 %%--------------------------------------------------------------------
@@ -153,7 +152,7 @@ read_range_term(Shard, Range, Chunk) ->
 			  N :: pos_integer()) ->
     {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
 read_range_n_binary(Shard, StartKey, N) ->
-    ServerRef = list_to_atom(Shard),
+    ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, {read_range_n, StartKey, N, binary}).
 
 %%--------------------------------------------------------------------
@@ -164,7 +163,7 @@ read_range_n_binary(Shard, StartKey, N) ->
 %%--------------------------------------------------------------------
 -spec recreate_shard(Shard :: string()) -> ok.
 recreate_shard(Shard) ->
-    ServerRef = list_to_atom(Shard),
+    ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, recreate_shard).
 
 %%--------------------------------------------------------------------
@@ -175,7 +174,7 @@ recreate_shard(Shard) ->
 -spec approximate_sizes(Shard :: string(), Ranges :: key_range()) ->
     {ok, Sizes :: [pos_integer()]} | {error, Reason :: term()}.
 approximate_sizes(Shard, Ranges) ->
-    ServerRef = list_to_atom(Shard),
+    ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, {approximate_sizes, Ranges}).
 
 %%--------------------------------------------------------------------
@@ -186,7 +185,7 @@ approximate_sizes(Shard, Ranges) ->
 -spec approximate_size(Shard :: string()) ->
     {ok, Size :: pos_integer()} | {error, Reason :: term()}.
 approximate_size(Shard) ->
-    ServerRef = list_to_atom(Shard),
+    ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, approximate_size).
 
 %%--------------------------------------------------------------------
@@ -197,8 +196,8 @@ approximate_size(Shard) ->
 -spec get_iterator(Shard :: string()) ->
     {ok, It :: it()} | {error, Reason :: term()}.
 get_iterator(Shard) ->
-    ServerRef = list_to_atom(Shard),
-    gen_server:call(ServerRef, get_iterator).
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, get_iterator).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -213,6 +212,7 @@ get_iterator(Shard) ->
 %%--------------------------------------------------------------------
 init(Args) ->
     Name = proplists:get_value(name, Args),
+    enterdb_ns:register_pid(self(), Name),
     Subdir = proplists:get_value(subdir, Args),
     Path = enterdb_server:get_db_path(),
     ok = ensure_closed(Name),

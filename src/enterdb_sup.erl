@@ -59,16 +59,18 @@ init([]) ->
     SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
 
     EdbServer	    = {enterdb_server, {enterdb_server, start_link, []},
-	             permanent, 20000, worker, [enterdb_server]},
+			permanent, 20000, worker, [enterdb_server]},
     EdbMemMgrServer = {enterdb_mem_wrp_mgr, {enterdb_mem_wrp_mgr, start_link, []},
-	             permanent, 2000, worker, [enterdb_mem_wrp_mgr]},
-    EdbLDBSup    = {enterdb_ldb_sup,
-		     {enterdb_simple_sup, start_link,[leveldb]},
-                     permanent, infinity, supervisor,[enterdb_simple_sup]},
-    EdbLITSup    = {enterdb_lit_sup,
-		     {enterdb_simple_sup, start_link,[leveldb_it]},
-                     permanent, infinity, supervisor,[enterdb_simple_sup]},
-    {ok, {SupFlags, [EdbLITSup, EdbLDBSup, EdbMemMgrServer, EdbServer]}}.
+			permanent, 2000, worker, [enterdb_mem_wrp_mgr]},
+    EdbLDBSup	    = {enterdb_ldb_sup,
+			{enterdb_simple_sup, start_link,[leveldb]},
+			permanent, infinity, supervisor,[enterdb_simple_sup]},
+    EdbLITSup	    = {enterdb_lit_sup,
+			{enterdb_simple_sup, start_link,[leveldb_it]},
+			permanent, infinity, supervisor,[enterdb_simple_sup]},
+    EdbNS	    = {enterdb_ns, {enterdb_ns, start_link, []},
+			permanent, 20000, worker, [enterdb_ns]},
+    {ok, {SupFlags, [EdbNS, EdbLITSup, EdbLDBSup, EdbMemMgrServer, EdbServer]}}.
 
 %%%===================================================================
 %%% Internal functions

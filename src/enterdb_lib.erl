@@ -396,7 +396,7 @@ create_leveldb_shard(Shard, EDBT) ->
 	       {create_if_missing, true},
 	       {error_if_exists, true}],
     ChildArgs = [{name, Shard}, {subdir, EDBT#enterdb_stab.name},
-                 {options, Options}],
+                 {options, Options}, {tab_rec, EDBT}],
     {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
     ok.
 
@@ -407,7 +407,7 @@ open_leveldb_shard(Shard, EDBT) ->
 	       {create_if_missing, false},
 	       {error_if_exists, false}],
     ChildArgs = [{name, Shard}, {subdir, EDBT#enterdb_stab.name},
-                 {options, Options}],
+                 {options, Options}, {tab_rec, EDBT}],
     {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
     ok.
 
@@ -461,7 +461,7 @@ open_leveldb_db(Options, EDBT,
 		[#enterdb_shard{name = ShardName,
 				subdir = Subdir} | Rest]) ->
      ChildArgs = [{name, ShardName}, {subdir, Subdir},
-                  {options, Options}],
+                  {options, Options}, {tab_rec, EDBT}],
      case supervisor:start_child(enterdb_ldb_sup, [ChildArgs]) of
         {ok, _Pid} ->
             open_leveldb_db(Options, EDBT, Rest);
@@ -971,3 +971,23 @@ comparator_to_dir(ascending) ->
     1;
 comparator_to_dir(descending) ->
     0.
+%-spec wrapped_read(TD, ShardTab, Key) ->
+%
+%{ok, TS} = find_timestamp_in_key(Key),
+%    {wrapped, FileMargin, TimeMargin} =
+%    Suffix = tda
+
+
+-spec find_timestamp_in_key(Key :: [{atom(), term()}]) -> undefined | {ok, Ts :: timestamp()}.
+find_timestamp_in_key([])->
+    undefined;
+find_timestamp_in_key([{ts, Ts}|_Rest]) ->
+    {ok, Ts};
+find_timestamp_in_key([_|Rest]) ->
+    find_timestamp_in_key(Rest).
+
+-spec tda(FileMargin :: pos_integer(), TimeMargin :: pos_integer(), Ts :: timestamp()) ->
+    Bucket :: integer().
+tda(FileMargin, TimeMargin, {_, Seconds, _}) ->
+    N = Seconds div TimeMargin,
+    N rem FileMargin.
