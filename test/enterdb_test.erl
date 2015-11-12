@@ -1,3 +1,25 @@
+%%%===================================================================
+%% @author Erdem Aksu
+%% @copyright 2015 Pundun Labs AB
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%% http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+%% implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%% -------------------------------------------------------------------
+%% @title
+%% @doc
+%% Module Description: Some example test functions for enterdb.
+%% @end
+%%%===================================================================
+
 -module(enterdb_test).
 
 -export([open_table/1,
@@ -108,7 +130,6 @@ create_wrapping_table(Name) ->
     Indexes = [],
     Options = [{type, leveldb},
 	       {data_model,binary},
-	       {time_ordered, true},
 	       {wrapped, {16, 60}}], 
     enterdb:create_table(Name, Keys, Columns, Indexes, Options).
 
@@ -125,7 +146,6 @@ create_mem_wrapping_table(Name) ->
     Indexes = [],
     Options = [{type, ets_leveldb},
 	       {data_model,binary},
-	       {time_ordered, true},
 	       {mem_wrapped, {5, 12}},
 	       {wrapped, {16, 60}}],
     enterdb:create_table(Name, Keys, Columns, Indexes, Options).
@@ -143,7 +163,6 @@ create_mem_wrapping_table_2(Name) ->
     Indexes = [],
     Options = [{type, ets_leveldb},
 	       {data_model,binary},
-	       {time_ordered, true},
 	       {mem_wrapped, {2, 3}},
 	       {wrapped, {16, 60}}],
     enterdb:create_table(Name, Keys, Columns, Indexes, Options).

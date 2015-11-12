@@ -83,12 +83,12 @@ get(Key) ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
-    ?info("starting up"),
-    Ets = ets:new(enterdb_ns, [named_table,
-			       public,
-			       {read_concurrency, true},
-			       {keypos, #ns_entry.key}]),
-    {ok, #state{ns_table=Ets}}.
+    ?info("Starting EnterDB Name Server."),
+    Options = [named_table, public,
+	       {read_concurrency, true},
+	       {keypos, #ns_entry.key}],
+    NsTable = ets:new(enterdb_ns, Options),
+    {ok, #state{ns_table=NsTable}}.
 
 %%--------------------------------------------------------------------
 %% @private

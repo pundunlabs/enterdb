@@ -1,30 +1,25 @@
-%%% _________________________________________________________________________
-%%% Copyright (C) 2010 by
-%%% MobileArts
-%%% S-111 61 Stockholm
-%%% Sweden
-%%%
-%%% Email:    info@mobilearts.se
-%%% Homepage: http://www.mobilearts.se
-%%%
-%%% This file contains confidential information that remains the property
-%%% of MobileArts, and may not be used, copied, circulated, or distributed
-%%% without prior written consent of MobileArts.
-%%% _________________________________________________________________________
-%%%
-%%% Revision:         '$Id: $'
-%%% Author:           'erdem.aksu@mobilearts.com'
-%%% This version:     '$Revision: $'
-%%% Last modified:    '$Date: $'
-%%% Last modified by: '$Author: $'
-%%% _________________________________________________________________________
-%%%
-%%%
-%%%   EnterDB Server that manages application configuration, wrapping tables
-%%% and possible other operations required to be done sequentially.
-%%%
-%%% _________________________________________________________________________
-
+%%%===================================================================
+%% @author Erdem Aksu
+%% @copyright 2015 Pundun Labs AB
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%% http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+%% implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%% -------------------------------------------------------------------
+%% @title
+%% @doc
+%% EnterDB Server that manages application configuration, wrapping tables
+%% and possible other operations required to be done sequentially.
+%% @end
+%%%===================================================================
 
 -module(enterdb_server).
 
@@ -267,23 +262,7 @@ code_change(_OldVsn, State, _Extra) ->
 open_shards() ->
     case enterdb_db:transaction(fun() -> mnesia:all_keys(enterdb_stab) end) of
 	{atomic, DBList} ->
-	    open_shards(DBList);
-	{error, Reason} ->
-	    {error, Reason}
-    end.
-%%--------------------------------------------------------------------
-%% @doc
-%% Open database table shards for this node
-%% @end
-%%--------------------------------------------------------------------
--spec open_shards(ShardList :: [string()]) -> ok | {error, Reason :: term()}.
-open_shards([]) ->
-    ok;
-open_shards([Shard | Rest]) ->
-    ?debug("Opening Shard: ~p",[Shard]),
-    case enterdb_lib:open_shard(Shard) of
-	ok ->
-	    open_shards(Rest);
+	    enterdb_lib:open_shards(DBList);
 	{error, Reason} ->
 	    {error, Reason}
     end.

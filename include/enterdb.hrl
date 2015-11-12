@@ -1,4 +1,23 @@
+%%%===================================================================
+%% @author Erdem Aksu
+%% @copyright 2015 Pundun Labs AB
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%% http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+%% implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%% -------------------------------------------------------------------
+%%
 %% Enterdb records and macro definitions.
+%%%===================================================================
+
 
 -define(MAX_TABLE_NAME_LENGTH, 64).
 
@@ -20,21 +39,26 @@
 		       {hours, pos_integer()} |
 		       undefined.
 
--type size_margin() :: {bytes, pos_integer()} |
+-type size_margin() :: {megabytes, pos_integer()} |
 		       undefined.
 
 -type comparator() :: ascending | descending.
 
--record(enterdb_wrapper, {bucket_margin :: pos_integer(),
+-record(enterdb_wrapper, {num_of_buckets :: pos_integer(),
 			  time_margin :: time_margin(),
 			  size_margin :: size_margin()
 			 }).
 
--type table_option() :: [{time_ordered, boolean()} |
-                         {wrapped, #enterdb_wrapper{}} |
-			 {mem_wrapped, #enterdb_wrapper{}} |
-			 {type, type()} |
+%% bucket_span and Num_buckets are used by mem_wrapped.
+%% We keep these seperate since the design of disk based wrapping
+%% is changed and diversed.
+-type bucket_span() :: pos_integer().
+-type num_buckets() :: pos_integer().
+
+-type table_option() :: [{type, type()} |
                          {data_model, data_model()} |
+			 {wrapper, #enterdb_wrapper{}} |
+			 {mem_wrapped, {bucket_span(), num_buckets()}} |
 			 {comparator, comparator()} |
 			 {shards, integer()} |
 			 {nodes, [atom()]}].
@@ -46,11 +70,11 @@
 -type op() :: first | last | {seek, key()} | next | prev.
 -type it() :: binary().
 
--record(enterdb_shard, {name :: string(),
-			subdir :: string()}).
-
 -type node_name() :: atom().
 -type shard_name() :: string().
+
+-record(enterdb_shard, {name :: shard_name(),
+			node :: atom()}).
 
 -record(enterdb_table, {name :: string(),
                         path :: string(),
@@ -70,7 +94,9 @@
 		       columns :: [atom()],
 		       indexes :: [atom()],
 		       comparator :: comparator(),
-		       data_model :: data_model()}).
+		       data_model :: data_model(),
+		       wrapper :: #enterdb_wrapper{},
+		       buckets :: [shard_name()]}).
 
 -record(enterdb_ldb_resource, {name :: shard_name(),
 			       resource :: binary()

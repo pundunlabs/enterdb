@@ -70,7 +70,9 @@ init([]) ->
 			permanent, infinity, supervisor,[enterdb_simple_sup]},
     EdbNS	    = {enterdb_ns, {enterdb_ns, start_link, []},
 			permanent, 20000, worker, [enterdb_ns]},
-    {ok, {SupFlags, [EdbNS, EdbLITSup, EdbLDBSup, EdbMemMgrServer, EdbServer]}}.
+    EdbLdbWrp	    = {enterdb_ldb_wrp, {enterdb_ldb_wrp, start_link, []},
+			permanent, 20000, worker, [enterdb_ldb_wrp]},
+    {ok, {SupFlags, [EdbNS, EdbLdbWrp, EdbLITSup, EdbLDBSup, EdbMemMgrServer, EdbServer]}}.
 
 %%%===================================================================
 %%% Internal functions

@@ -1,18 +1,32 @@
-%%%-------------------------------------------------------------------
-%%% @author erdem aksu <erdem@sitting>
-%%% @copyright (C) 2015, Mobile Arts AB
-%%% @doc
-%%% Enterdb the key/value storage.
-%%% @end
+%%%===================================================================
+%% @author Erdem Aksu
+%% @copyright 2015 Pundun Labs AB
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%% http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+%% implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%% -------------------------------------------------------------------
+%% @title
+%% @doc
+%% Enterdb the key/value storage.
+%% @end
 %%% Created :  15 Feb 2015 by erdem <erdem@sitting>
-%%%-------------------------------------------------------------------
+%%%===================================================================
+
 -module(enterdb).
 
 %% API
 -export([create_table/5,
          open_table/1,
 	 close_table/1,
-	 close_shard/1,
 	 read/2,
          read_from_disk/2,
 	 write/3,
@@ -117,18 +131,7 @@ open_table(Name) ->
         {atomic, []} ->
             {error, "no_table"};
         {atomic, [Table]} ->
-	    Options = Table#enterdb_table.options,
-	    Type = proplists:get_value(type, Options),
-            case Type of
-		leveldb ->
-		    enterdb_lib:open_leveldb_db(Table);
-		ets_leveldb ->
-		    enterdb_mem:init_tab(Name, Options),
-		    enterdb_lib:open_leveldb_db(Table);
-		Else ->
-		    ?debug("enterdb:open_table: {type, ~p} not supported", [Else]),
-		    {error, "type_not_supported"}
-	    end;
+	    enterdb_lib:open_db(Table);
         {error, Reason} ->
             {error, Reason}
     end.
@@ -144,40 +147,10 @@ close_table(Name) ->
         {atomic, []} ->
             {error, "no_table"};
         {atomic, [Table]} ->
-	    Options = Table#enterdb_table.options,
-	    Type = proplists:get_value(type, Options),
-            case Type of
-		leveldb ->
-		    enterdb_lib:close_leveldb_db(Table);
-		Else ->
-		    ?debug("enterdb:close_table: {type, ~p} not supported", [Else]),
-		    {error, "type_not_supported"}
-	    end;
+	    enterdb_lib:close_db(Table);
         {error, Reason} ->
             {error, Reason}
     end.
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Close an existing enterdb database shard.
-%% @end
-%%--------------------------------------------------------------------
--spec close_shard(Name :: string())-> ok | {error, Reason :: term()}.
-close_shard(Shard) ->
-    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_stab, Shard) end) of
-        {atomic, []} ->
-            {error, "no_table"};
-        {atomic, [Shard]} ->
-	    do_close_shard(Shard);
-	{error, Reason} ->
-            {error, Reason}
-    end.
-
-do_close_shard(#enterdb_stab{shard = Shard, type = ets_leveldb}) ->
-    %% enterdb_mem_wrp_mgr:dump_shard(Shard), %% TODO: implement dump_shard for mem_wrp
-    enterdb_lib:close_leveldb_shard(Shard);
-do_close_shard(#enterdb_stab{shard = Shard, type = leveldb}) ->
-    enterdb_lib:close_leveldb_shard(Shard).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -231,8 +204,10 @@ do_read_from_disk(Shard, DBKey) ->
 %% internal read based on table / shard type
 do_read(_TD = #enterdb_stab{type = leveldb}, ShardTab, Key) ->
     enterdb_ldb_worker:read(ShardTab, Key);
+do_read(_TD = #enterdb_stab{type = leveldb_wrapped}, ShardTab, Key) ->
+    enterdb_ldb_wrp:read(ShardTab, Key);
 do_read(_TD = #enterdb_stab{type = Type}, _ShardTab, _Key) ->
-    {error, {read_not_supported, Type}};
+    {error, {"read_not_supported", Type}};
 do_read({error, R}, _, _) ->
     {error, R}.
 
@@ -262,6 +237,10 @@ write(Tab, Key, Columns) ->
 	    R
     end.
 
+-spec write_(Tab :: string(),
+	     DB_Key_Columns :: {ok, DBKey :: binary(), DBColumns :: binary()} |
+			       {error, Error :: term()} ) ->
+    ok | {error, Reason :: term()}.
 write_(Tab, {ok, DBKey, DBColumns}) ->
     {ok, {Node, Shard}} = gb_hash:get_node(Tab, DBKey),
     rpc:call(Node, ?MODULE, do_write, [Shard, DBKey, DBColumns]);
@@ -301,36 +280,25 @@ when Type =:= ets_leveldb_wrapped ->
 		    Res
 	    end
     end;
-do_write(_TD = #enterdb_stab{type = leveldb_wrapped}, ShardTab, Key, Columns) ->
-    case find_timestamp_in_key(Key) of
-	undefined ->
-	    undefined;
-	{ok, Ts} ->
-	    enterdb_ldb_wrp:write(Ts, ShardTab, Key, Columns)
-    end;
-do_write(_TD = #enterdb_stab{type = ets_leveldb}, _Tab, _Key, _Columns) ->
-    ok;
+do_write(_TD = #enterdb_stab{type = leveldb_wrapped,
+			     wrapper = Wrapper},
+	 ShardTab, Key, Columns) ->
+    enterdb_ldb_wrp:write(ShardTab, Wrapper, Key, Columns);
 do_write(_TD = #enterdb_stab{type = leveldb}, ShardTab, Key, Columns) ->
     enterdb_ldb_worker:write(ShardTab, Key, Columns);
-
+do_write(_TD = #enterdb_stab{type = ets_leveldb}, _Tab, _Key, _Columns) ->
+    ok;
 do_write({error, R}, _, _Key, _Columns) ->
     {error, R};
-
 do_write(TD, Tab, Key, _Columns) ->
     ?debug("could not write ~p", [{TD, Tab, Key}]),
     {error, {bad_tab, {Tab,TD}}}.
 
-do_write_to_disk(_TD = #enterdb_stab{type = Type}, ShardTab, Key, Columns)
-when Type =:= ets_leveldb_wrapped ->
-    case find_timestamp_in_key(Key) of
-	undefined ->
-	    undefined;
-	{ok, Ts} ->
-	    %% Write to disk
-	    TimeMargin = 1, %% TODO: fix this
-	    FileMargin = 1, %% TODO: fix this
-	    enterdb_ldb_wrp:write(Ts, ShardTab, Key, Columns)
-    end;
+do_write_to_disk(#enterdb_stab{type = Type,
+			       wrapper = Wrapper},
+		 ShardTab, Key, Columns)
+    when Type =:= ets_leveldb_wrapped ->
+    enterdb_ldb_wrp:write(ShardTab, Wrapper, Key, Columns);
 
 do_write_to_disk(TD, ShardTab, Key, Columns) ->
     do_write(TD, ShardTab, Key, Columns).
@@ -542,9 +510,3 @@ find_timestamp_in_key([{ts, Ts}|_Rest]) ->
     {ok, Ts};
 find_timestamp_in_key([_|Rest]) ->
     find_timestamp_in_key(Rest).
-
--spec tda(FileMargin :: pos_integer(), TimeMargin :: pos_integer(), Ts :: timestamp()) ->
-    Bucket :: integer().
-tda(FileMargin, TimeMargin, {_, Seconds, _}) ->
-    N = Seconds div TimeMargin,
-    N rem FileMargin.
