@@ -128,9 +128,9 @@ create_wrapping_table(Name) ->
     Keys = [ts, imsi],
     Columns = [value],
     Indexes = [],
-    Options = [{type, leveldb},
+    Options = [{type, leveldb_wrapped},
 	       {data_model,binary},
-	       {wrapped, {16, 60}}], 
+	       {wrapper, #enterdb_wrapper{num_of_buckets = 10, size_margin = {megabytes, 10}}}],
     enterdb:create_table(Name, Keys, Columns, Indexes, Options).
 
 %%--------------------------------------------------------------------
