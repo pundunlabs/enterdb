@@ -198,7 +198,7 @@ get_shard_def(Shard) ->
 update_bucket_list(ShardName, Buckets) ->
     Fun =
 	fun() ->
-	    {atomic, [EnterdbShard]} = mnesia:read(enterdb_stab, ShardName),
+	    [EnterdbShard] = mnesia:read(enterdb_stab, ShardName),
 	    mnesia:write(EnterdbShard#enterdb_stab{buckets=Buckets})
 	end,
     case enterdb_db:transaction(Fun) of
