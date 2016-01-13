@@ -14,7 +14,6 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %% -------------------------------------------------------------------
-%% @title
 %% @doc
 %% Module Description: Some example test functions for enterdb.
 %% @end
@@ -146,7 +145,7 @@ create_mem_wrapping_table(Name) ->
     Indexes = [],
     Options = [{type, ets_leveldb},
 	       {data_model,binary},
-	       {mem_wrapped, {5, 12}},
+	       {mem_wrapper, {5, 12}},
 	       {wrapped, {16, 60}}],
     enterdb:create_table(Name, Keys, Columns, Indexes, Options).
 
@@ -163,7 +162,7 @@ create_mem_wrapping_table_2(Name) ->
     Indexes = [],
     Options = [{type, ets_leveldb},
 	       {data_model,binary},
-	       {mem_wrapped, {2, 3}},
+	       {mem_wrapper, {2, 3}},
 	       {wrapped, {16, 60}}],
     enterdb:create_table(Name, Keys, Columns, Indexes, Options).
 

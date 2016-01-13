@@ -14,7 +14,6 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %% -------------------------------------------------------------------
-%% @title
 %% @doc
 %% Enterdb the key/value storage library functions.
 %% @end
@@ -71,52 +70,60 @@
 %% Verify the args given to enterdb:create_table/5
 %% @end
 %%--------------------------------------------------------------------
--spec verify_create_table_args(Args :: [{atom(), term()}]) -> {ok, #enterdb_table{}} |
-                                                              {error, Reason::term()}.
+-spec verify_create_table_args(Args :: [{atom(), term()}]) ->
+    {ok, #enterdb_table{}} |
+    {error, Reason::term()}.
 verify_create_table_args(Args)->
     verify_create_table_args(Args, #enterdb_table{}).
 
 verify_create_table_args([], #enterdb_table{} = EnterdbTable)->
     {ok, EnterdbTable};
-verify_create_table_args([{name, Name}|Rest], #enterdb_table{} = EnterdbTable) when is_list(Name)->
+verify_create_table_args([{name, Name} | Rest],
+			 #enterdb_table{} = EdbTab) when is_list(Name)->
     case verify_name(Name) of
         ok ->
-            verify_create_table_args(Rest, EnterdbTable#enterdb_table{name = Name});            
+            verify_create_table_args(Rest, EdbTab#enterdb_table{name = Name});
         {error, Reason} ->
             {error, Reason}
     end;
-verify_create_table_args([{key, Key}|Rest], #enterdb_table{} = EnterdbTable) when is_list(Key)->
-    case verify_fields(Key) of
+verify_create_table_args([{key, Key}|Rest],
+			 #enterdb_table{} = EdbTab) ->
+    case verify_key(Key) of
         ok ->
-           verify_create_table_args(Rest, EnterdbTable#enterdb_table{key = Key});
+           verify_create_table_args(Rest, EdbTab#enterdb_table{key = Key});
         {error, Reason} ->
            {error, {Key, Reason}}
     end;
 verify_create_table_args([{columns, Columns}|Rest],
-                          #enterdb_table{key = Key} = EnterdbTable) when is_list(Columns)->
-    case verify_fields(Columns) of
+                          #enterdb_table{key = Key} = EdbTab) ->
+    case verify_columns(Columns) of
         ok ->
            OnlyDataColumns = lists:subtract(Columns, Key),
-           verify_create_table_args(Rest, EnterdbTable#enterdb_table{columns = OnlyDataColumns});
+           verify_create_table_args(Rest,
+	    EdbTab#enterdb_table{columns = OnlyDataColumns});
         {error, Reason} ->
            {error, {Columns, Reason}}
     end;
 verify_create_table_args([{indexes, Indexes}|Rest],
                          #enterdb_table{key = Key,
-                                        columns = Columns} = EnterdbTable) when is_list(Indexes)->
+                                        columns = Columns} = EnterdbTable)
+    when is_list(Indexes)->
     case verify_fields(Indexes++Key) of
         ok ->
             {ok, NewColumns} = add_index_fields_to_columns(Indexes, Columns),
-            verify_create_table_args(Rest, EnterdbTable#enterdb_table{columns = NewColumns,
-                                                                      indexes = Indexes});
+            verify_create_table_args(Rest,
+		EnterdbTable#enterdb_table{columns = NewColumns,
+                                           indexes = Indexes});
         {error, Reason} ->
            {error, {Indexes, Reason}}
     end;
 verify_create_table_args([{options, Options}|Rest],
-                         #enterdb_table{} = EnterdbTable) when is_list(Options)->
+                         #enterdb_table{} = EnterdbTable)
+    when is_list(Options)->
     case verify_table_options(Options) of
         ok ->
-            verify_create_table_args(Rest, EnterdbTable#enterdb_table{options = Options});
+            verify_create_table_args(Rest,
+		EnterdbTable#enterdb_table{options = Options});
         {error, Reason} ->
             {error, Reason}
     end;
@@ -125,31 +132,39 @@ verify_create_table_args([{Arg, _}|_], _)->
 
 %%-------------------------------------------------------------------
 %% @doc
-%% Verify if the given list elements are all atoms and the list
+%% Verify if the given list elements are all strings and the list
 %% has unique elements
 %% @end
 %%-------------------------------------------------------------------
--spec verify_fields(List::[term()]) -> ok | {error, Reason::term()}.
+-spec verify_fields(List::[term()]) ->
+    ok | {error, Reason::term()}.
 verify_fields([])->
     ok;
-verify_fields([Elem | Rest]) when is_atom(Elem)->
-    case lists:member(Elem, Rest) of
-        true ->
-            {error, "dublicate_key"};
-        false ->
-            verify_fields(Rest)
+verify_fields([Elem | Rest]) when is_list(Elem) ->
+    case io_lib:printable_list(Elem) of
+	true ->
+	    case lists:member(Elem, Rest) of
+		true ->
+		    {error, "dublicate_key"};
+		false ->
+		    verify_fields(Rest)
+	    end;
+	false ->
+	    {error, "not_printable"}
     end;
 verify_fields(_) ->
-    {error, "not_atom"}.
+    {error, "not_list"}.
 
--spec verify_name(String::string())-> ok | {error, Reason::term()}.
+-spec verify_name(String::string())->
+    ok | {error, Reason::term()}.
 verify_name(Name) ->
     case verify_name(Name, 0) of
         ok -> check_if_table_exists(Name);
         Error -> Error
     end.
 
--spec verify_name(String::string(), Acc::non_neg_integer())-> ok | {error, Reason::term()}.
+-spec verify_name(String::string(), Acc::non_neg_integer())->
+    ok | {error, Reason::term()}.
 verify_name(_, Acc) when Acc > ?MAX_TABLE_NAME_LENGTH ->
     {error, "too_long_name"};
 verify_name([Char|_Rest], _Acc) when Char > 255 ->
@@ -159,12 +174,41 @@ verify_name([_Char|Rest], Acc) ->
 verify_name([], _) ->
     ok.
 
+-spec verify_key(Key :: [string()]) ->
+    ok | {error, Reason :: term()}.
+verify_key(Key) when is_list(Key) ->
+    case length(Key) of
+	Len when Len < 1 ->
+	    {error, "no_key_field"};
+	Len when Len > 100 ->
+	    {error, "key_too_long"};
+	_ ->
+	    verify_fields(Key)
+    end;
+verify_key(_) ->
+    {error, "invalid_key"}.
+
+-spec verify_columns(Columns :: [string()]) ->
+    ok | {error, Reason :: term()}.
+verify_columns(Columns) when is_list(Columns) ->
+    case length(Columns) of
+	Len when Len < 1 ->
+	    {error, "no_columns_field"};
+	Len when Len > 10000 ->
+	    {error, "too_many_columns"};
+	_ ->
+	    verify_fields(Columns)
+    end;
+verify_columns(_) ->
+    {error, "invalid_columns"}.
+
 %%-------------------------------------------------------------------
 %% @doc
 %% Get table definition
 %% @end
 %%-------------------------------------------------------------------
--spec get_tab_def(string()) -> #enterdb_table{} | {error, Reason::term()}.
+-spec get_tab_def(string()) ->
+    #enterdb_table{} | {error, Reason::term()}.
 get_tab_def(Tab) ->
     case mnesia:dirty_read(enterdb_table, Tab) of
 	[TabDef] ->
@@ -178,7 +222,8 @@ get_tab_def(Tab) ->
 %% Get shard definition
 %% @end
 %%-------------------------------------------------------------------
--spec get_shard_def(string()) -> #enterdb_stab{} | {error, Reason::term()}.
+-spec get_shard_def(string()) ->
+    #enterdb_stab{} | {error, Reason::term()}.
 get_shard_def(Shard) ->
     case mnesia:dirty_read(enterdb_stab, Shard) of
 	[ShardTab] ->
@@ -194,7 +239,8 @@ get_shard_def(Shard) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec update_bucket_list(ShardName :: shard_name(),
-			 Buckets :: [shard_name()]) -> ok | {error, Reason :: term()}.
+			 Buckets :: [shard_name()]) ->
+    ok | {error, Reason :: term()}.
 update_bucket_list(ShardName, Buckets) ->
     Fun =
 	fun() ->
@@ -208,7 +254,8 @@ update_bucket_list(ShardName, Buckets) ->
            {error, {aborted, Reason}}
     end.
 
--spec add_index_fields_to_columns(Indexes::[atom()], Columns::[atom()])-> {ok, NewColumns::[atom()]}.
+-spec add_index_fields_to_columns(Indexes::[string()], Columns::[string()]) ->
+    {ok, NewColumns::[string()]}.
 add_index_fields_to_columns([], Columns)->
     {ok, Columns};
 add_index_fields_to_columns([Elem|Rest], Columns)->
@@ -219,10 +266,11 @@ add_index_fields_to_columns([Elem|Rest], Columns)->
             add_index_fields_to_columns(Rest, Columns++[Elem])
     end.
 
--spec verify_table_options(Options::[table_option()]) -> ok | {error, Reason::term()}.
-%% Nodes
-verify_table_options([{nodes, Nodes}|Rest])
-when is_list(Nodes) ->
+-spec verify_table_options(Options::[table_option()]) ->
+    ok | {error, Reason::term()}.
+%% Pre configured clusters
+verify_table_options([{clusters, Clusters}|Rest])
+when is_list(Clusters) ->
     verify_table_options(Rest);
 
 %% Number of Shards
@@ -259,12 +307,20 @@ verify_table_options([{wrapper, Wrapper} | Rest]) ->
     end;
 
 %% wrapping details for ets part of wrapped db
-verify_table_options([{mem_wrapped, {BucketSpan, NumBuckets}}|Rest])
+verify_table_options([{mem_wrapper, {BucketSpan, NumBuckets}}|Rest])
     when
 	is_integer( BucketSpan ), BucketSpan > 0,
 	is_integer( NumBuckets ), NumBuckets > 0
     ->
 	verify_table_options(Rest);
+%% comparator defines how the keys will be sorted
+verify_table_options([{comparator, C}|Rest]) when C == descending;
+						  C == ascending ->
+    verify_table_options(Rest);
+%% time_series states the key is compound and contains a timestamp
+%% These keys will be hashed without but sorted with timestamp value
+verify_table_options([{time_series, T}|Rest]) when is_boolean(T) ->
+    verify_table_options(Rest);
 %% Bad Option
 verify_table_options([Elem|_])->
     {error, {Elem, "invalid_option"}};
@@ -272,7 +328,8 @@ verify_table_options([Elem|_])->
 verify_table_options([]) ->
     ok.
 
--spec verify_wrapper(Wrapper :: #enterdb_wrapper{}) -> ok | {error, Reason :: term()}.
+-spec verify_wrapper(Wrapper :: #enterdb_wrapper{}) ->
+    ok | {error, Reason :: term()}.
 verify_wrapper(#enterdb_wrapper{time_margin = undefined,
 				size_margin = undefined} = Wrp) ->
     {error, {Wrp, "invalid_option"}};
@@ -289,7 +346,8 @@ verify_wrapper(#enterdb_wrapper{num_of_buckets = NumOfBuckets,
 verify_wrapper(Elem)->
     {error, {Elem, "invalid_option"}}.
 
--spec valid_time_margin(TimeMargin :: time_margin()) -> true | false.
+-spec valid_time_margin(TimeMargin :: time_margin()) ->
+    true | false.
 valid_time_margin({seconds, Time}) when is_integer(Time), Time > 0 ->
     true;
 valid_time_margin({minutes, Time}) when is_integer(Time), Time > 0 ->
@@ -299,15 +357,19 @@ valid_time_margin({hours, Time}) when is_integer(Time), Time > 0 ->
 valid_time_margin(_) ->
     false.
 
--spec valid_size_margin(SizeMargin :: size_margin()) -> true | false.
+-spec valid_size_margin(SizeMargin :: size_margin()) ->
+    true | false.
 valid_size_margin({megabytes, Size}) when is_integer(Size), Size > 0 ->
     true;
 valid_size_margin(_) ->
     false.
 
--spec check_if_table_exists(Name :: string()) -> ok | {error, Reason :: term()}.
+-spec check_if_table_exists(Name :: string()) ->
+    ok | {error, Reason :: term()}.
 check_if_table_exists(Name)->
-    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_table, Name) end) of
+    case enterdb_db:transaction(fun() ->
+				    mnesia:read(enterdb_table, Name)
+				end) of
         {atomic, []} ->
             ok;
         {atomic, [_Table]} ->
@@ -335,7 +397,8 @@ get_table_options(Shard) ->
 %% Check response for error
 %% @end
 %%--------------------------------------------------------------------
--spec check_error_response(RespList :: list) ->  ok| {error, RespList :: list }.
+-spec check_error_response(RespList :: list) ->
+    ok | {error, RespList :: list}.
 check_error_response([ok]) ->
     ok;
 check_error_response(ResponseList) ->
@@ -356,44 +419,42 @@ allocate_node(_, [], _N, Aux) ->
     lists:reverse(Aux).
 %%--------------------------------------------------------------------
 %% @doc
-%% Create and return list of #enterdb_shard records for all shards
+%% Create and return list of {Node, Shard} tuples for all shards
 %% @end
 %%--------------------------------------------------------------------
 -spec get_shards(Name :: string(),
 		 NumOfShards :: pos_integer(),
-		 Nodes :: [node()]) ->  {ok, [{node(), string()}]}.
+		 Nodes :: [node()]) ->
+    {ok, [{node(), string()}]}.
 get_shards(Name, NumOfShards, Nodes) ->
     Shards = [lists:concat([Name,"_shard",N]) ||N <- lists:seq(0, NumOfShards-1)],
     Options = [{algorithm, sha}, {strategy, uniform}],
     AllocatedShards = allocate_nodes(Nodes, Shards),
     %% TODO: move creation of ring to application also handling distribution
     gb_hash:create_ring(Name, AllocatedShards, Options),
-    EDB_SHARDS = [#enterdb_shard{name = Shard,
-				 node = Node} || {Node, Shard} <- AllocatedShards],
-    {ok, EDB_SHARDS}.
+    {ok, AllocatedShards}.
 
 %%--------------------------------------------------------------------
 %% @doc
 %% Call create table (shard) for each shard
 %% @end
 %%--------------------------------------------------------------------
--spec create_table(EnterdbTable::#enterdb_table{}) -> ok | {error, Reason::term()}. 
+-spec create_table(EnterdbTable::#enterdb_table{}) ->
+    ok | {error, Reason::term()}.
 create_table(#enterdb_table{shards = Shards} = EnterdbTable)->
     ShardRes =
-	[ rpc:call(Node, ?MODULE, do_create_shard, [Shard, EnterdbTable])
-	    || #enterdb_shard{name=Shard, node=Node} <- Shards ],
+	[rpc:call(Node, ?MODULE, do_create_shard, [Shard, EnterdbTable])
+	    || {Node, Shard} <- Shards],
     case lists:usort(ShardRes) of
 	[ok] -> %% all shards was created, lets write enterdb_table
 	    SchemaRes =
 		[ rpc:call(Node, ?MODULE, write_enterdb_table, [EnterdbTable])
-		    || Node <- lists:usort([Node || #enterdb_shard{node=Node} <- Shards])],
+		    || Node <- lists:usort([Node || {Node, _} <- Shards])],
 		%% TODO: do error handling (rollback and such)
 		check_error_response(lists:usort(SchemaRes));
 
-	[R] -> %% all shards replied the same
-	    R;
-	Error ->
-	    {error, Error}
+	R ->
+	   check_error_response(R)
     end.
 
 -spec do_create_shard(Shard :: shard_name(),
@@ -401,7 +462,7 @@ create_table(#enterdb_table{shards = Shards} = EnterdbTable)->
     ok | {error, Reason :: term()}.
 do_create_shard(Shard, EDBT) ->
     Options = EDBT#enterdb_table.options,
-    DataModel = proplists:get_value(data_model, Options),
+    DataModel = EDBT#enterdb_table.data_model,
     Wrapper = proplists:get_value(wrapper, Options),
     Buckets = get_buckets(Shard, EDBT#enterdb_table.type, Wrapper),
     ESTAB = #enterdb_stab{shard = Shard,
@@ -417,7 +478,8 @@ do_create_shard(Shard, EDBT) ->
     write_shard_table(ESTAB),
     do_create_shard_type(ESTAB).
 
--spec do_create_shard_type(ESTAB :: #enterdb_stab{}) -> ok.
+-spec do_create_shard_type(ESTAB :: #enterdb_stab{}) ->
+    ok.
 do_create_shard_type(#enterdb_stab{type = leveldb} = ESTAB) ->
     create_leveldb_shard(ESTAB);
 
@@ -437,7 +499,8 @@ do_create_shard_type(#enterdb_stab{type = ets_leveldb_wrapped} = ESTAB)->
 %% Open an existing enterdb database shard.
 %% @end
 %%--------------------------------------------------------------------
--spec open_shard(Name :: string())-> ok | {error, Reason :: term()}.
+-spec open_shard(Name :: string())->
+    ok | {error, Reason :: term()}.
 open_shard(Name) ->
     case enterdb_db:transaction(fun() -> mnesia:read(enterdb_stab, Name) end) of
         {atomic, []} ->
@@ -472,7 +535,8 @@ close_shard(Shard) ->
             {error, Reason}
     end.
 
--spec do_close_shard(ESTAB :: #enterdb_stab{}) -> ok.
+-spec do_close_shard(ESTAB :: #enterdb_stab{}) ->
+    ok.
 do_close_shard(#enterdb_stab{shard=Shard,
 			     type = leveldb})->
     supervisor:terminate_child(enterdb_ldb_sup, enterdb_ns:get(Shard));
@@ -485,19 +549,22 @@ do_close_shard(Else)->
 
 %% create leveldb shard
 %% TODO: move out to levedb specific lib.
--spec create_leveldb_shard(ESTAB :: #enterdb_stab{}) -> ok.
+-spec create_leveldb_shard(ESTAB :: #enterdb_stab{}) ->
+    ok.
 create_leveldb_shard(ESTAB) ->
     Options = [{comparator, ESTAB#enterdb_stab.comparator},
 	       {create_if_missing, true},
 	       {error_if_exists, true}],
-    ChildArgs = [{name, ESTAB#enterdb_stab.shard}, {subdir, ESTAB#enterdb_stab.name},
+    ChildArgs = [{name, ESTAB#enterdb_stab.shard},
+		 {subdir, ESTAB#enterdb_stab.name},
                  {options, Options}, {tab_rec, ESTAB}],
     {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
     ok.
 
 %% open leveldb shard
 %% TODO: move out to levedb specific lib.
--spec open_leveldb_shard(ESTAB :: #enterdb_stab{}) -> ok.
+-spec open_leveldb_shard(ESTAB :: #enterdb_stab{}) ->
+    ok.
 open_leveldb_shard(ESTAB) ->
     Options = [{comparator, ESTAB#enterdb_stab.comparator},
 	       {create_if_missing, false},
@@ -508,7 +575,8 @@ open_leveldb_shard(ESTAB) ->
     {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
     ok.
 
--spec create_leveldb_wrp_shard(ESTAB :: #enterdb_stab{}) -> ok.
+-spec create_leveldb_wrp_shard(ESTAB :: #enterdb_stab{}) ->
+    ok.
 create_leveldb_wrp_shard(#enterdb_stab{wrapper = undefined} = ESTAB) ->
     create_leveldb_shard(ESTAB);
 create_leveldb_wrp_shard(#enterdb_stab{shard = Shard,
@@ -522,11 +590,13 @@ create_leveldb_wrp_shard(#enterdb_stab{shard = Shard,
                  {options, Options}, {tab_rec, ESTAB}],
 
     ok = enterdb_ldb_wrp:init_buckets(Shard, Buckets, Wrapper),
-    [{ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [[{name, Bucket} | ChildArgs]]) ||
+    [{ok, _Pid} = supervisor:start_child(enterdb_ldb_sup,
+					 [[{name, Bucket} | ChildArgs]]) ||
 	Bucket <- Buckets],
     ok.
 
--spec open_leveldb_wrp_shard(ESTAB :: #enterdb_stab{}) -> ok.
+-spec open_leveldb_wrp_shard(ESTAB :: #enterdb_stab{}) ->
+    ok.
 open_leveldb_wrp_shard(#enterdb_stab{wrapper = undefined} = ESTAB) ->
     open_leveldb_shard(ESTAB);
 open_leveldb_wrp_shard(#enterdb_stab{shard = Shard,
@@ -539,10 +609,10 @@ open_leveldb_wrp_shard(#enterdb_stab{shard = Shard,
                  {options, Options}, {tab_rec, ESTAB}],
 
     ok = enterdb_ldb_wrp:init_buckets(Shard, Buckets, Wrapper),
-    [{ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [[{name, Bucket} | ChildArgs]]) ||
+    [{ok, _Pid} = supervisor:start_child(enterdb_ldb_sup,
+					 [[{name, Bucket} | ChildArgs]]) ||
 	Bucket <- Buckets],
     ok.
-
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -551,7 +621,8 @@ open_leveldb_wrp_shard(#enterdb_stab{shard = Shard,
 %%--------------------------------------------------------------------
 -spec get_buckets(Shard :: shard_name(),
 		  Type :: type(),
-		  Wrapper :: #enterdb_wrapper{}) -> [shard_name()] | undefined.
+		  Wrapper :: #enterdb_wrapper{}) ->
+    [shard_name()] | undefined.
 get_buckets(Shard, leveldb_wrapped, Wrapper) ->
     enterdb_ldb_wrp:create_bucket_list(Shard, Wrapper);
 get_buckets(_Shard, _, _Wrapper) ->
@@ -562,7 +633,8 @@ get_buckets(_Shard, _, _Wrapper) ->
 %% Store the #enterdb_stab entry in mnesia disc_copy
 %% @end
 %%--------------------------------------------------------------------
--spec write_shard_table(EnterdbShard::#enterdb_stab{}) -> ok | {error, Reason :: term()}.
+-spec write_shard_table(EnterdbShard::#enterdb_stab{}) ->
+    ok | {error, Reason :: term()}.
 write_shard_table(EnterdbShard) ->
     case enterdb_db:transaction(fun() -> mnesia:write(EnterdbShard) end) of
         {atomic, ok} ->
@@ -576,7 +648,8 @@ write_shard_table(EnterdbShard) ->
 %% Store the #enterdb_table entry in mnesia disc_copy
 %% @end
 %%--------------------------------------------------------------------
--spec write_enterdb_table(EnterdbTable::#enterdb_table{}) -> ok | {error, Reason :: term()}.
+-spec write_enterdb_table(EnterdbTable::#enterdb_table{}) ->
+    ok | {error, Reason :: term()}.
 write_enterdb_table(EnterdbTable) ->
     case enterdb_db:transaction(fun() -> mnesia:write(EnterdbTable) end) of
         {atomic, ok} ->
@@ -590,10 +663,11 @@ write_enterdb_table(EnterdbTable) ->
 %% Open an existing database specified by #enterdb_table{}.
 %% @end
 %%--------------------------------------------------------------------
--spec open_db(Table :: #enterdb_table{})-> ok | {error, Reason :: term()}.
+-spec open_db(Table :: #enterdb_table{})->
+    ok | {error, Reason :: term()}.
 open_db(#enterdb_table{shards = Shards}) ->
     Res = [rpc:call(Node, ?MODULE, open_shard, [Name])
-	    || #enterdb_shard{name=Name, node=Node} <- Shards],
+	    || {Node, Name} <- Shards],
     check_error_response(lists:usort(Res)).
 
 %%-------------------------------------------------------------------d
@@ -601,7 +675,8 @@ open_db(#enterdb_table{shards = Shards}) ->
 %% Open database table shards on defined node.
 %% @end
 %%--------------------------------------------------------------------
--spec open_shards(ShardList :: [string()]) -> ok | {error, Reason :: term()}.
+-spec open_shards(ShardList :: [string()]) ->
+    ok | {error, Reason :: term()}.
 open_shards([]) ->
     ok;
 open_shards([Shard | Rest]) ->
@@ -618,10 +693,11 @@ open_shards([Shard | Rest]) ->
 %% Close an existing leveldb database specified by #enterdb_table{}.
 %% @end
 %%--------------------------------------------------------------------
--spec close_db(Table :: #enterdb_table{})-> ok | {error, Reason :: term()}.
+-spec close_db(Table :: #enterdb_table{}) ->
+    ok | {error, Reason :: term()}.
 close_db(#enterdb_table{shards = Shards}) ->
     Res = [rpc:call(Node, ?MODULE, close_shard, [Name])
-	    || #enterdb_shard{name=Name, node=Node} <- Shards],
+	    || {Node, Name} <- Shards],
     check_error_response(lists:usort(Res)).
 
 %%--------------------------------------------------------------------
@@ -630,8 +706,9 @@ close_db(#enterdb_table{shards = Shards}) ->
 %% This function should be called within a mnesia transaction.
 %% @end
 %%--------------------------------------------------------------------
--spec delete_shards([#enterdb_shard{}])-> ok | {error, Reason :: term()}.
-delete_shards([#enterdb_shard{name=Shard, node=Node} | Rest]) ->
+-spec delete_shards([{Node :: atom(), Shard :: string()}]) ->
+    ok | {error, Reason :: term()}.
+delete_shards([{Node, Shard} | Rest]) ->
     rpc:call(Node, ?MODULE, delete_shard, [Shard]),
     delete_shards(Rest);
 delete_shards([]) ->
@@ -653,8 +730,9 @@ delete_shard_help({error, Reason}) ->
     {error, Reason}.
 
 cleanup_table(Name, Shards) ->
-    Nodes = lists:usort([Node || #enterdb_shard{node=Node} <- Shards]),
-    AllRes = [rpc:call(Node, ?MODULE, cleanup_table_help, [Name]) || Node <- Nodes],
+    Nodes = lists:usort([Node || {Node, _} <- Shards]),
+    AllRes = [rpc:call(Node, ?MODULE, cleanup_table_help, [Name]) ||
+		Node <- Nodes],
     case lists:usort(AllRes) of
 	[Res] ->
 	    Res;
@@ -692,7 +770,7 @@ read_range(Name, Range, Chunk) ->
 			   Chunk :: pos_integer()) ->
     {ok, [kvp()], Cont :: complete | key()} | {error, Reason :: term()}.
 read_range_on_shards(Name, Shards, Range, Chunk)->
-    Args = enterdb:table_info(Name,[data_model,key,columns,comparator]),
+    {ok, Args} = enterdb:table_info(Name,[data_model,key,columns,comparator]),
     KeyDef = proplists:get_value(key, Args),
     {StartKey, StopKey} = Range,
     {ok, StartKeyDB} = make_db_key(KeyDef, StartKey),
@@ -701,9 +779,10 @@ read_range_on_shards(Name, Shards, Range, Chunk)->
     KVLs_and_Conts =
 	[begin
 	    {ok, KVL, Cont} =
-		rpc:call(Node,enterdb_ldb_worker,read_range_binary,[Shard, RangeDB, Chunk]),
+		rpc:call(Node, enterdb_ldb_worker, read_range_binary,
+			 [Shard, RangeDB, Chunk]),
 	    {KVL, Cont}
-	 end || #enterdb_shard{name=Shard, node=Node} <- Shards],
+	 end || {Node, Shard} <- Shards],
     {KVLs, Conts} = lists:unzip(KVLs_and_Conts),
 
     DataModel = proplists:get_value(data_model, Args),
@@ -717,7 +796,7 @@ read_range_on_shards(Name, Shards, Range, Chunk)->
     {ok, ResultKVL} = make_app_kvp(DataModel, KeyDef, ColumnsDef, KVL),
     {ok, ResultKVL, ContKey}.
 
--spec merge_and_cut_kvls(KeyDef :: [atom()],
+-spec merge_and_cut_kvls(KeyDef :: [string()],
 			 Comparator :: comparator(),
 			 KVLs :: [[kvp()]],
 			 ContKeys :: [binary()]) ->
@@ -732,7 +811,8 @@ merge_and_cut_kvls(KeyDef, Comparator, KVLs, ContKeys) ->
     {ok, cut_kvl_at(Cont, MergedKVL), ContKey}.
 
 -spec reduce_cont(Comparator :: comparator(),
-		  Conts :: [binary()]) -> key().
+		  Conts :: [binary()]) ->
+    key().
 reduce_cont(Comparator, ContKeys) ->
     Dir = comparator_to_dir(Comparator),
     SortableKVPs = [{K, <<>>} || K <- ContKeys],
@@ -781,16 +861,20 @@ read_range_n_on_shards(Name, Shards, StartKey, N) ->
     %%NofShards = length(Shards),
     %%Part = (N div NofShards) + 1,
     %%To be safe, currently we try to read N from each shard.
-    Args = enterdb:table_info(Name,[data_model,key,columns]),
+    {ok, Args} = enterdb:table_info(Name,[data_model,key,columns]),
     KeyDef = proplists:get_value(key, Args),
     {ok, StartKeyDB} = make_db_key(KeyDef, StartKey),
 
+    ?debug("StartKeyDB: ~p, Shards: ~p",[StartKeyDB, Shards]),
     KVLs =
 	[begin
 	    {ok, KVL} =
-		rpc:call(Node, enterdb_ldb_worker, read_range_n_binary, [Shard, StartKeyDB, N]),
+		rpc:call(Node, enterdb_ldb_worker, read_range_n_binary,
+			 [Shard, StartKeyDB, N]),
+	    ?debug("KVL on ~p: ~p",[Shard, KVL]),
 	    KVL
-	 end || #enterdb_shard{name=Shard, node=Node} <- Shards],
+	 end || {Node, Shard} <- Shards],
+    ?debug("KVLs: ~p",[KVLs]),
     {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
     N_KVP = lists:sublist(MergedKVL, N),
     DataModel = proplists:get_value(data_model, Args),
@@ -802,14 +886,16 @@ read_range_n_on_shards(Name, Shards, StartKey, N) ->
 %% Get byte size from each shard of a table and return the sum.
 %% @end
 %%--------------------------------------------------------------------
--spec approximate_size(Backend :: atom(), Shards :: [#enterdb_shard{}]) ->
+-spec approximate_size(Backend :: string(),
+		       Shards :: [{Node :: atom(), Shard :: string()}]) ->
     {ok, Size :: pos_integer()} | {error, Reason :: term()}.
 approximate_size(leveldb, Shards) ->
-    Sizes = [begin
-		{ok, Size} =
-		    rpc:call(Node, enterdb_ldb_worker, approximate_size, [Shard]),
+    Sizes =
+	[begin
+	    {ok, Size} =
+		rpc:call(Node, enterdb_ldb_worker, approximate_size, [Shard]),
 		Size
-	     end || #enterdb_shard{name=Shard,node=Node} <- Shards],
+	 end || {Node, Shard} <- Shards],
     ?debug("Sizes of all shards: ~p", [Sizes]),
     sum_up_sizes(Sizes, 0);
 approximate_size(Type, _) ->
@@ -824,13 +910,14 @@ sum_up_sizes([Int | Rest], Sum) when is_integer(Int) ->
     sum_up_sizes(Rest, Sum + Int);
 sum_up_sizes([_ | Rest], Sum) ->
     sum_up_sizes(Rest, Sum).
+
 %%--------------------------------------------------------------------
 %% @doc
 %% Make key according to KeyDef defined in table configuration.
 %% @end
 %%--------------------------------------------------------------------
 -spec make_key(TD :: #enterdb_table{},
-		       Key :: [{atom(), term()}]) ->
+		       Key :: [{string(), term()}]) ->
     {ok, DbKey :: binary} | {error, Reason :: term()}.
 make_key(TD, Key) ->
     make_db_key(TD#enterdb_table.key, Key).
@@ -842,7 +929,7 @@ make_key(TD, Key) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec make_key_columns(TableDef :: #enterdb_table{},
-		       Key :: [{atom(), term()}],
+		       Key :: [{string(), term()}],
 		       Columns :: term()) ->
     {ok, DbKey :: binary, Columns :: binary} | {error, Reason :: term()}.
 make_key_columns(TD, Key, Columns) ->
@@ -867,8 +954,8 @@ make_key_columns_help(DBKey, TD, Columns) ->
 %% provided values in Key.
 %% @end
 %%--------------------------------------------------------------------
--spec make_db_key(KeyDef :: [atom()],
-		  Key :: [{atom(), term()}]) ->
+-spec make_db_key(KeyDef :: [string()],
+		  Key :: [{string(), term()}]) ->
     {ok, DbKey :: binary} | {error, Reason :: term()}.
 make_db_key(KeyDef, Key) ->
     KeyDefLen = length(KeyDef),
@@ -879,9 +966,9 @@ make_db_key(KeyDef, Key) ->
         {error, "key_mismatch"}
     end.
 
--spec make_db_key(KeyDef :: [atom()],
-		  Key :: [{atom(), term()}],
-		  DBKetList :: [term()]) ->
+-spec make_db_key(KeyDef :: [string()],
+		  Key :: [{string(), term()}],
+		  DBKeyList :: [term()]) ->
     ok | {error, Reason::term()}.
 make_db_key([], _, DbKeyList) ->
     Tuple = list_to_tuple(lists:reverse(DbKeyList)),
@@ -901,8 +988,8 @@ make_db_key([Field | Rest], Key, DbKeyList) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec make_db_value(DataModel :: data_model(),
-		    Columnsdef :: [atom()],
-		    Columns :: [{atom(), term()}])->
+		    Columnsdef :: [string()],
+		    Columns :: [{string(), term()}])->
     {ok, DbValue :: binary()} | {error, Reason :: term()}.
 make_db_value(binary, _, Columns) ->
     {ok, term_to_binary(Columns)};
@@ -911,8 +998,8 @@ make_db_value(array, ColumnsDef, Columns) ->
 make_db_value(hash, ColumnsDef, Columns) ->
     make_db_hash_value(ColumnsDef, Columns).
 
--spec make_db_array_value(ColumnsDef :: [atom()],
-			  Columns :: [{atom(), term()}]) ->
+-spec make_db_array_value(ColumnsDef :: [string()],
+			  Columns :: [{string(), term()}]) ->
     {ok, DbValue :: binary()} | {error, Reason :: term()}.
 make_db_array_value(ColumnsDef, Columns) ->
     ColDefLen = length(ColumnsDef),
@@ -923,8 +1010,8 @@ make_db_array_value(ColumnsDef, Columns) ->
         {error, "column_mismatch"}
     end.
 
--spec make_db_array_value(ColumnsDef :: [atom()],
-		          Columns :: [{atom(), term()}],
+-spec make_db_array_value(ColumnsDef :: [string()],
+		          Columns :: [{string(), term()}],
 		          DbValueList :: [term()]) ->
     {ok, DbValue :: binary()} | {error, Reason :: term()}.
 make_db_array_value([], _Columns, DbValueList) ->
@@ -938,8 +1025,8 @@ make_db_array_value([Field|Rest], Columns, DbValueList) ->
             {error, "column_mismatch"}
     end.
 
--spec make_db_hash_value(ColumnsDef :: [atom()],
-		         Columns :: [{atom(), term()}]) ->
+-spec make_db_hash_value(ColumnsDef :: [string()],
+		         Columns :: [{string(), term()}]) ->
     {ok, DbValue :: binary()} | {error, Reason :: term()}.
 make_db_hash_value(_ColumnsDef, Columns) ->
     Map = maps:from_list(Columns),
@@ -951,9 +1038,9 @@ make_db_hash_value(_ColumnsDef, Columns) ->
 %% configuration and provided Cloumns.
 %% @end
 %%--------------------------------------------------------------------
--spec make_db_indexes(Indexes::[atom()],
-		      Columns::[atom()] ) ->
-    {ok, DbIndexes::[{atom(),term()}]} | {error, Reason::term()}.
+-spec make_db_indexes(Indexes::[string()],
+		      Columns::[string()] ) ->
+    {ok, DbIndexes::[{string(), term()}]} | {error, Reason::term()}.
 make_db_indexes([],_) ->
     {ok, []};
 make_db_indexes(_, _)->
@@ -965,7 +1052,7 @@ make_db_indexes(_, _)->
 %% configuration and provided value DBKey.
 %% @end
 %%--------------------------------------------------------------------
--spec make_app_key(KeyDef :: [atom()],
+-spec make_app_key(KeyDef :: [string()],
 		   DbKey :: binary()) ->
     AppKey :: key().
 make_app_key(KeyDef, DbKey)->
@@ -996,19 +1083,18 @@ make_app_value(TD, {ok, DBValue}) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec make_app_value(DataModel :: data_model(),
-		     ColumnsDef :: [atom()],
+		     ColumnsDef :: [string()],
 		     DBValue :: binary()) ->
     Columns :: [term()].
-
 make_app_value(DataModel, ColumnsDef, DBValue) when not is_binary(DBValue)  ->
     format_app_value(DataModel, ColumnsDef, DBValue);
 make_app_value(DataModel, ColumnsDef, DBValue) ->
     format_app_value(DataModel, ColumnsDef, binary_to_term(DBValue)).
 
 -spec format_app_value(DataModel :: data_model(),
-		       ColumnsDef :: [atom()],
+		       ColumnsDef :: [string()],
 		       Value :: term()) ->
-    Columns :: [{atom(), term()}].
+    Columns :: [{string(), term()}].
 format_app_value(binary, _, Columns) ->
     Columns;
 format_app_value(array, ColumnsDef, Value) ->
@@ -1024,8 +1110,8 @@ format_app_value(hash, _, Value) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec make_app_kvp(DataModel :: data_model(),
-		   KeyDef :: [atom()],
-		   ColumnsDef :: [atom()],
+		   KeyDef :: [string()],
+		   ColumnsDef :: [string()],
 		   KVP :: {binary(), binary()} |
 			  [{binary(), binary()}]) ->
     {ok, [{key(), value()}]} | {error, Reason :: term()}.
@@ -1048,7 +1134,8 @@ make_app_kvp(DataModel, KeyDef, ColumnsDef, KVP) ->
 	end,
     {ok, AppKVP}.
 
--spec comparator_to_dir(Comparator :: ascending | descending) -> 0 | 1.
+-spec comparator_to_dir(Comparator :: ascending | descending) ->
+    0 | 1.
 comparator_to_dir(ascending) ->
     1;
 comparator_to_dir(descending) ->

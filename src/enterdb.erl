@@ -14,7 +14,6 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %% -------------------------------------------------------------------
-%% @title
 %% @doc
 %% Enterdb the key/value storage.
 %% @end
@@ -83,8 +82,8 @@ write_loop(N) when N > 0 ->
 %% neccesarly included in ColumnsDef list.
 %% @end
 %%--------------------------------------------------------------------
--spec create_table(Name :: string(), KeyDef :: [atom()],
-                   ColumnsDef :: [atom()], IndexesDef :: [atom()],
+-spec create_table(Name :: string(), KeyDef :: [string()],
+                   ColumnsDef :: [string()], IndexesDef :: [string()],
                    Options :: [table_option()])->
     ok | {error, Reason :: term()}.
 create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
@@ -100,8 +99,9 @@ create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
 		    %% Specific table options
 		    Type	= proplists:get_value(type, Options, leveldb),
 		    NumOfShards	= proplists:get_value(shards, Options, NumOfShards0),
+		    %% TODO: Change to cluster based configuration.
 		    Nodes	= proplists:get_value(nodes, Options, [node()]),
-		    DataModel	= proplists:get_value(data_model, Options),
+		    DataModel	= proplists:get_value(data_model, Options, binary),
 		    Comp = proplists:get_value(comparator, Options, descending),
 		    {ok, Shards} = enterdb_lib:get_shards(Name,
 							  NumOfShards,
@@ -112,7 +112,9 @@ create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
 						       type = Type,
 						       data_model = DataModel},
 
-		    enterdb_lib:create_table(NewEDBT);
+		    Res = enterdb_lib:create_table(NewEDBT),
+		    ?debug("CreateTable Res: ~p", [Res]),
+		    Res;
 		Else ->
 		    {error, Else}
 	    end;
@@ -335,6 +337,8 @@ do_delete(Shard, DBKey) ->
 %% internal read based on table / shard type
 do_delete(_TD = #enterdb_stab{type = leveldb}, ShardTab, Key) ->
     enterdb_ldb_worker:delete(ShardTab, Key);
+do_delete(_TD = #enterdb_stab{type = leveldb_wrapped}, ShardTab, Key) ->
+    enterdb_ldb_wrp:delete(ShardTab, Key);
 do_delete(_TD = #enterdb_stab{type = Type}, _ShardTab, _Key) ->
     {error, {delete_not_supported, Type}};
 do_delete({error, R}, _, _) ->
@@ -383,7 +387,7 @@ delete_table(Name) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec table_info(Name :: string()) ->
-    [{atom(), term()}] | {error, Reason :: term()}.
+    {ok, [{atom(), term()}]} | {error, Reason :: term()}.
 table_info(Name) ->
     case mnesia:dirty_read(enterdb_table, Name) of
 	[#enterdb_table{name = Name,
@@ -397,12 +401,12 @@ table_info(Name) ->
 			}] ->
 	    Type = proplists:get_value(type, Options),
 	    {ok, Size} = enterdb_lib:approximate_size(Type, Shards),
-	    [{name, Name},
-	     {key, KeyDefinition},
-	     {columns, ColumnsDefinition},
-	     {indexes, IndexesDefinition},
-	     {comparator, Comp},
-	     {size, Size} | Options];
+	    {ok, [{name, Name},
+		  {key, KeyDefinition},
+		  {columns, ColumnsDefinition},
+		  {indexes, IndexesDefinition},
+		  {comparator, Comp},
+		  {size, Size} | Options]};
 	[] ->
 	    {error, "no_table"}
     end.
@@ -413,7 +417,7 @@ table_info(Name) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec table_info(Name :: string(), Parameters :: [atom()]) ->
-    [{atom(), term()}] | {error, Reason :: term()}.
+    {ok, [{atom(), term()}]} | {error, Reason :: term()}.
 table_info(Name, Parameters) ->
     case mnesia:dirty_read(enterdb_table, Name) of
 	[#enterdb_table{name = Name,
@@ -422,6 +426,7 @@ table_info(Name, Parameters) ->
 			columns = ColumnsDefinition,
 			indexes = IndexesDefinition,
 			comparator = Comp,
+			data_model = DataModel,
 			options = Options,
 			shards = Shards
 			}] ->
@@ -431,8 +436,9 @@ table_info(Name, Parameters) ->
 		    {columns, ColumnsDefinition},
 		    {indexes, IndexesDefinition},
 		    {comparator, Comp},
-		    {shards, Shards} | Options],
-	    [ proplists:lookup(P, List) || P <- Parameters];
+		    {shards, Shards},
+		    {data_model, DataModel} | Options],
+	    {ok, [ proplists:lookup(P, List) || P <- Parameters]};
 	[] ->
 	    {error, "no_table"}
     end.
@@ -492,7 +498,8 @@ next(Ref) ->
 prev(Ref) ->
     enterdb_lit_worker:prev(Ref).
 
--spec do_table_delete(Name :: string()) -> ok | {error, Reason :: term()}.
+-spec do_table_delete(Name :: string()) ->
+ok | {error, Reason :: term()}.
 do_table_delete(Name) ->
     case mnesia:dirty_read(enterdb_table, Name) of
 	[Table] ->
@@ -503,10 +510,11 @@ do_table_delete(Name) ->
 	    {error, no_such_table}
     end.
 
--spec find_timestamp_in_key(Key :: [{atom(), term()}]) -> undefined | {ok, Ts :: timestamp()}.
+-spec find_timestamp_in_key(Key :: [{string(), term()}]) ->
+    undefined | {ok, Ts :: timestamp()}.
 find_timestamp_in_key([])->
     undefined;
-find_timestamp_in_key([{ts, Ts}|_Rest]) ->
+find_timestamp_in_key([{"ts", Ts}|_Rest]) ->
     {ok, Ts};
 find_timestamp_in_key([_|Rest]) ->
     find_timestamp_in_key(Rest).

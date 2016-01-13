@@ -13,21 +13,21 @@
 	 init_tab/2]).
 
 init_tab(#enterdb_table{name = Table, options = Options}) ->
-    MemWrapped  = proplists:get_value(mem_wrapped, Options),
-    [ init_mem_wrapped(Table, MemWrapped) || MemWrapped =/= undefined ].
+    MemWrapped  = proplists:get_value(mem_wrapper, Options),
+    [ init_mem_wrapper(Table, MemWrapped) || MemWrapped =/= undefined ].
 
 init_tab(Table, Options) ->
-    MemWrapped  = proplists:get_value(mem_wrapped, Options),
-    [ init_mem_wrapped(Table, MemWrapped) || MemWrapped =/= undefined ].
+    MemWrapped  = proplists:get_value(mem_wrapper, Options),
+    [ init_mem_wrapper(Table, MemWrapped) || MemWrapped =/= undefined ].
     
 %     case MemWrapped of
 % 	Conf when Conf =/= undefined ->
-% 	    init_mem_wrapped(Table, Conf);
+% 	    init_mem_wrapper(Table, Conf);
 % 	_ ->
 % 	    ok
 %     end.
 
-init_mem_wrapped(Table, {BucketSize, NumBuckets}) ->
+init_mem_wrapper(Table, {BucketSize, NumBuckets}) ->
     enterdb_mem_wrp_mgr:init_tab(Table, {BucketSize, NumBuckets}).
 
 

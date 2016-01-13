@@ -65,7 +65,7 @@ stop(Pid) ->
 -spec first(Name :: string()) ->
     {ok, kvp(), pid()} | {error, Reason :: term()}.
 first(Name) ->
-    Args = enterdb:table_info(Name,[name,data_model,key,columns]),
+    {ok, Args} = enterdb:table_info(Name,[name,data_model,key,columns]),
     case supervisor:start_child(enterdb_lit_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, first) of
@@ -86,7 +86,7 @@ first(Name) ->
 -spec last(Name :: string()) ->
     {ok, kvp(), pid()} | {error, Reason :: term()}.
 last(Name) ->
-    Args = enterdb:table_info(Name,[name,data_model,key,columns]),
+    {ok, Args} = enterdb:table_info(Name,[name,data_model,key,columns]),
     case supervisor:start_child(enterdb_lit_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, last) of
@@ -107,7 +107,7 @@ last(Name) ->
 -spec seek(Name :: string(), Key :: key()) ->
     {ok, kvp(), pid()} | {error, Reason :: term()}.
 seek(Name, Key) ->
-    Args = enterdb:table_info(Name,[name,data_model,key,columns]),
+    {ok, Args} = enterdb:table_info(Name,[name,data_model,key,columns]),
     case supervisor:start_child(enterdb_lit_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, {seek, Key}) of
@@ -449,8 +449,8 @@ get_current_key({error, _}) ->
 get_current_key({_,{Key,_}}) ->
     Key.
 
--spec make_db_key(KeyDef :: [atom()],
-               Key :: [{atom(), term()}]) ->
+-spec make_db_key(KeyDef :: [string()],
+               Key :: [{string(), term()}]) ->
     {ok, DbKey :: binary} | {error, Reason :: term()}.
 make_db_key(KeyDef, Key) ->
     enterdb_lib:make_db_key(KeyDef, Key).

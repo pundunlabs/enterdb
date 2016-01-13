@@ -14,7 +14,6 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %% -------------------------------------------------------------------
-%% @title
 %% @doc
 %% Module Description: LevelDB backend worker module
 %% @end

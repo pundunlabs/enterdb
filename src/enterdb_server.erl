@@ -14,7 +14,6 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %% -------------------------------------------------------------------
-%% @title
 %% @doc
 %% EnterDB Server that manages application configuration, wrapping tables
 %% and possible other operations required to be done sequentially.

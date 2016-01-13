@@ -14,7 +14,6 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %% -------------------------------------------------------------------
-%% @title
 %% @doc
 %% Module Description:
 %% @end
@@ -83,10 +82,14 @@ start_link() ->
 %% @end
 %%--------------------------------------------------------------------
 -spec create_bucket_list(Shard :: string(),
-			 Wrapper :: #enterdb_wrapper{} ) -> Buckets :: [string()].
-create_bucket_list(Shard, #enterdb_wrapper{num_of_buckets = NumOfBuckets} = Wrapper) ->
-    ?debug("Creating bucket names for wrapped shard: ~p, wrapper: ~p", [Shard, Wrapper]),
-    [lists:concat([Shard, "_", Index]) || Index <- lists:seq(0, NumOfBuckets-1)].
+			 Wrapper :: #enterdb_wrapper{} ) ->
+    Buckets :: [string()].
+create_bucket_list(Shard,
+		   #enterdb_wrapper{num_of_buckets = NumOfBuckets} = Wrapper) ->
+    ?debug("Creating bucket names for wrapped shard: ~p, wrapper: ~p",
+	   [Shard, Wrapper]),
+    [lists:concat([Shard, "_", Index]) ||
+	Index <- lists:seq(0, NumOfBuckets-1)].
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -155,7 +158,8 @@ close_shard(Shard) ->
     ets:delete(?REFERENCE, Shard),
     ets:delete(?COUNTER, Shard),
     ets:delete(?BUCKET, Shard),
-    Res = [supervisor:terminate_child(enterdb_ldb_sup, enterdb_ns:get(B)) || B <- Buckets],
+    Res = [supervisor:terminate_child(enterdb_ldb_sup, enterdb_ns:get(B)) ||
+	    B <- Buckets],
     enterdb_lib:check_error_response(lists:usort(Res)).
 
 %%--------------------------------------------------------------------
@@ -321,7 +325,7 @@ register_timeout(_, undefined) ->
 register_timeout(Shard, TimeMargin) ->
     Time = calc_milliseconds(TimeMargin),
     {ok, Tref} = timer:apply_after(Time, ?MODULE, time_wrap, [Shard]),
-    true = register_timer_ref(Shard, [{tref, Tref}, {time_margin, TimeMargin}]),
+    true = register_timer_ref(Shard, [{tref, Tref},{time_margin, TimeMargin}]),
     ok.
 
 -spec register_timer_ref(Name :: shard_name(), PList :: [{atom, term()}]) ->
@@ -335,7 +339,7 @@ reset_timer(Shard) ->
     case ets:lookup(?REFERENCE, Shard) of
 	[] ->
 	    ok;
-	[PList] ->
+	[#entry{key=Name, value=PList}] ->
 	    Tref = proplists:get_value(tref, PList),
 	    timer:cancel(Tref),
 	    TimeMargin = proplists:get_value(time_margin, PList),
