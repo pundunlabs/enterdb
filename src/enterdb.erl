@@ -187,6 +187,7 @@ read_from_disk(Tab, Key) ->
 	{error, _} = R ->
 	    R
     end.
+
 %% Key ok according to keydef
 read_from_disk_(Tab, {ok, DBKey}) ->
     {ok, {Node, Shard}} = gb_hash:get_node(Tab, DBKey),
@@ -355,8 +356,31 @@ do_delete({error, R}, _, _) ->
 		 Chunk :: pos_integer()) ->
     {ok, [kvp()], Cont :: complete | key()} |
     {error, Reason :: term()}.
-read_range(Name, Range, Chunk) ->
-    enterdb_lib:read_range(Name, Range, Chunk).
+read_range(Name, {StartKey, StopKey}, Chunk) ->
+    case enterdb_lib:get_tab_def(Name) of
+	Tab = #enterdb_table{} ->
+	    DBStartKey = enterdb_lib:make_key(Tab, StartKey),
+	    DBStopKey = enterdb_lib:make_key(Tab, StopKey),
+	    read_range_(Tab, DBStartKey, DBStopKey, Chunk);
+	{error, _} = R ->
+	    R
+    end;
+read_range(_, Range, _) ->
+    {error, {badarg, Range}}.
+
+-spec read_range_(Name :: string(),
+		   DBStartKey :: {ok, binary()},
+		   DBStopKey :: {ok, binary()},
+		   Chunk :: pos_integer()) ->
+    {ok, [kvp()], Cont :: complete | key()} |
+    {error, Reason :: term()}.
+read_range_(Tab, {ok, DBStartK}, {ok, DBStopK}, Chunk) ->
+    Nodes = gb_hash:get_nodes(Tab#enterdb_table.name),
+    enterdb_lib:read_range_on_shards(Nodes, Tab, {DBStartK, DBStopK}, Chunk);
+read_range_(_Tab, {error, _} = E, _, _N) ->
+    E;
+read_range_(_Tab, _, {error, _} = E, _N) ->
+    E.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -369,7 +393,24 @@ read_range(Name, Range, Chunk) ->
 		   N :: pos_integer()) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
 read_range_n(Name, StartKey, N) ->
-    enterdb_lib:read_range_n(Name, StartKey, N).
+    case enterdb_lib:get_tab_def(Name) of
+	Tab = #enterdb_table{} ->
+	    DBKey = enterdb_lib:make_key(Tab, StartKey),
+	    read_range_n_(Tab, DBKey, N);
+	{error, _} = R ->
+	    R
+    end.
+
+
+-spec read_range_n_(Tab :: #enterdb_table{},
+		    {ok, DBKey :: binary()},
+		    N :: pos_integer()) ->
+    {ok, [kvp()]} | {error, Reason :: term()}.
+read_range_n_(Tab, {ok, DBKey}, N) ->
+    Nodes = gb_hash:get_nodes(Tab#enterdb_table.name),
+    enterdb_lib:read_range_n_on_shards(Nodes, Tab, DBKey, N);
+read_range_n_(_Tab, {error, _} = E, _N) ->
+    E.
 
 %%--------------------------------------------------------------------
 %% @doc

@@ -26,13 +26,12 @@
 		data_model,
 		key,
 		columns,
+		dir,
 		last_key,
 		iterators}).
 
 -define(TIMEOUT, 10000).
 
--define(ASCENDING, 1).
--define(DESCENDING, 0).
 %%%===================================================================
 %%% API functions
 %%%===================================================================
@@ -65,7 +64,7 @@ stop(Pid) ->
 -spec first(Name :: string()) ->
     {ok, kvp(), pid()} | {error, Reason :: term()}.
 first(Name) ->
-    {ok, Args} = enterdb:table_info(Name,[name,data_model,key,columns]),
+    {ok, Args} = get_args(Name),
     case supervisor:start_child(enterdb_lit_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, first) of
@@ -86,7 +85,7 @@ first(Name) ->
 -spec last(Name :: string()) ->
     {ok, kvp(), pid()} | {error, Reason :: term()}.
 last(Name) ->
-    {ok, Args} = enterdb:table_info(Name,[name,data_model,key,columns]),
+    {ok, Args} = get_args(Name),
     case supervisor:start_child(enterdb_lit_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, last) of
@@ -107,7 +106,7 @@ last(Name) ->
 -spec seek(Name :: string(), Key :: key()) ->
     {ok, kvp(), pid()} | {error, Reason :: term()}.
 seek(Name, Key) ->
-    {ok, Args} = enterdb:table_info(Name,[name,data_model,key,columns]),
+    {ok, Args} = get_args(Name),
     case supervisor:start_child(enterdb_lit_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, {seek, Key}) of
@@ -160,6 +159,8 @@ init(Args) ->
     DataModel = proplists:get_value(data_model, Args),
     Key = proplists:get_value(key, Args),
     Columns = proplists:get_value(columns, Args),
+    Comp = proplists:get_value(comparator, Args),
+    Dir = enterdb_lib:comparator_to_dir(Comp),
     case gb_hash:get_nodes(Name) of
 	undefined ->
 	    {stop, "no_table"};
@@ -169,6 +170,7 @@ init(Args) ->
 			   data_model = DataModel,
 			   key = Key,
 			   columns = Columns,
+			   dir = Dir,
 			   iterators = Iterators},
 	    {ok, State, 100}
     end.
@@ -191,29 +193,32 @@ init(Args) ->
 handle_call(first, _From, State = #state{iterators = Iterators,
 					 data_model = DataModel,
 					 key = Key,
-					 columns = Columns}) ->
+					 columns = Columns,
+					 dir = Dir}) ->
     KVL_Map = iterate(Iterators, first),
     ?debug("KVL_Map: ~p", [KVL_Map]),
-    FirstBin = apply_first(KVL_Map),
+    FirstBin = apply_first(Dir, KVL_Map),
     CurrentKey = get_current_key(FirstBin),
     First = make_app_kvp(FirstBin, DataModel, Key, Columns),
     {reply, First, State#state{last_key = CurrentKey}, ?TIMEOUT};
 handle_call(last, _From, State = #state{iterators = Iterators,
 					data_model = DataModel,
 					key = Key,
-					columns = Columns}) ->
+					columns = Columns,
+					dir = Dir}) ->
     KVL_Map = iterate(Iterators, last),
-    LastBin = apply_last(KVL_Map),
+    LastBin = apply_last(Dir, KVL_Map),
     CurrentKey = get_current_key(LastBin),
     Last = make_app_kvp(LastBin, DataModel, Key, Columns),
     {reply, Last, State#state{last_key = CurrentKey}, ?TIMEOUT};
 handle_call({seek, SKey}, _From, State = #state{iterators = Iterators,
 						data_model = DataModel,
 						key = KeyDef,
-						columns = Columns}) ->
+						columns = Columns,
+						dir = Dir}) ->
     {ok, DBKey} = make_db_key(KeyDef, SKey),
     KVL_Map = iterate(Iterators, {seek, DBKey}),
-    FirstBin = apply_first(KVL_Map),
+    FirstBin = apply_first(Dir, KVL_Map),
     CurrentKey = get_current_key(FirstBin),
     First = make_app_kvp(FirstBin, DataModel, KeyDef, Columns),
     {reply, First, State#state{last_key = CurrentKey}, ?TIMEOUT};
@@ -221,10 +226,11 @@ handle_call(next, _From, State = #state{iterators = Iterators,
 					last_key = LastKey,
 					data_model = DataModel,
 					key = Key,
-					columns = Columns}) ->
+					columns = Columns,
+					dir = Dir}) ->
     KVL_Map = iterate(Iterators, {seek, LastKey}),
     ?debug("KVL_Map: ~p~nLastKey: ~p", [KVL_Map, LastKey]),
-    NextBin = apply_next(KVL_Map, LastKey),
+    NextBin = apply_next(Dir, KVL_Map, LastKey),
     CurrentKey = get_current_key(NextBin),
     Next = make_app_kvp(NextBin, DataModel, Key, Columns),
     {reply, Next, State#state{last_key = CurrentKey}, ?TIMEOUT};
@@ -232,8 +238,9 @@ handle_call(prev, _From, State = #state{iterators = Iterators,
 					last_key = LastKey,
 					data_model = DataModel,
 					key = Key,
-					columns = Columns}) ->
-    PrevBin = apply_prev(Iterators, LastKey),
+					columns = Columns,
+					dir = Dir}) ->
+    PrevBin = apply_prev(Dir, Iterators, LastKey),
     CurrentKey = get_current_key(PrevBin),
     Prev = make_app_kvp(PrevBin, DataModel, Key, Columns),
     {reply, Prev, State#state{last_key = CurrentKey}, ?TIMEOUT};
@@ -298,6 +305,11 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+-spec get_args(Name :: string()) ->
+    {ok, Args :: [{atom(), term()}]}.
+get_args(Name) ->
+    enterdb:table_info(Name,[name, data_model, key, columns, comparator]).
+
 -spec init_iterators(Shards :: [string()]) ->
     [it()] | {error, Reason :: term()}.
 init_iterators(Shards) ->
@@ -341,84 +353,89 @@ apply_op(It, {seek, Key}) ->
 	    {invalid, It}
     end.
 
--spec apply_first(KVL_Map :: map()) ->
+-spec apply_first(Dir :: 0 | 1, KVL_Map :: map()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_first(KVL_Map)->
+apply_first(Dir, KVL_Map)->
     KVL = maps:keys(KVL_Map),
-    case leveldb_utils:sort_kvl(?DESCENDING, KVL) of
+    case leveldb_utils:sort_kvl(Dir, KVL) of
 	{ok, []} ->
 	    {error, invalid};
 	{ok, [First | _]} ->
 	    {ok, First};
 	{error, Reason} ->
-	    ?debug("leveldb_utils:sort_kvl(?DESCENDING, ~p) -> {error, ~p}",[KVL, Reason]),
+	    ?debug("leveldb_utils:sort_kvl(~p, ~p) -> {error, ~p}",
+		[Dir, KVL, Reason]),
 	    {error, invalid}
     end.
 
--spec apply_last(KVL_Map :: map()) ->
+-spec apply_last(Dir :: 0 | 1, KVL_Map :: map()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_last(KVL_Map)->
+apply_last(Dir, KVL_Map)->
     KVL = maps:keys(KVL_Map),
-    case leveldb_utils:sort_kvl(?ASCENDING, KVL) of
+    case leveldb_utils:sort_kvl(opposite(Dir), KVL) of
 	{ok, []} ->
 	    {error, invalid};
 	{ok, [Last | _]} ->
 	    {ok, Last};
 	{error, Reason} ->
-	    ?debug("leveldb_utils:sort_kvl(?ASCENDING, ~p) -> {error, ~p}",[KVL, Reason]),
+	    ?debug("leveldb_utils:sort_kvl(~p, ~p) -> {error, ~p}",
+		[opposite(Dir), KVL, Reason]),
 	    {error, invalid}
     end.
 
--spec apply_next(KVL_Map :: map(), LastKey :: key()) ->
+-spec apply_next(Dir :: 0 | 1, KVL_Map :: map(), LastKey :: key()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_next(KVL_Map, LastKey)->
+apply_next(Dir, KVL_Map, LastKey)->
     KVL = maps:keys(KVL_Map),
-    apply_next(KVL_Map, KVL, LastKey).
+    apply_next(Dir, KVL_Map, KVL, LastKey).
 
--spec apply_next(KVL_Map :: map(), KVL :: [kvp()], LastKey :: key()) ->
+-spec apply_next(Dir :: 0 | 1, KVL_Map :: map(),
+		 KVL :: [kvp()], LastKey :: key()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_next(_KVL_Map, [], _LastKey) ->
+apply_next(_Dir, _KVL_Map, [], _LastKey) ->
     {error, invalid};
-apply_next(KVL_Map, KVL, LastKey) ->
-    case leveldb_utils:sort_kvl(?DESCENDING, KVL) of
+apply_next(Dir, KVL_Map, KVL, LastKey) ->
+    case leveldb_utils:sort_kvl(Dir, KVL) of
 	{ok, [Head | Rest]} ->
-	    apply_next(KVL_Map, Head, Rest, LastKey);
+	    apply_next(Dir, KVL_Map, Head, Rest, LastKey);
 	{error, Reason} ->
-	    ?debug("leveldb_utils:sort_kvl(?DESCENDING, ~p) -> {error, ~p}",[KVL, Reason]),
+	    ?debug("leveldb_utils:sort_kvl(~p, ~p) -> {error, ~p}",
+		[Dir, KVL, Reason]),
 	    {error, invalid}
     end.
 
--spec apply_next(KVL_Map :: map(), Head :: kvp(),
+-spec apply_next(Dir :: 0 | 1, KVL_Map :: map(), Head :: kvp(),
 		 Rest :: [kvp()], LastKey :: key()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_next(KVL_Map, {LastKey, _} = Head, Rest, LastKey) ->
+apply_next(Dir, KVL_Map, {LastKey, _} = Head, Rest, LastKey) ->
     LastIt = maps:get(Head, KVL_Map),
     case leveldb:next(LastIt) of
 	{ok, KVP} ->
-	    case leveldb_utils:sort_kvl(?DESCENDING, [KVP | Rest]) of
+	    case leveldb_utils:sort_kvl(Dir, [KVP | Rest]) of
 		{ok, [H|_]} -> {ok, H};
 		{error, _Reason} -> {error, invalid}
 	    end;
 	{error, invalid} ->
 	    kvl_head(Rest)
     end;
-apply_next(_KVL_Map, Head, _Rest, _LastKey) ->
+apply_next(_Dir, _KVL_Map, Head, _Rest, _LastKey) ->
     {ok, Head}.
 
--spec apply_prev(Iterators :: [it()], LastKey :: key()) ->
+-spec apply_prev(Dir :: 0 | 1, Iterators :: [it()], LastKey :: key()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_prev(Iterators, LastKey)->
+apply_prev(Dir, Iterators, LastKey)->
     Applied = [ apply_op(It, {seek, LastKey}) || It <- Iterators],
     ValidIterators = [ It || {ok, _, It} <- Applied],
     InvalidIterators = [ It || {invalid, It} <- Applied],
-    apply_prev_last(ValidIterators,InvalidIterators).
+    apply_prev_last(Dir, ValidIterators,InvalidIterators).
 
--spec apply_prev_last(ValidIterators :: [it()],
+-spec apply_prev_last(Dir :: 0 | 1,
+		      ValidIterators :: [it()],
 		      InvalidIterators :: [it()]) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_prev_last([], _)->
+apply_prev_last(_Dir, [], _)->
     {error, invalid};
-apply_prev_last(ValidIterators, InvalidIterators)->
+apply_prev_last(Dir, ValidIterators, InvalidIterators)->
     KVL =
 	lists:foldl(fun(It, Acc) ->
 			case leveldb:prev(It) of
@@ -429,7 +446,7 @@ apply_prev_last(ValidIterators, InvalidIterators)->
 			end	
 		    end, [], ValidIterators),
     LastKVPs = maps:keys(iterate(InvalidIterators, last)),
-    case leveldb_utils:sort_kvl(?ASCENDING, KVL++LastKVPs) of
+    case leveldb_utils:sort_kvl(opposite(Dir), KVL++LastKVPs) of
         {ok, [H|_]} -> {ok, H};
 	{ok, []} -> {error, invalid};
 	{error, _Reason} -> {error, invalid}
@@ -463,3 +480,10 @@ make_app_kvp({ok, {BK, BV}}, DataModel, Key, Columns) ->
 make_app_kvp(Else, _, _, _) ->
     ?debug("make_app_key(~p,....)",[Else]),
     Else.
+
+-spec opposite(Dir :: 0 | 1) ->
+    1 | 0.
+opposite(0) ->
+    1;
+opposite(1) ->
+    0.

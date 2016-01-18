@@ -33,6 +33,8 @@
 	 read/2,
 	 write/4,
 	 delete/2,
+	 read_range_binary/4,
+	 read_range_n_binary/4,
 	 close_shard/1,
 	 delete_shard/1]).
 
@@ -149,13 +151,43 @@ delete(Shard, Key) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Read a range of keys from a given shard and return read
+%% items in binary format.
+%% @end
+%%--------------------------------------------------------------------
+-spec read_range_binary(Shard :: string(),
+			{StartKey :: binary(), StopKey :: binary()},
+			Chunk :: pos_integer(),
+			Dir :: 0 | 1) ->
+    {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
+read_range_binary(Shard, Range, Chunk, Dir) ->
+    Buckets = get_buckets(Shard),
+    read_range_from_buckets(Buckets, Range, Chunk, Dir).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Read N number of keys from a given shard and return read
+%% items in binary format.
+%% @end
+%%--------------------------------------------------------------------
+-spec read_range_n_binary(Shard :: string(),
+			  StartKey :: binary(),
+			  N :: pos_integer(),
+			  Dir :: 0 | 1) ->
+    {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
+read_range_n_binary(Shard, StartKey, N, Dir) ->
+    Buckets = get_buckets(Shard),
+    read_range_n_from_buckets(Buckets, StartKey, N, Dir).
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Close leveldb workers and clear helper ets tables.
 %% @end
 %%--------------------------------------------------------------------
 -spec close_shard(Shard :: shard_name()) -> ok | {error, Reason :: term()}.
 close_shard(Shard) ->
+    cancel_timer(Shard),
     Buckets = get_buckets(Shard),
-    ets:delete(?REFERENCE, Shard),
     ets:delete(?COUNTER, Shard),
     ets:delete(?BUCKET, Shard),
     Res = [supervisor:terminate_child(enterdb_ldb_sup, enterdb_ns:get(B)) ||
@@ -169,9 +201,9 @@ close_shard(Shard) ->
 %%--------------------------------------------------------------------
 -spec delete_shard(Shard :: shard_name()) -> ok | {error, Reason :: term()}.
 delete_shard(Shard) ->
+    cancel_timer(Shard),
     Buckets = get_buckets(Shard),
     [ ok = enterdb_ldb_worker:delete_db(Bucket) || Bucket <- Buckets],
-    ets:delete(?REFERENCE, Shard),
     ets:delete(?COUNTER, Shard),
     ets:delete(?BUCKET, Shard).
 
@@ -339,11 +371,23 @@ reset_timer(Shard) ->
     case ets:lookup(?REFERENCE, Shard) of
 	[] ->
 	    ok;
-	[#entry{key=Name, value=PList}] ->
+	[#entry{value=PList}] ->
 	    Tref = proplists:get_value(tref, PList),
 	    timer:cancel(Tref),
 	    TimeMargin = proplists:get_value(time_margin, PList),
 	    register_timeout(Shard, TimeMargin)
+    end.
+
+-spec cancel_timer(Shard :: shard_name()) ->
+    ok.
+cancel_timer(Shard) ->
+    case ets:lookup(?REFERENCE, Shard) of
+	[] ->
+	    ok;
+	[#entry{value=PList}] ->
+	    Tref = proplists:get_value(tref, PList),
+	    timer:cancel(Tref),
+	    ets:delete(?REFERENCE, Shard)
     end.
 
 -spec calc_milliseconds(TimeMargin :: time_margin()) ->
@@ -393,6 +437,60 @@ read_from_buckets([Bucket|Rest], Key) ->
 	    read_from_buckets(Rest, Key)
     end.
 
+-spec read_range_from_buckets(Buckets :: [shard_name()],
+			      {StartKey :: binary(), StopKey :: binary()},
+			      Chunk :: pos_integer(),
+			      Dir :: 0 | 1) ->
+    {ok, [{binary(), binary()}], Cont :: complete | key()} |
+    {error, Reason :: term()}.
+read_range_from_buckets(Buckets,
+			Range,
+			Chunk, Dir) ->
+    KVLs_and_Conts =
+	[begin
+	    {ok, KVL, Cont} =
+		 enterdb_ldb_worker:read_range_binary(B, Range, Chunk),
+	    {KVL, Cont}
+	 end || B <- Buckets],
+    {KVLs, Conts} = lists:unzip(KVLs_and_Conts),
+
+    ContKeys = [K || K <- Conts, K =/= complete],
+
+    case get_continuation(Dir, ContKeys) of
+	complete ->
+	    {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls(Dir, KVLs),
+	    KVL = unique(MergedKVL),
+	    {ok, KVL, complete};
+	{Cont, _} = ContKVP ->
+	    CompKVLs = [[ContKVP]|KVLs],
+	    {ok, SparseKVL} = leveldb_utils:merge_sorted_kvls(Dir, CompKVLs),
+	    MergedKVL = enterdb_lib:cut_kvl_at(Cont, SparseKVL),
+	    KVL = unique(MergedKVL),
+	    {ok, KVL, Cont}
+    end.
+
+-spec get_continuation(Dir :: 0 | 1, ContKeys :: [binary()]) ->
+    complete | {key(), binary()}.
+get_continuation(_Dir, []) ->
+    complete;
+get_continuation(Dir, ContKeys) ->
+    enterdb_lib:reduce_cont(Dir, ContKeys).
+
+-spec read_range_n_from_buckets(Buckets :: [shard_name()],
+				SKey :: binary(),
+				N :: pos_integer(),
+				Dir :: 0 | 1) ->
+    {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
+read_range_n_from_buckets(Buckets, SKey, N, Dir) ->
+    KVLs =
+	[begin
+	    {ok, KVL} = enterdb_ldb_worker:read_range_n_binary(B, SKey, N),
+	    KVL
+	 end || B <- Buckets],
+    {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls(Dir, KVLs),
+    UniqueKVL = unique(MergedKVL),
+    {ok, lists:sublist(UniqueKVL, N)}.
+
 -spec delete_from_buckets(Buckets :: [shard_name()],
 			  Key :: term()) ->
     ok | {error, Reason :: term()}.
@@ -414,3 +512,20 @@ delete_from_buckets([Bucket|Rest], Key, ErrAcc) ->
 	{error, Reason} ->
 	    delete_from_buckets(Rest, Key, [{Bucket, Reason} | ErrAcc])
     end.
+
+-spec unique([{DBKey :: binary(), DBVal :: binary()}]) ->
+    [{binary(), binary()}].
+unique(KVL) ->
+    unique(KVL, []).
+
+-spec unique([{DBKey :: binary(), DBVal :: binary()}],
+	     Acc :: [{binary(), binary()}]) ->
+    [{binary(), binary()}].
+unique([], Acc) ->
+    lists:reverse(Acc);
+unique([{BK,BV}], Acc) ->
+    lists:reverse([{BK,BV}|Acc]);
+unique([{AK,AV}, {AK,_AVS} | Rest], Acc) ->
+    unique([{AK,AV} | Rest], Acc);
+unique([{AK,AV}, {BK,BV} | Rest], Acc) ->
+    unique([{BK,BV} | Rest], [{AK,AV} | Acc]).

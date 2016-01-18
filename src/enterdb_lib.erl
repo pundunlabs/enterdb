@@ -29,8 +29,8 @@
          open_db/1,
          open_shards/1,
 	 close_db/1,
-	 read_range/3,
-	 read_range_n/3,
+	 read_range_on_shards/4,
+	 read_range_n_on_shards/4,
 	 approximate_size/2]).
 
 -export([make_db_key/2,
@@ -55,7 +55,10 @@
 	 delete_shards/1,
 	 delete_shard/1,
 	 cleanup_table/2,
-	 cleanup_table_help/1]).
+	 cleanup_table_help/1,
+	 reduce_cont/2,
+	 cut_kvl_at/2,
+	 comparator_to_dir/1]).
 
 -include("enterdb.hrl").
 -include("gb_log.hrl").
@@ -457,8 +460,13 @@ create_table(#enterdb_table{shards = Shards} = EnterdbTable)->
 	   check_error_response(R)
     end.
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Creating shard on local node.
+%% @end
+%%--------------------------------------------------------------------
 -spec do_create_shard(Shard :: shard_name(),
-		     EDBT :: #enterdb_table{}) ->
+		      EDBT :: #enterdb_table{}) ->
     ok | {error, Reason :: term()}.
 do_create_shard(Shard, EDBT) ->
     Options = EDBT#enterdb_table.options,
@@ -746,75 +754,62 @@ cleanup_table_help(Name) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Reads a Range of Keys from table with name Name and returns max
+%% Reads a Range of Keys from table Tab from Nodes and returns max
 %% Chunk items.
 %% @end
 %%--------------------------------------------------------------------
--spec read_range(Name :: string(),
-		 Range :: key_range(),
-		 Chunk :: pos_integer()) ->
-    {ok, [kvp()], Cont :: complete | key()} |
-    {error, Reason::term()}.
-read_range(Name, Range, Chunk) ->
-    case gb_hash:get_nodes(Name) of
-	undefined ->
-	    {error, "no_table"};
-	{ok, Shards} ->
-	    read_range_on_shards(Name, Shards, Range, Chunk)
-    end.
-
-
--spec read_range_on_shards(Name :: string(),
-			   Shards :: [string()],
-			   Range :: key_range(),
+-spec read_range_on_shards({ok, Nodes :: [{atom(), string()}]} | undefined,
+			   Tab :: #enterdb_table{},
+			   {StartKey :: binary(), StopKey :: binary()},
 			   Chunk :: pos_integer()) ->
     {ok, [kvp()], Cont :: complete | key()} | {error, Reason :: term()}.
-read_range_on_shards(Name, Shards, Range, Chunk)->
-    {ok, Args} = enterdb:table_info(Name,[data_model,key,columns,comparator]),
-    KeyDef = proplists:get_value(key, Args),
-    {StartKey, StopKey} = Range,
-    {ok, StartKeyDB} = make_db_key(KeyDef, StartKey),
-    {ok, StopKeyDB}  = make_db_key(KeyDef, StopKey),
-    RangeDB = {StartKeyDB, StopKeyDB},
+read_range_on_shards({ok, Nodes},
+		     Tab = #enterdb_table{key = KeyDef,
+					  type = Type,
+					  comparator = Comp},
+		     RangeDB, Chunk)->
+    Dir = comparator_to_dir(Comp),
+    {CallbackMod, TrailingArgs} =
+	case Type of
+	    leveldb -> {enterdb_ldb_worker, []};
+	    ets_leveldb -> {enterdb_ldb_worker, []};
+	    leveldb_wrapped -> {enterdb_ldb_wrp, [Dir]};
+	    ets_leveldb_wrapped -> {enterdb_ldb_worker, []}
+	end,
+
     KVLs_and_Conts =
 	[begin
+	    Args = [Shard, RangeDB, Chunk | TrailingArgs],
 	    {ok, KVL, Cont} =
-		rpc:call(Node, enterdb_ldb_worker, read_range_binary,
-			 [Shard, RangeDB, Chunk]),
+		rpc:call(Node, CallbackMod, read_range_binary, Args),
 	    {KVL, Cont}
-	 end || {Node, Shard} <- Shards],
+	 end || {Node, Shard} <- Nodes],
     {KVLs, Conts} = lists:unzip(KVLs_and_Conts),
 
-    DataModel = proplists:get_value(data_model, Args),
-    ColumnsDef = proplists:get_value(columns, Args),
-    Comparator = proplists:get_value(comparator, Args),
-
     ContKeys = [K || K <- Conts, K =/= complete],
-    {ok, KVL, ContKey} = merge_and_cut_kvls(KeyDef, Comparator,
-					    KVLs, ContKeys),
+    {ok, KVL, ContKey} = merge_and_cut_kvls(Dir, KeyDef, KVLs, ContKeys),
 
-    {ok, ResultKVL} = make_app_kvp(DataModel, KeyDef, ColumnsDef, KVL),
+    {ok, ResultKVL} = make_app_kvp(Tab, KVL),
     {ok, ResultKVL, ContKey}.
 
--spec merge_and_cut_kvls(KeyDef :: [string()],
-			 Comparator :: comparator(),
+-spec merge_and_cut_kvls(Dir :: 0 | 1,
+			 KeyDef :: [string()],
 			 KVLs :: [[kvp()]],
 			 ContKeys :: [binary()]) ->
     {ok, KVL :: [kvp()]}.
-merge_and_cut_kvls(_KeyDef, _Comparator, KVLs, []) ->
-   {ok, KVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
+merge_and_cut_kvls(Dir, _KeyDef, KVLs, []) ->
+   {ok, KVL} = leveldb_utils:merge_sorted_kvls(Dir, KVLs),
    {ok, KVL, complete};
-merge_and_cut_kvls(KeyDef, Comparator, KVLs, ContKeys) ->
-    {Cont, _} = ContKVP = reduce_cont(Comparator, ContKeys),
-    {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls( [[ContKVP]|KVLs] ),
+merge_and_cut_kvls(Dir, KeyDef, KVLs, ContKeys) ->
+    {Cont, _} = ContKVP = reduce_cont(Dir, ContKeys),
+    {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls(Dir, [[ContKVP]|KVLs]),
     ContKey =  make_app_key(KeyDef, Cont),
     {ok, cut_kvl_at(Cont, MergedKVL), ContKey}.
 
 -spec reduce_cont(Comparator :: comparator(),
 		  Conts :: [binary()]) ->
-    key().
-reduce_cont(Comparator, ContKeys) ->
-    Dir = comparator_to_dir(Comparator),
+    {key(), binary()}.
+reduce_cont(Dir, ContKeys) ->
     SortableKVPs = [{K, <<>>} || K <- ContKeys],
     {ok, Sorted} = leveldb_utils:sort_kvl( Dir, SortableKVPs ),
     hd(Sorted).
@@ -835,51 +830,46 @@ cut_kvl_at(Bin, [KVP | Rest], Acc) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Reads a N number of Keys from table with name Name starting from
-%% StartKey and returns.
+%% Reads a N number of Keys starting from DBStartKey from each shard
+%% that is given by Nodes and merges collected key/value lists.
 %% @end
 %%--------------------------------------------------------------------
--spec read_range_n(Name :: string(),
-		   StartKey :: key(),
-		   N :: pos_integer()) ->
-    {ok, [kvp()]} | {error, Reason::term()}.
-read_range_n(Name, StartKey, N) ->
-    case gb_hash:get_nodes(Name) of
-	undefined ->
-	    {error, "no_table"};
-	{ok, Shards} ->
-	    read_range_n_on_shards(Name, Shards, StartKey, N)
-    end.
-
--spec read_range_n_on_shards(Name :: string(),
-			     Shards :: [string()],
-			     StartKey :: key(),
+-spec read_range_n_on_shards({ok, Nodes :: [{atom(), string()}]} | undefined,
+			     Tab :: #enterdb_table{},
+			     DBStartKey :: binary(),
 			     N :: pos_integer()) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
-read_range_n_on_shards(Name, Shards, StartKey, N) ->
+read_range_n_on_shards(undefined, _Tab, _DBStartKey, _N) ->
+     {error, "no_table"};
+read_range_n_on_shards({ok, Nodes},
+		       Tab = #enterdb_table{type = Type,
+					    comparator = Comp},
+		       DBStartKey, N) ->
+    ?debug("DBStartKey: ~p, Nodes: ~p",[DBStartKey, Nodes]),
+    Dir = comparator_to_dir(Comp),
+    {CallbackMod, TrailingArgs} =
+	case Type of
+	    leveldb -> {enterdb_ldb_worker, []};
+	    ets_leveldb -> {enterdb_ldb_worker, []};
+	    leveldb_wrapped -> {enterdb_ldb_wrp, [Dir]};
+	    ets_leveldb_wrapped -> {enterdb_ldb_worker, []}
+	end,
     %%To be more efficient we can read less number of records from each shard.
     %%NofShards = length(Shards),
     %%Part = (N div NofShards) + 1,
     %%To be safe, currently we try to read N from each shard.
-    {ok, Args} = enterdb:table_info(Name,[data_model,key,columns]),
-    KeyDef = proplists:get_value(key, Args),
-    {ok, StartKeyDB} = make_db_key(KeyDef, StartKey),
-
-    ?debug("StartKeyDB: ~p, Shards: ~p",[StartKeyDB, Shards]),
     KVLs =
 	[begin
+	    Args = [Shard, DBStartKey, N | TrailingArgs],
 	    {ok, KVL} =
-		rpc:call(Node, enterdb_ldb_worker, read_range_n_binary,
-			 [Shard, StartKeyDB, N]),
+		rpc:call(Node, CallbackMod, read_range_n_binary, Args),
 	    ?debug("KVL on ~p: ~p",[Shard, KVL]),
 	    KVL
-	 end || {Node, Shard} <- Shards],
+	 end || {Node, Shard} <- Nodes],
     ?debug("KVLs: ~p",[KVLs]),
-    {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls( KVLs ),
+    {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls(Dir, KVLs),
     N_KVP = lists:sublist(MergedKVL, N),
-    DataModel = proplists:get_value(data_model, Args),
-    ColumnsDef = proplists:get_value(columns, Args),
-    make_app_kvp(DataModel, KeyDef, ColumnsDef, N_KVP).
+    make_app_kvp(Tab, N_KVP).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1103,6 +1093,22 @@ format_app_value(array, ColumnsDef, Value) ->
 format_app_value(hash, _, Value) ->
     maps:to_list(Value).
 
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Format a key/value list or key/value pair of binaries
+%% according to table's data model.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_app_kvp(Tab :: #enterdb_table{},
+		   KVP :: {binary(), binary()} |
+			  [{binary(), binary()}]) ->
+    {ok, [{key(), value()}]} | {error, Reason :: term()}.
+make_app_kvp(#enterdb_table{key = KeyDef,
+			    columns = ColumnsDef,
+			    data_model = DataModel}, KVP) ->
+    make_app_kvp(DataModel, KeyDef, ColumnsDef, KVP).
+
 %%--------------------------------------------------------------------
 %% @doc
 %% Format a key/value list or key/value pair of binaries
@@ -1134,9 +1140,9 @@ make_app_kvp(DataModel, KeyDef, ColumnsDef, KVP) ->
 	end,
     {ok, AppKVP}.
 
--spec comparator_to_dir(Comparator :: ascending | descending) ->
+-spec comparator_to_dir(Comparator :: descending | ascending) ->
     0 | 1.
-comparator_to_dir(ascending) ->
-    1;
 comparator_to_dir(descending) ->
-    0.
+    0;
+comparator_to_dir(ascending) ->
+    1.
