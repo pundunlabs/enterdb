@@ -1,3 +1,24 @@
+%%%===================================================================
+%% @author Erdem Aksu
+%% @copyright 2016 Pundun Labs AB
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%% http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+%% implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%% -------------------------------------------------------------------
+%% @doc
+%% Module Description:
+%% @end
+%%%===================================================================
+
 -module(enterdb_lit_worker).
 
 -behaviour(gen_server).
@@ -64,7 +85,11 @@ stop(Pid) ->
 -spec first(Name :: string()) ->
     {ok, kvp(), pid()} | {error, Reason :: term()}.
 first(Name) ->
-    {ok, Args} = get_args(Name),
+    first_(get_args(Name)).
+
+-spec first_(ArgsT :: {ok, [{atom(), term()}]} | {error, Reason :: term()}) ->
+    {ok, kvp(), pid()} | {error, Reason :: term()}.
+first_({ok, Args}) ->
     case supervisor:start_child(enterdb_lit_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, first) of
@@ -75,7 +100,9 @@ first(Name) ->
 	    end;
         {error, Reason} ->
             {error, Reason}
-    end.
+    end;
+first_({error, Reason}) ->
+    {error, Reason}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -85,7 +112,11 @@ first(Name) ->
 -spec last(Name :: string()) ->
     {ok, kvp(), pid()} | {error, Reason :: term()}.
 last(Name) ->
-    {ok, Args} = get_args(Name),
+    last_(get_args(Name)).
+
+-spec last_(ArgsT :: {ok, [{atom(), term()}]} | {error, Reason :: term()}) ->
+    {ok, kvp(), pid()} | {error, Reason :: term()}.
+last_({ok, Args}) ->
     case supervisor:start_child(enterdb_lit_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, last) of
@@ -96,7 +127,9 @@ last(Name) ->
 	    end;
         {error, Reason} ->
             {error, Reason}
-    end.
+    end;
+last_({error, Reason}) ->
+    {error, Reason}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -106,7 +139,12 @@ last(Name) ->
 -spec seek(Name :: string(), Key :: key()) ->
     {ok, kvp(), pid()} | {error, Reason :: term()}.
 seek(Name, Key) ->
-    {ok, Args} = get_args(Name),
+    seek_(get_args(Name), Key).
+
+-spec seek_(ArgsT :: {ok, [{atom(), term()}]} | {error, Reason :: term()},
+	    Key :: key()) ->
+    {ok, kvp(), pid()} | {error, Reason :: term()}.
+seek_({ok, Args}, Key) ->
     case supervisor:start_child(enterdb_lit_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, {seek, Key}) of
@@ -117,7 +155,9 @@ seek(Name, Key) ->
 	    end;
         {error, Reason} ->
             {error, Reason}
-    end.
+    end;
+seek_({error, Reason}, _) ->
+    {error, Reason}.
 
 %%--------------------------------------------------------------------
 %% @doc
