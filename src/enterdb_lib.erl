@@ -217,7 +217,7 @@ get_tab_def(Tab) ->
 	[TabDef] ->
 	    TabDef;
 	_ ->
-	    {error, no_such_table}
+	    {error, "no_table"}
     end.
 
 %%-------------------------------------------------------------------
@@ -232,7 +232,7 @@ get_shard_def(Shard) ->
 	[ShardTab] ->
 	    ShardTab;
 	_ ->
-	    {error, "no_such_table"}
+	    {error, "no_table"}
     end.
 
 %%--------------------------------------------------------------------

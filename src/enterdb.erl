@@ -548,7 +548,7 @@ do_table_delete(Name) ->
 	    ok = enterdb_lib:delete_shards(Shards),
 	    ok = enterdb_lib:cleanup_table(Name, Shards);
 	_ ->
-	    {error, no_such_table}
+	    {error, "no_table"}
     end.
 
 -spec find_timestamp_in_key(Key :: [{string(), term()}]) ->
