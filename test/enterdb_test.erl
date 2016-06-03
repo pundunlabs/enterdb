@@ -174,7 +174,7 @@ create_mem_wrapping_table_2(Name) ->
 %%--------------------------------------------------------------------
 -spec write(Name :: string()) -> ok.
 write(Name) ->
-    Ts = erlang:now(),
+    Ts = os:timestamp(),
     EventKey = [{ts, Ts},
 		{imsi, "240020000000001"}],
     {{YYYY, MM, DD}, {HH, Mm, SS}} = calendar:now_to_local_time(Ts),

@@ -64,7 +64,9 @@
 			 {mem_wrapper, {bucket_span(), num_buckets()}} |
 			 {comparator, comparator()} |
 			 {time_series, boolean()} |
-			 {shards, integer()} |
+			 {shards, pos_integer()} |
+			 {distributed, boolean()} |
+			 {replication_factor, pos_integer()} |
 			 {clusters, [#enterdb_cluster{}]}].
 
 -type timestamp() :: {pos_integer(),  %% mega seconds &
@@ -77,6 +79,9 @@
 -type node_name() :: atom().
 -type shard_name() :: string().
 
+-type shards() :: [{shard_name(), map()}] |
+		  [shard_name()].
+
 -record(enterdb_shard, {name :: shard_name(),
 			node :: atom()}).
 
@@ -88,8 +93,9 @@
 			comparator :: comparator(),
                         type	:: type(),
 			data_model :: data_model(),
+			distributed :: boolean(),
 			options :: [table_option()],
-                        shards :: [{node_name(), shard_name()}]}).
+                        shards :: shards()}).
 %% enterdb shard tab
 -record(enterdb_stab, {shard :: shard_name(),
 		       name :: string(),
@@ -110,3 +116,5 @@
 			       pid :: pid(),
 			       it :: binary()
 			     }).
+
+-define(dyno, gb_dyno_dist).

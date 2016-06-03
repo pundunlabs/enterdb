@@ -27,7 +27,6 @@ ERL_BEAMS = $(MODULES:%=$(EBIN)/%.beam)
 INCLUDE_DIRS = \
 	../include \
 	../../gb_log/include \
-	../../gb_hash/include \
 
 ERL_INCLUDES=$(INCLUDE_DIRS:%=-I %)
 

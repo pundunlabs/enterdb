@@ -178,7 +178,7 @@ handle_cast({wrap_level, Mod, Name, Key, TimeMargin}, State) ->
 	{ts, {Macs, Secs, Mics}} ->
 	    Ts = {Macs, Secs+TimeMargin, Mics},
 	    UpperLevelKey = lists:keyreplace(ts, 1, Key, {ts, Ts}),
-	    {ok, {level, Level}} = gb_hash:find_node(Name, UpperLevelKey),
+	    {ok, {level, Level}} = gb_hash:get_node(Name, UpperLevelKey),
 	    Wrap =
 		case ets:lookup(wrapper_registry, Name) of
 		    [#wrapper_registry{wrapped_ts = Wrapped_Ts,

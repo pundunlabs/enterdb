@@ -55,8 +55,6 @@
 -include("enterdb.hrl").
 -include("gb_log.hrl").
 
--include("gb_hash.hrl").
-
 load_test() ->
     %%enterdb_lib:open_leveldb_db("test_range").
     [spawn(?MODULE, write_loop, [10000000]) || _ <- lists:seq(1,8)].
@@ -93,31 +91,16 @@ create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
 					       {indexes,IndexesDef},
 					       {options, Options}]) of
 	{ok, EnterdbTab} ->
-	    case enterdb_server:get_state_params() of
-		{ok, PropList}  ->
-		    NumOfShards0 = proplists:get_value(num_of_local_shards, PropList),
-		    %% Specific table options
-		    Type	= proplists:get_value(type, Options, leveldb),
-		    NumOfShards	= proplists:get_value(shards, Options, NumOfShards0),
-		    %% TODO: Change to cluster based configuration.
-		    Nodes	= proplists:get_value(nodes, Options, [node()]),
-		    DataModel	= proplists:get_value(data_model, Options, binary),
-		    Comp = proplists:get_value(comparator, Options, descending),
-		    {ok, Shards} = enterdb_lib:get_shards(Name,
-							  NumOfShards,
-							  Nodes),
-		    ?debug("table allocated shards ~p", [Shards]),
-		    NewEDBT = EnterdbTab#enterdb_table{comparator = Comp,
-						       shards = Shards,
-						       type = Type,
-						       data_model = DataModel},
-
-		    Res = enterdb_lib:create_table(NewEDBT),
-		    ?debug("CreateTable Res: ~p", [Res]),
-		    Res;
-		Else ->
-		    {error, Else}
-	    end;
+	    %% Specific table options
+	    Type = proplists:get_value(type, Options, leveldb),
+	    DataModel = proplists:get_value(data_model, Options, binary),
+	    Comp = proplists:get_value(comparator, Options, descending),
+	    Dist = proplists:get_value(distributed, Options, true),
+	    NewTab = EnterdbTab#enterdb_table{comparator = Comp,
+					      type = Type,
+					      data_model = DataModel,
+					      distributed = Dist},
+	    enterdb_lib:create_table(NewTab);
 	{error, Reason} ->
                 {error, Reason}
     end.
@@ -129,13 +112,11 @@ create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
 %%--------------------------------------------------------------------
 -spec open_table(Name :: string())-> ok | {error, Reason :: term()}.
 open_table(Name) ->
-    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_table, Name) end) of
-        {atomic, []} ->
+    case gb_hash:is_distributed(Name) of
+	undefined ->
             {error, "no_table"};
-        {atomic, [Table]} ->
-	    enterdb_lib:open_db(Table);
-        {error, Reason} ->
-            {error, Reason}
+	Dist ->
+	    enterdb_lib:open_table(Name, Dist)
     end.
 
 %%--------------------------------------------------------------------
@@ -145,13 +126,11 @@ open_table(Name) ->
 %%--------------------------------------------------------------------
 -spec close_table(Name :: string())-> ok | {error, Reason :: term()}.
 close_table(Name) ->
-    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_table, Name) end) of
-        {atomic, []} ->
+    case gb_hash:is_distributed(Name) of
+	undefined ->
             {error, "no_table"};
-        {atomic, [Table]} ->
-	    enterdb_lib:close_db(Table);
-        {error, Reason} ->
-            {error, Reason}
+	Dist ->
+	    enterdb_lib:close_table(Name, Dist)
     end.
 
 %%--------------------------------------------------------------------
@@ -163,22 +142,25 @@ close_table(Name) ->
            Key :: key()) -> {ok, value()} | {error, Reason :: term()}.
 read(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
-	TD = #enterdb_table{} ->
+	TD = #enterdb_table{distributed = Dist} ->
 	    DBKey = enterdb_lib:make_key(TD, Key),
-	    read_(Tab, DBKey);
+	    read_(Tab, DBKey, Dist);
 	{error, _} = R ->
 	    R
     end.
 
-read_(Tab, {ok, DBKey}) ->
-    {ok, {Node, Shard}} = gb_hash:get_node(Tab, DBKey),
-    rpc:call(Node, ?MODULE, do_read, [Shard, DBKey]);
-
-read_(_Tab, {error, _} = E) ->
+read_(Tab, {ok, DBKey}, true) ->
+    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, DBKey),
+    ?dyno:call(Ring, {?MODULE, do_read, [Shard, DBKey]}, read);
+read_(Tab, {ok, DBKey}, false) ->
+    {ok, Shard} = gb_hash:get_local_node(Tab, DBKey),
+    do_read(Shard, DBKey);
+read_(_Tab, {error, _} = E, _) ->
     E.
 
 -spec read_from_disk(Name :: string(),
-		     Key :: key()) -> ok | {error, Reason :: term()}.
+		     Key :: key()) ->
+    ok | {error, Reason :: term()}.
 read_from_disk(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #enterdb_table{} ->
@@ -190,8 +172,8 @@ read_from_disk(Tab, Key) ->
 
 %% Key ok according to keydef
 read_from_disk_(Tab, {ok, DBKey}) ->
-    {ok, {Node, Shard}} = gb_hash:get_node(Tab, DBKey),
-    rpc:call(Node, ?MODULE, do_read_from_disk, [Shard, DBKey]);
+    {ok, Shard} = gb_hash:get_local_node(Tab, DBKey),
+    do_read_from_disk(Shard, DBKey);
 %% Key not ok
 read_from_disk_(_Tab, {error, _} = E) ->
     E.
@@ -233,30 +215,34 @@ do_read_from_disk(TD, ShardTab, Key) ->
             Columns :: [column()]) -> ok | {error, Reason :: term()}.
 write(Tab, Key, Columns) ->
     case enterdb_lib:get_tab_def(Tab) of
-	    TD = #enterdb_table{} ->
+	    TD = #enterdb_table{distributed = Dist} ->
 	    DBKeyAndCols = enterdb_lib:make_key_columns(TD, Key, Columns),
-	    write_(Tab, DBKeyAndCols);
+	    write_(Tab, DBKeyAndCols, Dist);
 	{error, _} = R ->
 	    R
     end.
 
 -spec write_(Tab :: string(),
 	     DB_Key_Columns :: {ok, DBKey :: binary(), DBColumns :: binary()} |
-			       {error, Error :: term()} ) ->
+			       {error, Error :: term()},
+	     Dist :: true | false) ->
     ok | {error, Reason :: term()}.
-write_(Tab, {ok, DBKey, DBColumns}) ->
-    {ok, {Node, Shard}} = gb_hash:get_node(Tab, DBKey),
-    rpc:call(Node, ?MODULE, do_write, [Shard, DBKey, DBColumns]);
-write_(_Tab, {error, _} = E) ->
+write_(Tab, {ok, DBKey, DBColumns}, true) ->
+    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, DBKey),
+    ?dyno:call(Ring, {?MODULE, do_write, [Shard, DBKey, DBColumns]}, write);
+write_(Tab, {ok, DBKey, DBColumns}, false) ->
+    {ok, Shard} = gb_hash:get_local_node(Tab, DBKey),
+    do_write(Shard, DBKey, DBColumns);
+write_(_Tab, {error, _} = E, _) ->
     E.
 
 -spec write_to_disk(Name :: string(),
 		    Key :: key(),
 		    Columns :: [column()]) -> ok | {error, Reason :: term()}.
 write_to_disk(Tab, Key, Columns) ->
-    case gb_hash:get_node(Tab, Key) of
-	{ok, {Node, Shard}} ->
-	    rpc:call(Node, ?MODULE, do_write_to_disk, [Shard, Key, Columns]);
+    case gb_hash:get_local_node(Tab, Key) of
+	{ok, Shard} ->
+	    do_write_to_disk(Shard, Key, Columns);
 	_ ->
 	    {error, "no_table"}
     end.
@@ -317,18 +303,20 @@ do_write_to_disk(TD, ShardTab, Key, Columns) ->
                             {error, Reason :: term()}.
 delete(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
-	TD = #enterdb_table{} ->
+	TD = #enterdb_table{distributed = Dist} ->
 	    DBKey = enterdb_lib:make_key(TD, Key),
-	    delete_(Tab, DBKey);
+	    delete_(Tab, DBKey, Dist);
 	{error, _} = R ->
 	    R
     end.
 
-delete_(Tab, {ok, DBKey}) ->
-    {ok, {Node, Shard}} = gb_hash:get_node(Tab, DBKey),
-    rpc:call(Node, ?MODULE, do_delete, [Shard, DBKey]);
-
-delete_(_Tab, {error, _} = E) ->
+delete_(Tab, {ok, DBKey}, true) ->
+    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, DBKey),
+    ?dyno:call(Ring, {?MODULE, do_delete, [Shard, DBKey]}, write);
+delete_(Tab, {ok, DBKey}, false) ->
+    {ok, Shard} = gb_hash:get_local_node(Tab, DBKey),
+    do_delete(Shard, DBKey);
+delete_(_Tab, {error, _} = E, _) ->
     E.
 
 do_delete(Shard, DBKey) ->
@@ -375,8 +363,8 @@ read_range(_, Range, _) ->
     {ok, [kvp()], Cont :: complete | key()} |
     {error, Reason :: term()}.
 read_range_(Tab, {ok, DBStartK}, {ok, DBStopK}, Chunk) ->
-    Nodes = gb_hash:get_nodes(Tab#enterdb_table.name),
-    enterdb_lib:read_range_on_shards(Nodes, Tab, {DBStartK, DBStopK}, Chunk);
+    Shards = gb_hash:get_nodes(Tab#enterdb_table.name),
+    enterdb_lib:read_range_on_shards(Shards, Tab, {DBStartK, DBStopK}, Chunk);
 read_range_(_Tab, {error, _} = E, _, _N) ->
     E;
 read_range_(_Tab, _, {error, _} = E, _N) ->
@@ -407,19 +395,25 @@ read_range_n(Name, StartKey, N) ->
 		    N :: pos_integer()) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
 read_range_n_(Tab, {ok, DBKey}, N) ->
-    Nodes = gb_hash:get_nodes(Tab#enterdb_table.name),
-    enterdb_lib:read_range_n_on_shards(Nodes, Tab, DBKey, N);
+    Shards = gb_hash:get_nodes(Tab#enterdb_table.name),
+    enterdb_lib:read_range_n_on_shards(Shards, Tab, DBKey, N);
 read_range_n_(_Tab, {error, _} = E, _N) ->
     E.
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Delete a database table completely. Ensures the table is closed before deletion.
+%% Delete a database table completely. Ensures the table is closed 
+%% before deletion.
 %% @end
 %%--------------------------------------------------------------------
 -spec delete_table(Name :: string()) -> ok | {error, Reason :: term()}.
 delete_table(Name) ->
-    do_table_delete(Name).
+    case gb_hash:is_distributed(Name) of
+	undefined ->
+            {error, "no_table"};
+	Dist ->
+	    enterdb_lib:delete_table(Name, Dist)
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -438,10 +432,11 @@ table_info(Name) ->
 			indexes = IndexesDefinition,
 			comparator = Comp,
 			options = Options,
-			shards = Shards
+			shards = Shards,
+			distributed = Dist
 			}] ->
 	    Type = proplists:get_value(type, Options),
-	    {ok, Size} = enterdb_lib:approximate_size(Type, Shards),
+	    {ok, Size} = enterdb_lib:approximate_size(Type, Shards, Dist),
 	    {ok, [{name, Name},
 		  {key, KeyDefinition},
 		  {columns, ColumnsDefinition},
@@ -538,18 +533,6 @@ next(Ref) ->
     {ok, KVP :: kvp()} | {error, Reason :: invalid | term()}.
 prev(Ref) ->
     enterdb_lit_worker:prev(Ref).
-
--spec do_table_delete(Name :: string()) ->
-ok | {error, Reason :: term()}.
-do_table_delete(Name) ->
-    case mnesia:dirty_read(enterdb_table, Name) of
-	[Table] ->
-	    Shards = Table#enterdb_table.shards,
-	    ok = enterdb_lib:delete_shards(Shards),
-	    ok = enterdb_lib:cleanup_table(Name, Shards);
-	_ ->
-	    {error, "no_table"}
-    end.
 
 -spec find_timestamp_in_key(Key :: [{string(), term()}]) ->
     undefined | {ok, Ts :: timestamp()}.

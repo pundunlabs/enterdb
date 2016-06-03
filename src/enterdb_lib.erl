@@ -24,14 +24,13 @@
 
 %% API
 -export([verify_create_table_args/1,
-         get_shards/3,
          create_table/1,
-         open_db/1,
+         open_table/2,
          open_shards/1,
-	 close_db/1,
+	 close_table/2,
 	 read_range_on_shards/4,
 	 read_range_n_on_shards/4,
-	 approximate_size/2]).
+	 approximate_size/3]).
 
 -export([make_db_key/2,
 	 make_key/2,
@@ -42,23 +41,27 @@
 	 make_app_value/2,
 	 make_app_value/3,
 	 make_app_kvp/4,
-	 check_error_response/1]).
+	 check_error_response/1,
+	 map_shards/3]).
 
--export([do_create_shard/2,
-	 open_shard/1,
+-export([open_shard/1,
 	 close_shard/1,
-	 write_enterdb_table/1,
 	 get_shard_def/1,
 	 update_bucket_list/2,
 	 get_tab_def/1,
 	 get_table_options/1,
+	 delete_table/2,
 	 delete_shards/1,
 	 delete_shard/1,
-	 cleanup_table/2,
-	 cleanup_table_help/1,
 	 reduce_cont/2,
 	 cut_kvl_at/2,
 	 comparator_to_dir/1]).
+
+%% Inter-Node API
+-export([do_create_shards/1,
+	 do_open_table/1,
+	 do_close_table/1,
+	 do_delete_table/1]).
 
 -include("enterdb.hrl").
 -include("gb_log.hrl").
@@ -281,6 +284,16 @@ verify_table_options([{shards, NumOfShards}|Rest])
 when is_integer(NumOfShards), NumOfShards > 0 ->
     verify_table_options(Rest);
 
+%% Replication Factor
+verify_table_options([{distributed, Bool}|Rest])
+when is_boolean(Bool) ->
+    verify_table_options(Rest);
+
+%% Replication Factor
+verify_table_options([{replication_factor, RF}|Rest])
+when is_integer(RF), RF > 0 ->
+    verify_table_options(Rest);
+
 %% Table types
 verify_table_options([{type, Type}|Rest])
     when
@@ -370,15 +383,11 @@ valid_size_margin(_) ->
 -spec check_if_table_exists(Name :: string()) ->
     ok | {error, Reason :: term()}.
 check_if_table_exists(Name)->
-    case enterdb_db:transaction(fun() ->
-				    mnesia:read(enterdb_table, Name)
-				end) of
-        {atomic, []} ->
-            ok;
-        {atomic, [_Table]} ->
-            {error, "table_exists"};
-        {error, Reason} ->
-            {error, Reason}
+    case gb_hash:exists(Name) of
+	false ->
+	    ok;
+	true ->
+	    {error, "table_exists"}
     end.
 
 %%--------------------------------------------------------------------
@@ -400,8 +409,8 @@ get_table_options(Shard) ->
 %% Check response for error
 %% @end
 %%--------------------------------------------------------------------
--spec check_error_response(RespList :: list) ->
-    ok | {error, RespList :: list}.
+-spec check_error_response(RespList :: [term()]) ->
+    ok | {error, RespList :: [term()]}.
 check_error_response([ok]) ->
     ok;
 check_error_response(ResponseList) ->
@@ -409,33 +418,30 @@ check_error_response(ResponseList) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Allocate nodes to shard and return list of {node(), Shard}
-%% @end
-%%--------------------------------------------------------------------
-allocate_nodes(Nodes, Shards) ->
-    allocate_node(Nodes, Shards, 1, []).
-%% helper function to allocate node to shard
-allocate_node(Nodes, [Shard | R], N, Aux) ->
-    NShard = {lists:nth(N, Nodes), Shard},
-    allocate_node(Nodes, R, N+1 rem (length(Nodes)), [NShard | Aux]);
-allocate_node(_, [], _N, Aux) ->
-    lists:reverse(Aux).
-%%--------------------------------------------------------------------
-%% @doc
-%% Create and return list of {Node, Shard} tuples for all shards
+%% Create and return list of {Shard, Ring} tuples for all shards
 %% @end
 %%--------------------------------------------------------------------
 -spec get_shards(Name :: string(),
 		 NumOfShards :: pos_integer(),
-		 Nodes :: [node()]) ->
-    {ok, [{node(), string()}]}.
-get_shards(Name, NumOfShards, Nodes) ->
-    Shards = [lists:concat([Name,"_shard",N]) ||N <- lists:seq(0, NumOfShards-1)],
-    Options = [{algorithm, sha}, {strategy, uniform}],
-    AllocatedShards = allocate_nodes(Nodes, Shards),
-    %% TODO: move creation of ring to application also handling distribution
-    gb_hash:create_ring(Name, AllocatedShards, Options),
-    {ok, AllocatedShards}.
+		 ReplicationFactor :: pos_integer()) ->
+    {ok, [{Shard :: string(), Ring :: map()}]}.
+get_shards(Name, NumOfShards, ReplicationFactor) ->
+    Shards = [lists:concat([Name, "_shard", N])
+		|| N <- lists:seq(0, NumOfShards-1)],
+    gb_dyno_ring:allocate_nodes(Shards, ReplicationFactor).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Create and return list of {Shard, Ring} tuples for all shards
+%% only for local node.
+%% @end
+%%--------------------------------------------------------------------
+-spec get_local_shards(Name :: string(),
+		       NumOfShards :: pos_integer()) ->
+    {ok, [Shard :: string()]}.
+get_local_shards(Name, NumOfShards) ->
+    {ok, [lists:concat([Name, "_shard", N])
+	    || N <- lists:seq(0, NumOfShards-1)]}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -444,20 +450,69 @@ get_shards(Name, NumOfShards, Nodes) ->
 %%--------------------------------------------------------------------
 -spec create_table(EnterdbTable::#enterdb_table{}) ->
     ok | {error, Reason::term()}.
-create_table(#enterdb_table{shards = Shards} = EnterdbTable)->
-    ShardRes =
-	[rpc:call(Node, ?MODULE, do_create_shard, [Shard, EnterdbTable])
-	    || {Node, Shard} <- Shards],
-    case lists:usort(ShardRes) of
-	[ok] -> %% all shards was created, lets write enterdb_table
-	    SchemaRes =
-		[ rpc:call(Node, ?MODULE, write_enterdb_table, [EnterdbTable])
-		    || Node <- lists:usort([Node || {Node, _} <- Shards])],
-		%% TODO: do error handling (rollback and such)
-		check_error_response(lists:usort(SchemaRes));
+create_table(#enterdb_table{name = Name,
+			    options = Options,
+			    distributed = false} = EnterdbTable)->
+    {ok, PropList} = enterdb_server:get_state_params(),
+    NoS_Default = proplists:get_value(num_of_local_shards, PropList),
+    NumOfShards	= proplists:get_value(shards, Options, NoS_Default),
+    %%Generate Shards and allocate nodes on shards
+    {ok, Shards} = get_local_shards(Name, NumOfShards),
+    
+    %%Create local ring with given allocated shards
+    HashOpts = [local, {algorithm, sha}, {strategy, uniform}],
+    {ok, _Beam} = gb_hash:create_ring(Name, Shards, HashOpts),
+    do_create_shards(EnterdbTable#enterdb_table{shards = Shards});
 
-	R ->
-	   check_error_response(R)
+create_table(#enterdb_table{name = Name,
+			    options = Options} = EnterdbTable)->
+    {ok, PropList} = enterdb_server:get_state_params(),
+    NoS_Default = proplists:get_value(num_of_local_shards, PropList),
+    NumOfShards	= proplists:get_value(shards, Options, NoS_Default),
+    RF = proplists:get_value(replication_factor, Options, 1),
+    
+    %%Generate Shards and allocate nodes on shards
+    {ok, AllocatedShards} = get_shards(Name, NumOfShards, RF),
+    ?debug("table allocated shards ~p", [AllocatedShards]),
+    
+    %%Create local ring with given allocated shards
+    HashOpts = [{algorithm, sha}, {strategy, uniform}],
+    {ok, Beam} = gb_hash:create_ring(Name, AllocatedShards, HashOpts),
+    
+    %% Distribute the ring
+    MFA = {gb_hash_register, load_store_ok, [Beam]},
+    CommitID = undefined,
+    RMFA = {gb_hash_register, revert, [CommitID]},
+    Result = ?dyno:topo_call(MFA, [{timeout, 10000}, {revert, RMFA}]),
+    create_table(Result, EnterdbTable#enterdb_table{shards = AllocatedShards}).
+
+-spec create_table(RingResult :: ok | {error, Reason :: term()},
+		   EnterdbTable :: #enterdb_table{}) ->
+    ok | {error, Reason::term()}.
+create_table(ok, EnterdbTable) ->
+    %% Create shards on nodes
+    MFA = {?MODULE, do_create_shards, [EnterdbTable]},
+    RMFA = {?MODULE, do_delete_table, [EnterdbTable#enterdb_table.name]},
+    ?dyno:topo_call(MFA, [{timeout, 10000}, {revert, RMFA}]);
+create_table({error, Reason}, _EnterdbTable) ->
+    ?debug("Create Table failed: ~p", [{error, Reason}]),
+    {error, Reason}.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Creating shards on local node.
+%% @end
+%%--------------------------------------------------------------------
+-spec do_create_shards(EDBT :: #enterdb_table{}) ->
+    ok | {error, Reason :: term()}.
+do_create_shards(#enterdb_table{shards = Shards} = EDBT) ->
+    LocalShards = find_local_shards(Shards),
+    ResL = [do_create_shard(Shard, EDBT) || Shard <- LocalShards],
+    case check_error_response(lists:usort(ResL)) of
+	ok ->
+	    write_enterdb_table(EDBT);
+	Else ->
+	    Else
     end.
 
 %%--------------------------------------------------------------------
@@ -668,17 +723,37 @@ write_enterdb_table(EnterdbTable) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Open an existing database specified by #enterdb_table{}.
+%% Open an existing database table specified by Name.
 %% @end
 %%--------------------------------------------------------------------
--spec open_db(Table :: #enterdb_table{})->
+-spec open_table(Name :: string(), Dist :: boolean())->
     ok | {error, Reason :: term()}.
-open_db(#enterdb_table{shards = Shards}) ->
-    Res = [rpc:call(Node, ?MODULE, open_shard, [Name])
-	    || {Node, Name} <- Shards],
-    check_error_response(lists:usort(Res)).
+open_table(Name, true) ->
+    %% Open shards on nodes
+    MFA = {?MODULE, do_open_table, [Name]},
+    RMFA = {?MODULE, do_close_table, [Name]},
+    ?dyno:topo_call(MFA, [{timeout, 10000}, {revert, RMFA}]);
+open_table(Name, false) ->
+    do_open_table(Name).
+    
+%%--------------------------------------------------------------------
+%% @doc
+%% This function is used in inter-node communication.
+%% Open database table on local node.
+%% @end
+%%--------------------------------------------------------------------
+-spec do_open_table(Name :: string()) ->
+    ok | {error, Reason :: term()}.
+do_open_table(Name) ->
+    case gb_hash:get_nodes(Name) of
+	{ok, Shards} ->
+	    LocalShards = find_local_shards(Shards),
+	    open_shards(LocalShards);
+	undefined ->
+	    {error, "no_table"}
+    end. 
 
-%%-------------------------------------------------------------------d
+%%--------------------------------------------------------------------
 %% @doc
 %% Open database table shards on defined node.
 %% @end
@@ -698,15 +773,80 @@ open_shards([Shard | Rest]) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Close an existing leveldb database specified by #enterdb_table{}.
+%% Close an existing database table specified by Name.
 %% @end
 %%--------------------------------------------------------------------
--spec close_db(Table :: #enterdb_table{}) ->
+-spec close_table(Name :: string(), Dist :: boolean()) ->
     ok | {error, Reason :: term()}.
-close_db(#enterdb_table{shards = Shards}) ->
-    Res = [rpc:call(Node, ?MODULE, close_shard, [Name])
-	    || {Node, Name} <- Shards],
-    check_error_response(lists:usort(Res)).
+close_table(Name, true) ->
+    %% Open shards on nodes
+    MFA = {?MODULE, do_close_table, [Name]},
+    RMFA = {?MODULE, do_open_table, [Name]},
+    ?dyno:topo_call(MFA, [{timeout, 10000}, {revert, RMFA}]);
+close_table(Name, false) ->
+    do_close_table(Name).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% This function is used in inter-node communication.
+%% Close database table on local node.
+%% @end
+%%--------------------------------------------------------------------
+-spec do_close_table(Name :: string()) ->
+    ok | {error, Reason :: term()}.
+do_close_table(Name) ->
+    case gb_hash:get_nodes(Name) of
+	{ok, Shards} ->
+	    LocalShards = find_local_shards(Shards),
+	    close_shards(LocalShards);
+	undefined ->
+	    {error, "no_table"}
+    end. 
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Close database table shards on defined node.
+%% @end
+%%--------------------------------------------------------------------
+-spec close_shards(ShardList :: [string()]) ->
+    ok | {error, Reason :: term()}.
+close_shards([]) ->
+    ok;
+close_shards([Shard | Rest]) ->
+    ?debug("Closing Shard: ~p",[Shard]),
+    case close_shard(Shard) of
+	ok ->
+	    close_shards(Rest);
+	{error, Reason} ->
+	    {error, Reason}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Delete an existing database table specified by Name.
+%% @end
+%%--------------------------------------------------------------------
+-spec delete_table(Name :: string(), Dist :: boolean()) ->
+    ok | {error, Reason :: term()}.
+delete_table(Name, true) ->
+    %% Open shards on nodes
+    MFA = {?MODULE, do_delete_table, [Name]},
+    RMFA = undefined,
+    ?dyno:topo_call(MFA, [{timeout, 10000}, {revert, RMFA}]);
+delete_table(Name, false) ->
+    do_delete_table(Name).
+
+-spec do_delete_table(Name :: string()) ->
+ok | {error, Reason :: term()}.
+do_delete_table(Name) ->
+    case gb_hash:get_nodes(Name) of
+	{ok, Shards} ->
+	    LocalShards = find_local_shards(Shards),
+	    delete_shards(LocalShards),
+	    cleanup_table(Name);
+	undefined ->
+	    {error, "no_table"}
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -714,10 +854,10 @@ close_db(#enterdb_table{shards = Shards}) ->
 %% This function should be called within a mnesia transaction.
 %% @end
 %%--------------------------------------------------------------------
--spec delete_shards([{Node :: atom(), Shard :: string()}]) ->
+-spec delete_shards([Shard :: string()]) ->
     ok | {error, Reason :: term()}.
-delete_shards([{Node, Shard} | Rest]) ->
-    rpc:call(Node, ?MODULE, delete_shard, [Shard]),
+delete_shards([Shard | Rest]) ->
+    delete_shard(Shard),
     delete_shards(Rest);
 delete_shards([]) ->
     ok.
@@ -737,36 +877,26 @@ delete_shard_help(#enterdb_stab{shard = Name, type = leveldb_wrapped}) ->
 delete_shard_help({error, Reason}) ->
     {error, Reason}.
 
-cleanup_table(Name, Shards) ->
-    Nodes = lists:usort([Node || {Node, _} <- Shards]),
-    AllRes = [rpc:call(Node, ?MODULE, cleanup_table_help, [Name]) ||
-		Node <- Nodes],
-    case lists:usort(AllRes) of
-	[Res] ->
-	    Res;
-	E ->
-	    E
-    end.
-
-cleanup_table_help(Name) ->
+cleanup_table(Name) ->
     mnesia:dirty_delete(enterdb_table, Name),
     gb_hash:delete_ring(Name).
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Reads a Range of Keys from table Tab from Nodes and returns max
+%% Reads a Range of Keys from table Tab from Shards and returns max
 %% Chunk items.
 %% @end
 %%--------------------------------------------------------------------
--spec read_range_on_shards({ok, Nodes :: [{atom(), string()}]} | undefined,
+-spec read_range_on_shards({ok, Shards :: shards()} | undefined,
 			   Tab :: #enterdb_table{},
 			   {StartKey :: binary(), StopKey :: binary()},
 			   Chunk :: pos_integer()) ->
     {ok, [kvp()], Cont :: complete | key()} | {error, Reason :: term()}.
-read_range_on_shards({ok, Nodes},
+read_range_on_shards({ok, Shards},
 		     Tab = #enterdb_table{key = KeyDef,
 					  type = Type,
-					  comparator = Comp},
+					  comparator = Comp,
+					  distributed = Dist},
 		     RangeDB, Chunk)->
     Dir = comparator_to_dir(Comp),
     {CallbackMod, TrailingArgs} =
@@ -777,20 +907,38 @@ read_range_on_shards({ok, Nodes},
 	    ets_leveldb_wrapped -> {enterdb_ldb_worker, []}
 	end,
 
-    KVLs_and_Conts =
-	[begin
-	    Args = [Shard, RangeDB, Chunk | TrailingArgs],
-	    {ok, KVL, Cont} =
-		rpc:call(Node, CallbackMod, read_range_binary, Args),
-	    {KVL, Cont}
-	 end || {Node, Shard} <- Nodes],
-    {KVLs, Conts} = lists:unzip(KVLs_and_Conts),
+    BaseArgs = [RangeDB, Chunk | TrailingArgs],
+    Req = {CallbackMod, read_range_binary, BaseArgs},
+    ResL = map_shards(Dist, Req, Shards),
+    {KVLs, Conts} =  unzip_range_result(ResL, []),
 
     ContKeys = [K || K <- Conts, K =/= complete],
     {ok, KVL, ContKey} = merge_and_cut_kvls(Dir, KeyDef, KVLs, ContKeys),
 
     {ok, ResultKVL} = make_app_kvp(Tab, KVL),
     {ok, ResultKVL, ContKey}.
+
+-spec map_shards(Dist :: true | false,
+		 Req :: {module(), function(), [term()]},
+		 Shards :: shards()) ->
+    ResL :: [term()].
+map_shards(true, Req, Shards) ->
+    ?dyno:map_shards_seq(Req, Shards);
+map_shards(false, Req, Shards) ->
+    pmap(Req, Shards).
+
+-spec unzip_range_result(ResL :: [{ok, KVL :: [kvp()], Cont :: term()}],
+			 Acc :: {[[kvp()]], [term()]}) ->
+     {KVLs :: [KVL :: [kvp()]],
+      Conts :: [term()]}.
+unzip_range_result([{ok, KVL, Cont} | Rest], Acc) ->
+    unzip_range_result(Rest, [{KVL, Cont} | Acc]);
+unzip_range_result([Error | _Rest], _Acc) ->
+    Error;
+unzip_range_result([], Acc) ->
+    lists:unzip(lists:reverse(Acc)).
+
+
 
 -spec merge_and_cut_kvls(Dir :: 0 | 1,
 			 KeyDef :: [string()],
@@ -831,21 +979,22 @@ cut_kvl_at(Bin, [KVP | Rest], Acc) ->
 %%--------------------------------------------------------------------
 %% @doc
 %% Reads a N number of Keys starting from DBStartKey from each shard
-%% that is given by Nodes and merges collected key/value lists.
+%% that is given by Ring and merges collected key/value lists.
 %% @end
 %%--------------------------------------------------------------------
--spec read_range_n_on_shards({ok, Nodes :: [{atom(), string()}]} | undefined,
+-spec read_range_n_on_shards({ok, Shards :: shards()} | undefined,
 			     Tab :: #enterdb_table{},
 			     DBStartKey :: binary(),
 			     N :: pos_integer()) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
 read_range_n_on_shards(undefined, _Tab, _DBStartKey, _N) ->
      {error, "no_table"};
-read_range_n_on_shards({ok, Nodes},
+read_range_n_on_shards({ok, Shards},
 		       Tab = #enterdb_table{type = Type,
-					    comparator = Comp},
+					    comparator = Comp,
+					    distributed = Dist},
 		       DBStartKey, N) ->
-    ?debug("DBStartKey: ~p, Nodes: ~p",[DBStartKey, Nodes]),
+    ?debug("DBStartKey: ~p, Shards: ~p",[DBStartKey, Shards]),
     Dir = comparator_to_dir(Comp),
     {CallbackMod, TrailingArgs} =
 	case Type of
@@ -858,14 +1007,11 @@ read_range_n_on_shards({ok, Nodes},
     %%NofShards = length(Shards),
     %%Part = (N div NofShards) + 1,
     %%To be safe, currently we try to read N from each shard.
-    KVLs =
-	[begin
-	    Args = [Shard, DBStartKey, N | TrailingArgs],
-	    {ok, KVL} =
-		rpc:call(Node, CallbackMod, read_range_n_binary, Args),
-	    ?debug("KVL on ~p: ~p",[Shard, KVL]),
-	    KVL
-	 end || {Node, Shard} <- Nodes],
+    BaseArgs = [DBStartKey, N | TrailingArgs],
+    Req = {CallbackMod, read_range_n_binary, BaseArgs},
+    ResL = map_shards(Dist, Req, Shards),
+
+    KVLs = [begin {ok, R} = Res, R end || Res <- ResL],
     ?debug("KVLs: ~p",[KVLs]),
     {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls(Dir, KVLs),
     N_KVP = lists:sublist(MergedKVL, N),
@@ -877,18 +1023,20 @@ read_range_n_on_shards({ok, Nodes},
 %% @end
 %%--------------------------------------------------------------------
 -spec approximate_size(Backend :: string(),
-		       Shards :: [{Node :: atom(), Shard :: string()}]) ->
+		       Shards :: shards(),
+		       Dist :: boolean()) ->
     {ok, Size :: pos_integer()} | {error, Reason :: term()}.
-approximate_size(leveldb, Shards) ->
-    Sizes =
-	[begin
-	    {ok, Size} =
-		rpc:call(Node, enterdb_ldb_worker, approximate_size, [Shard]),
-		Size
-	 end || {Node, Shard} <- Shards],
+approximate_size(leveldb, Shards, true) ->
+    Req = {enterdb_ldb_worker, approximate_size, []},
+    Sizes = ?dyno:map_shards_seq(Req, Shards),
     ?debug("Sizes of all shards: ~p", [Sizes]),
     sum_up_sizes(Sizes, 0);
-approximate_size(Type, _) ->
+approximate_size(leveldb, Shards, false) ->
+    Req = {enterdb_ldb_worker, approximate_size, []},
+    Sizes = pmap(Req, Shards),
+    ?debug("Sizes of all shards: ~p", [Sizes]),
+    sum_up_sizes(Sizes, 0);
+approximate_size(Type, _, _) ->
     ?debug("Size approximation is not supported for type: ~p", [Type]),
     {error, "type_not_supported"}.
 
@@ -907,7 +1055,7 @@ sum_up_sizes([_ | Rest], Sum) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec make_key(TD :: #enterdb_table{},
-		       Key :: [{string(), term()}]) ->
+	       Key :: [{string(), term()}]) ->
     {ok, DbKey :: binary} | {error, Reason :: term()}.
 make_key(TD, Key) ->
     make_db_key(TD#enterdb_table.key, Key).
@@ -960,16 +1108,16 @@ make_db_key(KeyDef, Key) ->
 		  Key :: [{string(), term()}],
 		  DBKeyList :: [term()]) ->
     ok | {error, Reason::term()}.
-make_db_key([], _, DbKeyList) ->
-    Tuple = list_to_tuple(lists:reverse(DbKeyList)),
-    {ok, term_to_binary(Tuple)};
 make_db_key([Field | Rest], Key, DbKeyList) ->
     case lists:keyfind(Field, 1, Key) of
         {_, Value} ->
             make_db_key(Rest, Key, [Value | DbKeyList]);
         false ->
             {error, "key_mismatch"}
-    end.
+    end;
+make_db_key([], _, DbKeyList) ->
+    Tuple = list_to_tuple(lists:reverse(DbKeyList)),
+    {ok, term_to_binary(Tuple)}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1004,16 +1152,16 @@ make_db_array_value(ColumnsDef, Columns) ->
 		          Columns :: [{string(), term()}],
 		          DbValueList :: [term()]) ->
     {ok, DbValue :: binary()} | {error, Reason :: term()}.
-make_db_array_value([], _Columns, DbValueList) ->
-    Tuple = list_to_tuple(lists:reverse(DbValueList)),
-    {ok, term_to_binary(Tuple)};
 make_db_array_value([Field|Rest], Columns, DbValueList) ->
     case lists:keyfind(Field, 1, Columns) of
         {_, Value} ->
             make_db_array_value(Rest, Columns, [Value|DbValueList]);
         false ->
             {error, "column_mismatch"}
-    end.
+    end;
+make_db_array_value([], _Columns, DbValueList) ->
+    Tuple = list_to_tuple(lists:reverse(DbValueList)),
+    {ok, term_to_binary(Tuple)}.
 
 -spec make_db_hash_value(ColumnsDef :: [string()],
 		         Columns :: [{string(), term()}]) ->
@@ -1146,3 +1294,82 @@ comparator_to_dir(descending) ->
     0;
 comparator_to_dir(ascending) ->
     1.
+
+-spec find_local_shards(Shards :: shards()) ->
+    [Shard :: string()].
+find_local_shards([S | _] = Shards) when is_list(S) ->
+    Shards;
+find_local_shards(Shards) ->
+    find_local_shards(Shards, node(), gb_dyno:conf(dc), []).
+
+-spec find_local_shards(Shards :: [{Shard :: string(), Ring :: map()}],
+			Node :: node(),
+			DC :: string(),
+			Acc :: [string()]) ->
+    [Shard :: string()].
+find_local_shards([{S, Ring} | Rest], Node, DC, Acc) ->
+    Nodes = maps:get(DC, Ring, []),
+    NewAcc =
+	case lists:member(Node, Nodes) of
+	    true -> [S | Acc];
+	    false -> Acc
+	end,
+    find_local_shards(Rest, Node, DC, NewAcc);
+find_local_shards([], _Node, _DC, Acc) ->
+    Acc.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Parallel map requests on local node. Args will be constructed by 
+%% Adding Elements from List to BaseArgs. apply(Mod, Fun, Args)
+%% will be called on local node. Result list will be in respective
+%% to request list.
+%% @end
+%%--------------------------------------------------------------------
+-spec pmap({Mod:: module(), Fun :: function(), BaseArgs :: [term()]},
+	   List :: [term()]) ->
+    ResL :: [Result :: term()].
+pmap({Mod, Fun, BaseArgs}, List) ->
+    Reqs = [{Mod, Fun, [Elem | BaseArgs]} || Elem <- List],
+    peval(Reqs).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Parallel evaluate requests on local node. apply(Mod, Fun, Args)
+%% will be called on local node. Result list will be in respective
+%% to request list.
+%% @end
+%%--------------------------------------------------------------------
+-spec peval( Reqs :: [{module(), function(), [term()]}]) ->
+    ResL :: [term()].
+peval(Reqs) ->
+    ReplyTo = self(),
+    Pids = [async_eval(ReplyTo, Req) || Req <- Reqs],
+    [yield(P) || P <- Pids].
+
+-spec async_eval(ReplyTo :: pid(),
+		 Req :: {module(), function(), [term()]}) ->
+    Pid :: pid().
+async_eval(ReplyTo, {Mod, Fun, Args}) ->
+    spawn(
+      fun() ->
+	      R = apply(Mod, Fun, Args),
+	      ReplyTo ! {self(), {promise_reply, R}}
+      end).
+
+-spec yield(Pid :: pid()) ->
+    term().
+yield(Pid) when is_pid(Pid) ->
+    {value, R} = do_yield(Pid, infinity),
+    R.
+
+-spec do_yield(Pid :: pid,
+	       Timeout :: non_neg_integer() | infinity) ->
+    {value, R :: term()} | timeout.
+do_yield(Pid, Timeout) ->
+    receive
+        {Pid, {promise_reply,R}} ->
+            {value, R}
+        after Timeout ->
+            timeout
+    end. 

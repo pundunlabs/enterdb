@@ -40,6 +40,9 @@
          terminate/2,
          code_change/3]).
 
+%% Inter-Node API
+-export([init_iterator/1]).
+
 -include("enterdb.hrl").
 -include("gb_log.hrl").
 
@@ -49,7 +52,8 @@
 		columns,
 		dir,
 		last_key,
-		iterators}).
+		iterators,
+		distributed}).
 
 -define(TIMEOUT, 10000).
 
@@ -150,8 +154,8 @@ seek_({ok, Args}, Key) ->
 	    case gen_server:call(Pid, {seek, Key}) of
 		{ok, Rec} ->
 		    {ok, Rec, Pid};
-		{error, invalid} ->
-		    {error, invalid}
+		{error, Reason} ->
+		    {error, Reason}
 	    end;
         {error, Reason} ->
             {error, Reason}
@@ -201,17 +205,19 @@ init(Args) ->
     Columns = proplists:get_value(columns, Args),
     Comp = proplists:get_value(comparator, Args),
     Dir = enterdb_lib:comparator_to_dir(Comp),
-    case gb_hash:get_nodes(Name) of
+    case gb_hash:is_distributed(Name) of
 	undefined ->
 	    {stop, "no_table"};
-	{ok, Shards} ->
-	    Iterators = init_iterators(Shards),
+	Dist ->
+	    {ok, Shards} = gb_hash:get_nodes(Name),
+	    Iterators = init_iterators(Shards, Dist),
 	    State = #state{name = Name,
 			   data_model = DataModel,
 			   key = Key,
 			   columns = Columns,
 			   dir = Dir,
-			   iterators = Iterators},
+			   iterators = Iterators,
+			   distributed = Dist},
 	    {ok, State, 100}
     end.
 
@@ -256,12 +262,16 @@ handle_call({seek, SKey}, _From, State = #state{iterators = Iterators,
 						key = KeyDef,
 						columns = Columns,
 						dir = Dir}) ->
-    {ok, DBKey} = make_db_key(KeyDef, SKey),
-    KVL_Map = iterate(Iterators, {seek, DBKey}),
-    FirstBin = apply_first(Dir, KVL_Map),
-    CurrentKey = get_current_key(FirstBin),
-    First = make_app_kvp(FirstBin, DataModel, KeyDef, Columns),
-    {reply, First, State#state{last_key = CurrentKey}, ?TIMEOUT};
+    case make_db_key(KeyDef, SKey) of
+	{ok, DBKey} ->
+	    KVL_Map = iterate(Iterators, {seek, DBKey}),
+	    FirstBin = apply_first(Dir, KVL_Map),
+	    CurrentKey = get_current_key(FirstBin),
+	    First = make_app_kvp(FirstBin, DataModel, KeyDef, Columns),
+	    {reply, First, State#state{last_key = CurrentKey}, ?TIMEOUT};
+	{error, Reason} ->
+	    {reply, {error, Reason}, State, 0}
+    end;
 handle_call(next, _From, State = #state{iterators = Iterators,
 					last_key = LastKey,
 					data_model = DataModel,
@@ -350,47 +360,50 @@ code_change(_OldVsn, State, _Extra) ->
 get_args(Name) ->
     enterdb:table_info(Name,[name, data_model, key, columns, comparator]).
 
--spec init_iterators(Shards :: [string()]) ->
-    [it()] | {error, Reason :: term()}.
-init_iterators(Shards) ->
-    Node = node(),
-    [init_iterator(Shard) || {N, Shard} <- Shards, N == Node].
+-spec init_iterators(Shards :: shards(), Dist :: boolean()) ->
+    [{node(), it()}] | {error, Reason :: term()}.
+init_iterators(Shards, Dist) ->
+    Req = {?MODULE, init_iterator, []},
+    enterdb_lib:map_shards(Dist, Req, Shards).
 
 -spec init_iterator(Shard :: string()) ->
-    It :: it().
+    {Node :: node(), It :: it()}.
 init_iterator(Shard) ->
     {ok, It} = enterdb_ldb_worker:get_iterator(Shard),
-    It.
+    {node(), It}.
 
--spec iterate(Iterators :: [it()], Op :: first | last | {seek, Key :: key()}) ->
+-spec iterate(Iterators :: [{node(), it()}],
+	      Op :: first | last | {seek, Key :: key()}) ->
     map().
 iterate(Iterators, Op) ->
-    Applied = [ apply_op(It, Op) || It <- Iterators],
+    Applied = [ apply_op(Node, It, Op) || {Node, It} <- Iterators],
     ?debug("Iterate ~p: ~p",[Op, Applied]),
     maps:from_list([ {KVP, It} || {ok, KVP, It} <- Applied]).
 
--spec apply_op(It :: it(), Op :: first | last | {seek, Key :: key()}) ->
+-spec apply_op(Node :: node(),
+	       It :: it(),
+	       Op :: first | last | {seek, Key :: key()}) ->
     {KVP :: kvp() | invalid, It :: it()}.
-apply_op(It, first) ->
-    case leveldb:first(It) of
+apply_op(Node, It, first) ->
+    case rpc:call(Node, leveldb, first, [It]) of
 	{ok, KVP} ->
-	    {ok, KVP, It};
+	    {ok, KVP, {Node, It}};
 	{error, _} ->
-	    {invalid, It}
+	    {invalid, {Node, It}}
     end;
-apply_op(It, last) ->
-    case leveldb:last(It) of
+apply_op(Node, It, last) ->
+    case rpc:call(Node, leveldb, last, [It]) of
 	{ok, KVP} ->
-	    {ok, KVP, It};
+	    {ok, KVP, {Node, It}};
 	{error, _} ->
-	    {invalid, It}
+	    {invalid, {Node, It}}
     end;
-apply_op(It, {seek, Key}) ->
-    case leveldb:seek(It, Key) of
+apply_op(Node, It, {seek, Key}) ->
+    case rpc:call(Node, leveldb, seek, [It, Key]) of
 	{ok, KVP} ->
-	    {ok, KVP, It};
+	    {ok, KVP, {Node, It}};
 	{error, _} ->
-	    {invalid, It}
+	    {invalid, {Node, It}}
     end.
 
 -spec apply_first(Dir :: 0 | 1, KVL_Map :: map()) ->
@@ -448,8 +461,8 @@ apply_next(Dir, KVL_Map, KVL, LastKey) ->
 		 Rest :: [kvp()], LastKey :: key()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
 apply_next(Dir, KVL_Map, {LastKey, _} = Head, Rest, LastKey) ->
-    LastIt = maps:get(Head, KVL_Map),
-    case leveldb:next(LastIt) of
+    {Node, LastIt} = maps:get(Head, KVL_Map),
+    case rpc:call(Node, leveldb, next, [LastIt]) of
 	{ok, KVP} ->
 	    case leveldb_utils:sort_kvl(Dir, [KVP | Rest]) of
 		{ok, [H|_]} -> {ok, H};
@@ -461,24 +474,26 @@ apply_next(Dir, KVL_Map, {LastKey, _} = Head, Rest, LastKey) ->
 apply_next(_Dir, _KVL_Map, Head, _Rest, _LastKey) ->
     {ok, Head}.
 
--spec apply_prev(Dir :: 0 | 1, Iterators :: [it()], LastKey :: key()) ->
+-spec apply_prev(Dir :: 0 | 1,
+		 Iterators :: [{node(), it()}],
+		 LastKey :: key()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
 apply_prev(Dir, Iterators, LastKey)->
-    Applied = [ apply_op(It, {seek, LastKey}) || It <- Iterators],
-    ValidIterators = [ It || {ok, _, It} <- Applied],
-    InvalidIterators = [ It || {invalid, It} <- Applied],
+    Applied = [ apply_op(Node, It, {seek, LastKey}) || {Node, It} <- Iterators],
+    ValidIterators = [ NIt || {ok, _, NIt} <- Applied],
+    InvalidIterators = [ NIt || {invalid, NIt} <- Applied],
     apply_prev_last(Dir, ValidIterators,InvalidIterators).
 
 -spec apply_prev_last(Dir :: 0 | 1,
-		      ValidIterators :: [it()],
-		      InvalidIterators :: [it()]) ->
+		      ValidIterators :: [{node(), it()}],
+		      InvalidIterators :: [{node(), it()}]) ->
     {ok, KVP :: kvp()} | {error, invalid}.
 apply_prev_last(_Dir, [], _)->
     {error, invalid};
 apply_prev_last(Dir, ValidIterators, InvalidIterators)->
     KVL =
-	lists:foldl(fun(It, Acc) ->
-			case leveldb:prev(It) of
+	lists:foldl(fun({Node, It}, Acc) ->
+			case rpc:call(Node, leveldb, prev, [It]) of
 			    {ok, KVP} ->
 				[KVP | Acc];
 			    {error, invalid} ->
@@ -507,7 +522,7 @@ get_current_key({_,{Key,_}}) ->
     Key.
 
 -spec make_db_key(KeyDef :: [string()],
-               Key :: [{string(), term()}]) ->
+		      Key :: [{string(), term()}]) ->
     {ok, DbKey :: binary} | {error, Reason :: term()}.
 make_db_key(KeyDef, Key) ->
     enterdb_lib:make_db_key(KeyDef, Key).
