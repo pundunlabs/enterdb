@@ -41,7 +41,7 @@
 	 recreate_shard/1,
 	 approximate_sizes/2,
 	 approximate_size/1,
-	 get_iterator/1]).
+	 get_iterator/2]).
 
 -define(SERVER, ?MODULE).
 
@@ -55,7 +55,8 @@
                 name,
 		path,
 		subdir,
-		options_pl}).
+		options_pl,
+		it_mon}).
 
 %%%===================================================================
 %%% API
@@ -204,11 +205,11 @@ approximate_size(Shard) ->
 %% Get an iterator resource from leveldb backend.
 %% @end
 %%--------------------------------------------------------------------
--spec get_iterator(Shard :: string()) ->
+-spec get_iterator(Caller :: pid(), Shard :: string()) ->
     {ok, It :: it()} | {error, Reason :: term()}.
-get_iterator(Shard) ->
+get_iterator(Caller, Shard) ->
     Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, get_iterator).
+    gen_server:call(Pid, {get_iterator, Caller}).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -254,7 +255,8 @@ init(Args) ->
                                 name = Name,
                                 path = Path,
 				subdir = Subdir,
-				options_pl = OptionsPL}}
+				options_pl = OptionsPL,
+				it_mon = maps:new()}}
             end;
         {error, Reason} ->
             {stop, {error, Reason}}
@@ -307,7 +309,6 @@ handle_call(delete_db, _From, State = #state{db_ref = DB,
 					     subdir = Subdir}) ->
     ?debug("Deleting shard: ~p", [Name]),
     ok = delete_enterdb_ldb_resource(Name),
-    ok = delete_enterdb_lit_resource(Name),
     ok = leveldb:close_db(DB),
     FullPath = filename:join([Path, Subdir, Name]),
     ok = leveldb:destroy_db(FullPath, Options),
@@ -348,11 +349,14 @@ handle_call(approximate_size, _From, State) ->
 	   readoptions = ReadOptions} = State,
     R = leveldb:approximate_size(DB, ReadOptions),
     {reply, R, State};
-handle_call(get_iterator, {Pid, _Tag}, State) ->
+handle_call({get_iterator, Caller}, _From, State) ->
     #state{db_ref = DB,
 	   readoptions = ReadOptions} = State,
-    R = get_iterator(State#state.name, DB, ReadOptions, Pid),
-    {reply, R, State};
+    R = do_get_iterator(DB, ReadOptions),
+    Mref = erlang:monitor(process, Caller),
+    MonMap = State#state.it_mon,
+    NewMonMap = maps:put(Mref, Caller, MonMap),
+    {reply, R, State#state{it_mon = NewMonMap}};
 handle_call(Req, From, State) ->
     R = ?warning("unkown request:~p, from: ~p, state: ~p", [Req, From, State]),
     {reply, R, State}.
@@ -380,19 +384,11 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({'DOWN', _Ref, process, Pid, _Info},
-	    State = #state{name = Name}) ->
-    case find_enterdb_lit_resource(Name, Pid) of
-	{ok, #enterdb_lit_resource{it = It} = R} ->
-	    mnesia:dirty_delete_object(R),
-	    Del = leveldb:delete_iterator(It),
-	    ?debug("Monitored Iterator DOWN (~p), delete_iterator -> ~p",
-		    [Pid, Del]);
-	{error, Reason} ->
-	    ?debug("Monitored Iterator DOWN (~p), it not in register: ~p",
-		    [Pid, {error, Reason}])
-    end,
-    {noreply, State};
+handle_info({'DOWN', Mref, process, Pid, _Info},
+	    State = #state{it_mon = MonMap}) ->
+    ?debug("Iterator down, Pid: ~p", [Pid]),
+    NewMonMap = maps:remove(Mref, MonMap),
+    {noreply, State#state{it_mon = NewMonMap}};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -409,10 +405,15 @@ handle_info(_Info, State) ->
 %%--------------------------------------------------------------------
 terminate(_Reason, _State = #state{db_ref = undefined}) ->
     ok;
-terminate(_Reason, _State = #state{db_ref = DB,  name = Name}) ->
+terminate(_Reason, _State = #state{db_ref = DB,  name = Name,
+				   it_mon = MonMap}) ->
     ?debug("Terminating ldb worker for shard: ~p", [Name]),
+    maps:fold(fun(Mref, Pid, _Acc) ->
+		erlang:demonitor(Mref, [flush]),
+		Res = (catch gen_server:stop(Pid)),
+		?debug("Stop iterator: ~p", [Res])
+	      end, ok, MonMap),
     ok = delete_enterdb_ldb_resource(Name),
-    ok = delete_enterdb_lit_resource(Name),
     ok = leveldb:close_db(DB).
 
 %%--------------------------------------------------------------------
@@ -436,59 +437,15 @@ code_change(_OldVsn, State, _Extra) ->
 %% keep track.
 %% @end
 %%--------------------------------------------------------------------
--spec get_iterator(Name :: string(), DB :: binary(),
-		   ReadOptions :: binary(), Pid :: pid()) ->
+-spec do_get_iterator(DB :: binary(),
+		      ReadOptions :: binary()) ->
     {ok, It :: binary()} | {error, Reason :: term()}.
-get_iterator(Name, DB, ReadOptions, Pid) ->
+do_get_iterator(DB, ReadOptions) ->
     case leveldb:iterator(DB, ReadOptions) of
 	{ok, It} ->
-	    register_it(Name, Pid, It);
+	    {ok, It};
 	{error, R} ->
 	    {error, R}
-    end.
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Get a leveldb iterator and register the oterator resource to
-%% keep track.
-%% @end
-%%--------------------------------------------------------------------
--spec register_it(Name :: string(), Pid :: pid(), It :: binary()) ->
-    {ok, It :: binary()} | {error, Reason :: term()}.
-register_it(Name, Pid, It) ->
-    R = #enterdb_lit_resource{name = Name, pid = Pid, it = It},
-    case mnesia:dirty_write(R) of
-	ok ->
-	    erlang:monitor(process, Pid),
-	    {ok, It};
-	_ ->
-	    Del = leveldb:delete_iterator(It),
-	    ?debug("Failed to register it, delete_iterator -> ~p", [Del]),
-	    {error, register}
-    end.
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Find leveldb iterator resource from register by given Name and Pid.
-%% @end
-%%--------------------------------------------------------------------
--spec find_enterdb_lit_resource(Name :: string(), Pid :: pid()) ->
-    {ok, It :: binary()} | {error, Reason :: term()}.
-find_enterdb_lit_resource(Name, Pid) ->
-    case mnesia:dirty_read(enterdb_lit_resource, Name) of
-	[] ->
-	    {error, register};
-	List when is_list(List) ->
-	    case lists:keyfind(Pid, #enterdb_lit_resource.pid, List) of
-		#enterdb_lit_resource{} = R ->
-		    {ok, R};
-		false ->
-		    {error, register}
-	    end;
-	E ->
-	    ?debug("mnesia:dirty_read(enterdb_lit_resource, ~p) -> ~p",
-		    [Name, E]),
-	    {error, register}
     end.
 
 %%--------------------------------------------------------------------
@@ -534,7 +491,6 @@ ensure_closed(Name) ->
 	{ok, DB} ->
 	    ?debug("Old DB resource found for shard: ~p, closing and deleting..", [Name]),
 	    ok = delete_enterdb_ldb_resource(Name),
-	    ok = delete_enterdb_lit_resource(Name),
 	    ok = leveldb:close_db(DB);
 	{error, Reason} ->
 	    {error, Reason}
@@ -586,28 +542,4 @@ delete_enterdb_ldb_resource(Name) ->
             ok;
         {aborted, Reason} ->
            {error, {aborted, Reason}}
-    end.
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Delete the #enterdb_lit_resource entry in mnesia ram_copy and delete
-%% leveldb iterator resources.
-%% @end
-%%--------------------------------------------------------------------
--spec delete_enterdb_lit_resource(Name :: atom()) -> ok.
-delete_enterdb_lit_resource(Name) ->
-    case mnesia:dirty_read(enterdb_lit_resource, Name) of
-	[] ->
-	    ok;
-	List when is_list(List) ->
-	    [ begin #enterdb_lit_resource{pid = Pid, it = It} = R,
-		    ok = enterdb_lit_worker:stop(Pid),
-		    leveldb:delete_iterator(It),
-		    mnesia:dirty_delete_object(R)
-	      end || R <- List],
-	      ok;
-	E ->
-	    ?debug("mnesia:dirty_read(enterdb_lit_resource, ~p) -> ~p",
-		    [Name, E]),
-	    {error, register}
     end.

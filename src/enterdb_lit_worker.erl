@@ -40,9 +40,6 @@
          terminate/2,
          code_change/3]).
 
-%% Inter-Node API
--export([init_iterator/1]).
-
 -include("enterdb.hrl").
 -include("gb_log.hrl").
 
@@ -53,9 +50,8 @@
 		dir,
 		last_key,
 		iterators,
-		distributed}).
-
--define(TIMEOUT, 10000).
+		distributed,
+		monitors}).
 
 %%%===================================================================
 %%% API functions
@@ -210,14 +206,18 @@ init(Args) ->
 	    {stop, "no_table"};
 	Dist ->
 	    {ok, Shards} = gb_hash:get_nodes(Name),
-	    Iterators = init_iterators(Shards, Dist),
+	    process_flag(trap_exit, true),
+	    InitResult = init_iterators(Shards, Dist),
+	    {ok, Iterators, Monitors} = monitor_iterators(InitResult),
+	    ?debug("Started Iterators: ~p", [Iterators]),
 	    State = #state{name = Name,
 			   data_model = DataModel,
 			   key = Key,
 			   columns = Columns,
 			   dir = Dir,
 			   iterators = Iterators,
-			   distributed = Dist},
+			   distributed = Dist,
+			   monitors = Monitors},
 	    {ok, State, 100}
     end.
 
@@ -246,7 +246,7 @@ handle_call(first, _From, State = #state{iterators = Iterators,
     FirstBin = apply_first(Dir, KVL_Map),
     CurrentKey = get_current_key(FirstBin),
     First = make_app_kvp(FirstBin, DataModel, Key, Columns),
-    {reply, First, State#state{last_key = CurrentKey}, ?TIMEOUT};
+    {reply, First, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
 handle_call(last, _From, State = #state{iterators = Iterators,
 					data_model = DataModel,
 					key = Key,
@@ -256,7 +256,7 @@ handle_call(last, _From, State = #state{iterators = Iterators,
     LastBin = apply_last(Dir, KVL_Map),
     CurrentKey = get_current_key(LastBin),
     Last = make_app_kvp(LastBin, DataModel, Key, Columns),
-    {reply, Last, State#state{last_key = CurrentKey}, ?TIMEOUT};
+    {reply, Last, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
 handle_call({seek, SKey}, _From, State = #state{iterators = Iterators,
 						data_model = DataModel,
 						key = KeyDef,
@@ -268,7 +268,7 @@ handle_call({seek, SKey}, _From, State = #state{iterators = Iterators,
 	    FirstBin = apply_first(Dir, KVL_Map),
 	    CurrentKey = get_current_key(FirstBin),
 	    First = make_app_kvp(FirstBin, DataModel, KeyDef, Columns),
-	    {reply, First, State#state{last_key = CurrentKey}, ?TIMEOUT};
+	    {reply, First, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
 	{error, Reason} ->
 	    {reply, {error, Reason}, State, 0}
     end;
@@ -283,7 +283,7 @@ handle_call(next, _From, State = #state{iterators = Iterators,
     NextBin = apply_next(Dir, KVL_Map, LastKey),
     CurrentKey = get_current_key(NextBin),
     Next = make_app_kvp(NextBin, DataModel, Key, Columns),
-    {reply, Next, State#state{last_key = CurrentKey}, ?TIMEOUT};
+    {reply, Next, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
 handle_call(prev, _From, State = #state{iterators = Iterators,
 					last_key = LastKey,
 					data_model = DataModel,
@@ -293,7 +293,7 @@ handle_call(prev, _From, State = #state{iterators = Iterators,
     PrevBin = apply_prev(Dir, Iterators, LastKey),
     CurrentKey = get_current_key(PrevBin),
     Prev = make_app_kvp(PrevBin, DataModel, Key, Columns),
-    {reply, Prev, State#state{last_key = CurrentKey}, ?TIMEOUT};
+    {reply, Prev, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
 handle_call(_Request, _From, State) ->
     Reply = ?debug("Unhandled request: ~p",[_Request]),
     {reply, Reply, State, 0}.
@@ -323,6 +323,15 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_info({'DOWN', Mref, process, It, Inf},
+	    #state{monitors = Monitors} = State) ->
+    case maps:get(Mref, Monitors, undefined) of
+	It ->
+	    ?debug("Received DOWN from Iterator ~p: ~p. Stopping..", [It, Inf]),
+	    {stop, normal, State};
+	undefined ->
+	    {noreply, State}
+    end;
 handle_info(timeout, State) ->
     {stop, normal, State};
 handle_info(_Info, State) ->
@@ -339,7 +348,8 @@ handle_info(_Info, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(_Reason, _State) ->
+terminate(Reason, _State) ->
+    ?debug("Terminating ~p, Reason: ~p", [?MODULE, Reason]),
     ok.
 %%--------------------------------------------------------------------
 %% @private
@@ -361,49 +371,42 @@ get_args(Name) ->
     enterdb:table_info(Name,[name, data_model, key, columns, comparator]).
 
 -spec init_iterators(Shards :: shards(), Dist :: boolean()) ->
-    [{node(), it()}] | {error, Reason :: term()}.
+    [{ok, pid()}] | {error, Reason :: term()}.
 init_iterators(Shards, Dist) ->
-    Req = {?MODULE, init_iterator, []},
+    Req = {enterdb_lit_resource, init_iterator, [self()]},
     enterdb_lib:map_shards(Dist, Req, Shards).
 
--spec init_iterator(Shard :: string()) ->
-    {Node :: node(), It :: it()}.
-init_iterator(Shard) ->
-    {ok, It} = enterdb_ldb_worker:get_iterator(Shard),
-    {node(), It}.
-
--spec iterate(Iterators :: [{node(), it()}],
+-spec iterate(Iterators :: [it()],
 	      Op :: first | last | {seek, Key :: key()}) ->
     map().
 iterate(Iterators, Op) ->
-    Applied = [ apply_op(Node, It, Op) || {Node, It} <- Iterators],
+    Applied = [ apply_op(It, Op) || It <- Iterators],
     ?debug("Iterate ~p: ~p",[Op, Applied]),
     maps:from_list([ {KVP, It} || {ok, KVP, It} <- Applied]).
 
--spec apply_op(Node :: node(),
-	       It :: it(),
+-spec apply_op(It :: it(),
 	       Op :: first | last | {seek, Key :: key()}) ->
     {KVP :: kvp() | invalid, It :: it()}.
-apply_op(Node, It, first) ->
-    case rpc:call(Node, leveldb, first, [It]) of
+apply_op(It, first) ->
+    case enterdb_lit_resource:first(It) of
 	{ok, KVP} ->
-	    {ok, KVP, {Node, It}};
+	    {ok, KVP, It};
 	{error, _} ->
-	    {invalid, {Node, It}}
+	    {invalid, It}
     end;
-apply_op(Node, It, last) ->
-    case rpc:call(Node, leveldb, last, [It]) of
+apply_op(It, last) ->
+    case enterdb_lit_resource:last(It) of
 	{ok, KVP} ->
-	    {ok, KVP, {Node, It}};
+	    {ok, KVP, It};
 	{error, _} ->
-	    {invalid, {Node, It}}
+	    {invalid, It}
     end;
-apply_op(Node, It, {seek, Key}) ->
-    case rpc:call(Node, leveldb, seek, [It, Key]) of
+apply_op(It, {seek, Key}) ->
+    case enterdb_lit_resource:seek(It, Key) of
 	{ok, KVP} ->
-	    {ok, KVP, {Node, It}};
+	    {ok, KVP, It};
 	{error, _} ->
-	    {invalid, {Node, It}}
+	    {invalid, It}
     end.
 
 -spec apply_first(Dir :: 0 | 1, KVL_Map :: map()) ->
@@ -461,8 +464,8 @@ apply_next(Dir, KVL_Map, KVL, LastKey) ->
 		 Rest :: [kvp()], LastKey :: key()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
 apply_next(Dir, KVL_Map, {LastKey, _} = Head, Rest, LastKey) ->
-    {Node, LastIt} = maps:get(Head, KVL_Map),
-    case rpc:call(Node, leveldb, next, [LastIt]) of
+    LastIt = maps:get(Head, KVL_Map),
+    case enterdb_lit_resource:next(LastIt) of
 	{ok, KVP} ->
 	    case leveldb_utils:sort_kvl(Dir, [KVP | Rest]) of
 		{ok, [H|_]} -> {ok, H};
@@ -475,25 +478,25 @@ apply_next(_Dir, _KVL_Map, Head, _Rest, _LastKey) ->
     {ok, Head}.
 
 -spec apply_prev(Dir :: 0 | 1,
-		 Iterators :: [{node(), it()}],
+		 Iterators :: [it()],
 		 LastKey :: key()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
 apply_prev(Dir, Iterators, LastKey)->
-    Applied = [ apply_op(Node, It, {seek, LastKey}) || {Node, It} <- Iterators],
+    Applied = [ apply_op(It, {seek, LastKey}) || It <- Iterators],
     ValidIterators = [ NIt || {ok, _, NIt} <- Applied],
     InvalidIterators = [ NIt || {invalid, NIt} <- Applied],
     apply_prev_last(Dir, ValidIterators,InvalidIterators).
 
 -spec apply_prev_last(Dir :: 0 | 1,
-		      ValidIterators :: [{node(), it()}],
-		      InvalidIterators :: [{node(), it()}]) ->
+		      ValidIterators :: [it()],
+		      InvalidIterators :: [it()]) ->
     {ok, KVP :: kvp()} | {error, invalid}.
 apply_prev_last(_Dir, [], _)->
     {error, invalid};
 apply_prev_last(Dir, ValidIterators, InvalidIterators)->
     KVL =
-	lists:foldl(fun({Node, It}, Acc) ->
-			case rpc:call(Node, leveldb, prev, [It]) of
+	lists:foldl(fun(It, Acc) ->
+			case enterdb_lit_resource:prev(It) of
 			    {ok, KVP} ->
 				[KVP | Acc];
 			    {error, invalid} ->
@@ -542,3 +545,18 @@ opposite(0) ->
     1;
 opposite(1) ->
     0.
+
+-spec monitor_iterators(InitResult :: [{ok, pid()}]) ->
+    {ok, Iterators :: [pid()], Monitors :: map()}.
+monitor_iterators(InitResult)->
+    monitor_iterators(InitResult, [], maps:new()).
+
+-spec monitor_iterators(InitResult :: [{ok, pid()}],
+			AccI :: [pid()],
+			AccM :: map()) ->
+    {ok, Iterators :: [pid()], Monitors :: map()}.
+monitor_iterators([{ok, Pid} | Rest], AccI, AccM) ->
+    Mref = erlang:monitor(process, Pid),
+    monitor_iterators(Rest, [Pid | AccI], maps:put(Mref, Pid, AccM));
+monitor_iterators([], AccI, AccM) ->
+    {ok, AccI, AccM}.

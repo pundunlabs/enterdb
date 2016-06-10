@@ -60,7 +60,6 @@ create_table(Nodes, Name) when Name == enterdb_stab ->
               {type, set}
              ],
     mnesia:create_table(Name, TabDef);
-
 create_table(Nodes, Name) when Name == enterdb_table->
     TabDef = [{access_mode, read_write},
               {attributes, record_info(fields, enterdb_table)},
@@ -77,15 +76,6 @@ create_table(Nodes, Name) when Name == enterdb_ldb_resource->
               {load_order, 49},
               {record_name, Name},
               {type, set}
-             ],
-    mnesia:create_table(Name, TabDef);
-create_table(Nodes, Name) when Name == enterdb_lit_resource->
-    TabDef = [{access_mode, read_write},
-              {attributes, record_info(fields, enterdb_lit_resource)},
-              {ram_copies, Nodes},
-              {load_order, 48},
-              {record_name, Name},
-              {type, bag}
              ],
     mnesia:create_table(Name, TabDef);
 create_table(_, _) ->

@@ -20,6 +20,8 @@
 
 
 -define(MAX_TABLE_NAME_LENGTH, 64).
+-define(ITERATOR_TIMEOUT, 10000).
+-define(dyno, gb_dyno_dist).
 
 -type key() :: [{string(), term()}].
 -type key_range() :: {key(), key()}.
@@ -74,7 +76,7 @@
 		      pos_integer()}. %% micro seconds since start of epoch(UNIX)
 
 -type op() :: first | last | {seek, key()} | next | prev.
--type it() :: binary().
+-type it() :: pid().
 
 -type node_name() :: atom().
 -type shard_name() :: string().
@@ -111,10 +113,3 @@
 -record(enterdb_ldb_resource, {name :: shard_name(),
 			       resource :: binary()
 			      }).
-
--record(enterdb_lit_resource, {name :: shard_name(),
-			       pid :: pid(),
-			       it :: binary()
-			     }).
-
--define(dyno, gb_dyno_dist).
