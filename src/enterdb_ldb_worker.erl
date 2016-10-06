@@ -118,10 +118,19 @@ delete(Shard, Key) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec delete_db(Shard :: string()) -> ok | {error, Reason::term()}.
-delete_db(Shard) ->
-    ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, delete_db).
+-spec delete_db(Args :: [term()]) -> ok | {error, Reason :: term()}.
+delete_db(Args) ->
+    Name = proplists:get_value(name, Args),
+    Subdir = proplists:get_value(subdir, Args),
+    Path = enterdb_server:get_db_path(),
+    ok = ensure_closed(Name),
+
+    OptionsPL = proplists:get_value(options, Args),
+    OptionsRec = build_leveldb_options(OptionsPL),
+    {ok, Options} = leveldb:options(OptionsRec),
+
+    FullPath = filename:join([Path, Subdir, Name]),
+    ok = leveldb:destroy_db(FullPath, Options).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -302,17 +311,6 @@ handle_call({read_range_n, StartKey, N, _Type}, _From, State) when N >= 0 ->
 	   readoptions = ReadOptions} = State,
     Reply = leveldb:read_range_n(DB, ReadOptions, StartKey, N),
     {reply, Reply, State};
-handle_call(delete_db, _From, State = #state{db_ref = DB,
-					     options = Options,
-					     name = Name,
-					     path = Path,
-					     subdir = Subdir}) ->
-    ?debug("Deleting shard: ~p", [Name]),
-    ok = delete_enterdb_ldb_resource(Name),
-    ok = leveldb:close_db(DB),
-    FullPath = filename:join([Path, Subdir, Name]),
-    ok = leveldb:destroy_db(FullPath, Options),
-    {stop, normal, ok, State#state{db_ref = undefined}};
 handle_call(recreate_shard, _From, State = #state{db_ref = DB,
 						  options = Options,
 						  name = Name,

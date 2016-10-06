@@ -868,12 +868,22 @@ delete_shard(Shard) ->
     mnesia:dirty_delete(enterdb_stab, Shard).
 
 %% add delete per type
-delete_shard_help(#enterdb_stab{shard = Name, type = leveldb}) ->
-    enterdb_ldb_worker:delete_db(Name),
-    ok;
-delete_shard_help(#enterdb_stab{shard = Name, type = leveldb_wrapped}) ->
-    enterdb_ldb_wrp:delete_shard(Name),
-    ok;
+delete_shard_help(ESTAB = #enterdb_stab{type = leveldb}) ->
+    Options = [{comparator, ESTAB#enterdb_stab.comparator},
+	       {create_if_missing, false},
+	       {error_if_exists, false}],
+    Args = [{name, ESTAB#enterdb_stab.shard},
+	    {subdir, ESTAB#enterdb_stab.name},
+            {options, Options}, {tab_rec, ESTAB}],
+    enterdb_ldb_worker:delete_db(Args);
+delete_shard_help(ESTAB = #enterdb_stab{type = leveldb_wrapped}) ->
+    Options = [{comparator, ESTAB#enterdb_stab.comparator},
+	       {create_if_missing, false},
+	       {error_if_exists, false}],
+    Args = [{name, ESTAB#enterdb_stab.shard},
+	    {subdir, ESTAB#enterdb_stab.name},
+            {options, Options}, {tab_rec, ESTAB}],
+    enterdb_ldb_wrp:delete_shard(Args);
 delete_shard_help({error, Reason}) ->
     {error, Reason}.
 

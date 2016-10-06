@@ -199,13 +199,19 @@ close_shard(Shard) ->
 %% Delete leveldb buckets and clear helper ets tables.
 %% @end
 %%--------------------------------------------------------------------
--spec delete_shard(Shard :: shard_name()) -> ok | {error, Reason :: term()}.
-delete_shard(Shard) ->
+-spec delete_shard(Args :: [term()]) -> ok | {error, Reason :: term()}.
+delete_shard(Args) ->
+    Shard = proplists:get_value(name, Args),
     cancel_timer(Shard),
-    Buckets = get_buckets(Shard),
-    [ ok = enterdb_ldb_worker:delete_db(Bucket) || Bucket <- Buckets],
+    ESTAB = proplists:get_value(tab_rec, Args),
+    Buckets = ESTAB#enterdb_stab.buckets,
+    [ begin
+	  NewArgs = lists:keyreplace(name, 1, Args, {name, Bucket}),
+	  ok = enterdb_ldb_worker:delete_db(NewArgs)
+      end || Bucket <- Buckets],
     ets:delete(?COUNTER, Shard),
-    ets:delete(?BUCKET, Shard).
+    ets:delete(?BUCKET, Shard),
+    ok.
 
 -spec size_wrap(Shard :: shard_name(),
 		SizeMargin :: size_margin()) ->
