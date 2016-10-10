@@ -5,12 +5,45 @@
 %% Application callbacks
 -export([start/2, stop/1]).
 
+-include("gb_log.hrl").
+
 %% ===================================================================
 %% Application callbacks
 %% ===================================================================
 
 start(_StartType, _StartArgs) ->
-    enterdb_sup:start_link().
+    DB_PATH = enterdb_lib:get_db_path(),
+    ok = filelib:ensure_dir(DB_PATH),
+    ?debug("DB_PATH: ~p", [DB_PATH]),
+
+    case mnesia:wait_for_tables([enterdb_table, enterdb_stab], 20000) of
+        {timeout, RemainingTabs} ->
+	    {error, {not_exists, RemainingTabs}};
+        ok ->
+	    case enterdb_sup:start_link() of
+		{ok, Pid} ->
+		    Res = open_all_tables(),
+		    ?debug("Open all tables.. ~p", [Res]),
+		    {ok, Pid};
+		{error, Reason} ->
+		    {error, Reason}
+	end
+    end.
 
 stop(_State) ->
     ok.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Open existing database table shards.
+%% @end
+%%--------------------------------------------------------------------
+-spec open_all_tables() -> ok | {error, Reason :: term()}.
+open_all_tables() ->
+    ?debug("Opening all tables..", []),
+    case enterdb_db:transaction(fun() -> mnesia:all_keys(enterdb_stab) end) of
+	{atomic, DBList} ->
+	    enterdb_lib:open_shards(DBList);
+	{error, Reason} ->
+	    {error, Reason}
+    end.

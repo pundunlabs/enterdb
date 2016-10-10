@@ -23,6 +23,8 @@
 -module(enterdb_lib).
 
 %% API
+-export([get_db_path/0]).
+
 -export([verify_create_table_args/1,
          create_table/1,
          open_table/2,
@@ -70,6 +72,42 @@
 %%% API
 %%===================================================================
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Get the database's directory path from configuration.
+%% @end
+%%--------------------------------------------------------------------
+-spec get_db_path() -> string().
+get_db_path() ->
+    CONF_PATH = gb_conf:get_param("enterdb.yaml", db_path),
+    case CONF_PATH of
+	[$/|_] ->
+	    CONF_PATH;
+	_ ->
+	    filename:join(gb_conf_env:proddir(), CONF_PATH)
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Get the configured default for number of local shards.
+%% @end
+%%--------------------------------------------------------------------
+-spec get_num_of_local_shards() -> string().
+get_num_of_local_shards() ->
+    case gb_conf:get_param("enterdb.yaml", num_of_local_shards) of
+	undefined ->
+	    ?debug("num_of_local_shards not configured!", []),
+            erlang:system_info(schedulers);
+	Int when is_integer(Int) ->
+	    Int;
+	IntStr ->
+            case catch list_to_integer(IntStr) of
+                Int when is_integer(Int) ->
+                    Int;
+                _ ->
+                    erlang:system_info(schedulers)
+            end
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -453,8 +491,7 @@ get_local_shards(Name, NumOfShards) ->
 create_table(#enterdb_table{name = Name,
 			    options = Options,
 			    distributed = false} = EnterdbTable)->
-    {ok, PropList} = enterdb_server:get_state_params(),
-    NoS_Default = proplists:get_value(num_of_local_shards, PropList),
+    NoS_Default = get_num_of_local_shards(),
     NumOfShards	= proplists:get_value(shards, Options, NoS_Default),
     %%Generate Shards and allocate nodes on shards
     {ok, Shards} = get_local_shards(Name, NumOfShards),
@@ -466,8 +503,7 @@ create_table(#enterdb_table{name = Name,
 
 create_table(#enterdb_table{name = Name,
 			    options = Options} = EnterdbTable)->
-    {ok, PropList} = enterdb_server:get_state_params(),
-    NoS_Default = proplists:get_value(num_of_local_shards, PropList),
+    NoS_Default = get_num_of_local_shards(),
     NumOfShards	= proplists:get_value(shards, Options, NoS_Default),
     RF = proplists:get_value(replication_factor, Options, 1),
     
@@ -524,6 +560,7 @@ do_create_shards(#enterdb_table{shards = Shards} = EDBT) ->
 		      EDBT :: #enterdb_table{}) ->
     ok | {error, Reason :: term()}.
 do_create_shard(Shard, EDBT) ->
+    DB_Path = get_db_path(),
     Options = EDBT#enterdb_table.options,
     DataModel = EDBT#enterdb_table.data_model,
     Wrapper = proplists:get_value(wrapper, Options),
@@ -537,7 +574,8 @@ do_create_shard(Shard, EDBT) ->
 			  comparator = EDBT#enterdb_table.comparator,
 			  data_model = DataModel,
 			  wrapper = Wrapper,
-			  buckets = Buckets},
+			  buckets = Buckets,
+			  db_path = DB_Path},
     write_shard_table(ESTAB),
     do_create_shard_type(ESTAB).
 
@@ -619,6 +657,7 @@ create_leveldb_shard(ESTAB) ->
 	       {create_if_missing, true},
 	       {error_if_exists, true}],
     ChildArgs = [{name, ESTAB#enterdb_stab.shard},
+		 {db_path, ESTAB#enterdb_stab.db_path},
 		 {subdir, ESTAB#enterdb_stab.name},
                  {options, Options}, {tab_rec, ESTAB}],
     {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
@@ -633,6 +672,7 @@ open_leveldb_shard(ESTAB) ->
 	       {create_if_missing, false},
 	       {error_if_exists, false}],
     ChildArgs = [{name, ESTAB#enterdb_stab.shard},
+		 {db_path, ESTAB#enterdb_stab.db_path},
 		 {subdir, ESTAB#enterdb_stab.name},
                  {options, Options}, {tab_rec, ESTAB}],
     {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
@@ -649,7 +689,8 @@ create_leveldb_wrp_shard(#enterdb_stab{shard = Shard,
     Options = [{comparator, ESTAB#enterdb_stab.comparator},
 	       {create_if_missing, true},
 	       {error_if_exists, true}],
-    ChildArgs = [{subdir, ESTAB#enterdb_stab.name},
+    ChildArgs = [{db_path, ESTAB#enterdb_stab.db_path},
+                 {subdir, ESTAB#enterdb_stab.name},
                  {options, Options}, {tab_rec, ESTAB}],
 
     ok = enterdb_ldb_wrp:init_buckets(Shard, Buckets, Wrapper),
@@ -668,7 +709,8 @@ open_leveldb_wrp_shard(#enterdb_stab{shard = Shard,
     Options = [{comparator, ESTAB#enterdb_stab.comparator},
 	       {create_if_missing, false},
 	       {error_if_exists, false}],
-    ChildArgs = [{subdir, ESTAB#enterdb_stab.name},
+    ChildArgs = [{db_path, ESTAB#enterdb_stab.db_path},
+                 {subdir, ESTAB#enterdb_stab.name},
                  {options, Options}, {tab_rec, ESTAB}],
 
     ok = enterdb_ldb_wrp:init_buckets(Shard, Buckets, Wrapper),
@@ -873,6 +915,7 @@ delete_shard_help(ESTAB = #enterdb_stab{type = leveldb}) ->
 	       {create_if_missing, false},
 	       {error_if_exists, false}],
     Args = [{name, ESTAB#enterdb_stab.shard},
+	    {db_path, ESTAB#enterdb_stab.db_path},
 	    {subdir, ESTAB#enterdb_stab.name},
             {options, Options}, {tab_rec, ESTAB}],
     enterdb_ldb_worker:delete_db(Args);
@@ -881,6 +924,7 @@ delete_shard_help(ESTAB = #enterdb_stab{type = leveldb_wrapped}) ->
 	       {create_if_missing, false},
 	       {error_if_exists, false}],
     Args = [{name, ESTAB#enterdb_stab.shard},
+	    {db_path, ESTAB#enterdb_stab.db_path},
 	    {subdir, ESTAB#enterdb_stab.name},
             {options, Options}, {tab_rec, ESTAB}],
     enterdb_ldb_wrp:delete_shard(Args);

@@ -122,7 +122,7 @@ delete(Shard, Key) ->
 delete_db(Args) ->
     Name = proplists:get_value(name, Args),
     Subdir = proplists:get_value(subdir, Args),
-    Path = enterdb_server:get_db_path(),
+    Path = proplists:get_value(db_path, Args),
     ok = ensure_closed(Name),
 
     OptionsPL = proplists:get_value(options, Args),
@@ -235,7 +235,7 @@ init(Args) ->
     Name = proplists:get_value(name, Args),
     enterdb_ns:register_pid(self(), Name),
     Subdir = proplists:get_value(subdir, Args),
-    Path = enterdb_server:get_db_path(),
+    Path = proplists:get_value(db_path, Args),
     ok = ensure_closed(Name),
  
     OptionsPL = proplists:get_value(options, Args),

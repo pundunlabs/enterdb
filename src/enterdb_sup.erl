@@ -31,6 +31,8 @@
 
 -define(SERVER, ?MODULE).
 
+-include("gb_log.hrl").
+
 %%%===================================================================
 %%% API functions
 %%%===================================================================
@@ -42,8 +44,8 @@
 %% @end
 %%--------------------------------------------------------------------
 -spec start_link() -> {ok, Pid :: pid()} |
-					  ignore |
-					  {error, Error :: term()}.
+		      ignore |
+		      {error, Error :: term()}.
 start_link() ->
     supervisor:start_link({local, ?SERVER}, ?MODULE, []).
 
@@ -71,8 +73,6 @@ init([]) ->
 
     SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
 
-    EdbServer	    = {enterdb_server, {enterdb_server, start_link, []},
-			permanent, 20000, worker, [enterdb_server]},
     EdbMemMgrServer = {enterdb_mem_wrp_mgr, {enterdb_mem_wrp_mgr, start_link, []},
 			permanent, 2000, worker, [enterdb_mem_wrp_mgr]},
     EdbLDBSup	    = {enterdb_ldb_sup,
@@ -85,7 +85,8 @@ init([]) ->
 			permanent, 20000, worker, [enterdb_ns]},
     EdbLdbWrp	    = {enterdb_ldb_wrp, {enterdb_ldb_wrp, start_link, []},
 			permanent, 20000, worker, [enterdb_ldb_wrp]},
-    {ok, {SupFlags, [EdbNS, EdbLdbWrp, EdbLITSup, EdbLDBSup, EdbMemMgrServer, EdbServer]}}.
+
+    {ok, {SupFlags, [EdbNS, EdbLdbWrp, EdbLITSup, EdbLDBSup, EdbMemMgrServer]}}.
 
 %%%===================================================================
 %%% Internal functions

@@ -108,7 +108,8 @@
 		       comparator :: comparator(),
 		       data_model :: data_model(),
 		       wrapper :: #enterdb_wrapper{},
-		       buckets :: [shard_name()]}).
+		       buckets :: [shard_name()],
+		       db_path :: string()}).
 
 -record(enterdb_ldb_resource, {name :: shard_name(),
 			       resource :: binary()
