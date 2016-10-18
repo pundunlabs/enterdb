@@ -435,14 +435,13 @@ table_info(Name) ->
 			shards = Shards,
 			distributed = Dist
 			}] ->
-	    Type = proplists:get_value(type, Options),
-	    {ok, Size} = enterdb_lib:approximate_size(Type, Shards, Dist),
+	    SizePL = get_size_param([size], Options, Shards, Dist),
+	    Rest = SizePL ++ Options,
 	    {ok, [{name, Name},
 		  {key, KeyDefinition},
 		  {columns, ColumnsDefinition},
 		  {indexes, IndexesDefinition},
-		  {comparator, Comp},
-		  {size, Size} | Options]};
+		  {comparator, Comp} | Rest]};
 	[] ->
 	    {error, "no_table"}
     end.
@@ -464,20 +463,39 @@ table_info(Name, Parameters) ->
 			comparator = Comp,
 			data_model = DataModel,
 			options = Options,
-			shards = Shards
+			shards = Shards,
+			distributed = Dist
 			}] ->
-	    List = [{name, Name},
+	    IList = [{name, Name},
 		    {path, Path},
 		    {key, KeyDefinition},
 		    {columns, ColumnsDefinition},
 		    {indexes, IndexesDefinition},
 		    {comparator, Comp},
+		    {data_model, DataModel},
 		    {shards, Shards},
-		    {data_model, DataModel} | Options],
+		    {distributed, Dist} | Options],
+	    SizePL = get_size_param(Parameters, Options, Shards, Dist),
+	    List = SizePL ++ IList,
 	    {ok, [ proplists:lookup(P, List) || P <- Parameters]};
 	[] ->
 	    {error, "no_table"}
     end.
+
+get_size_param(Parameters, Options, Shards, Dist) ->
+    case lists:member(size, Parameters) of
+	true ->
+	    Type = proplists:get_value(type, Options),
+	    case enterdb_lib:approximate_size(Type, Shards, Dist) of
+		{error, _Reason} ->
+		    [];
+		{ok, S} ->
+		    [{size, S}]
+	    end;
+	false ->
+	    []
+    end.
+
 
 %%--------------------------------------------------------------------
 %% @doc
