@@ -525,8 +525,8 @@ get_current_key({_,{Key,_}}) ->
     Key.
 
 -spec make_db_key(KeyDef :: [string()],
-		      Key :: [{string(), term()}]) ->
-    {ok, DbKey :: binary} | {error, Reason :: term()}.
+		  Key :: [{string(), term()}]) ->
+    {ok, DbKey :: binary()} | {error, Reason :: term()}.
 make_db_key(KeyDef, Key) ->
     enterdb_lib:make_db_key(KeyDef, Key).
 

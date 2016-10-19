@@ -24,6 +24,8 @@
 -export([open_table/1,
 	 delete_table/1,
 	 create_table/1,
+	 create_ts_table/1,
+	 create_hash_exclude_table/1,
 	 create_wrapping_table/1,
 	 create_mem_wrapping_table/1,
 	 create_mem_wrapping_table_2/1,
@@ -66,11 +68,43 @@ delete_table(Name) ->
 %%--------------------------------------------------------------------
 -spec create_table(Name :: string()) -> ok.
 create_table(Name) ->
-    Keys = [ts, imsi],
-    Columns = [value],
+    Keys = ["ts", "imsi"],
+    Columns = ["value"],
     Indexes = [],
     Options = [{type, leveldb},
 	       {data_model,binary}],
+    enterdb:create_table(Name, Keys, Columns, Indexes, Options).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Creates a database table which has a compound key with timestamp
+%% and imsi, where ts field is not used in hash function.
+%% @end
+%%--------------------------------------------------------------------
+-spec create_ts_table(Name :: string()) -> ok.
+create_ts_table(Name) ->
+    Keys = ["ts", "imsi"],
+    Columns = ["value"],
+    Indexes = [],
+    Options = [{type, leveldb},
+	       {data_model,binary},
+	       {time_series, true}],
+    enterdb:create_table(Name, Keys, Columns, Indexes, Options).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Creates a database table which has a compound key with timestamp
+%% and imsi, where ts field is not used in hash function.
+%% @end
+%%--------------------------------------------------------------------
+-spec create_hash_exclude_table(Name :: string()) -> ok.
+create_hash_exclude_table(Name) ->
+    Keys = ["ts", "imsi"],
+    Columns = ["value"],
+    Indexes = [],
+    Options = [{type, leveldb},
+	       {data_model,binary},
+	       {hash_exclude, ["ts"]}],
     enterdb:create_table(Name, Keys, Columns, Indexes, Options).
 
 %%--------------------------------------------------------------------
@@ -81,28 +115,28 @@ create_table(Name) ->
 %%--------------------------------------------------------------------
 -spec create_write_read_delete(Name :: string()) -> ok.
 create_write_read_delete(Name) ->
-    Keys = [ts, imsi],
-    Columns = [value],
+    Keys = ["ts", "imsi"],
+    Columns = ["value"],
     Indexes = [],
     Options = [{type, leveldb},
 	       {data_model,binary}],
     ok = enterdb:create_table(Name, Keys, Columns, Indexes, Options),
     %% write data 1
-    TS = {ts, {1,2,3}},
+    TS = {"ts", {1,2,3}},
     Data = ["data hej!"],
-    IMSI = {imsi, "hej"},
+    IMSI = {"imsi", "hej"},
     ok = enterdb:write(Name, [IMSI, TS], Data),
     {ok, Data} = enterdb:read(Name, [IMSI, TS]),
     {ok, Data} = enterdb:read(Name, [TS, IMSI]),
 
     %% write data 2
     Data2 = ["data hej2!"],
-    IMSI2 = {imsi, "hej2"},
+    IMSI2 = {"imsi", "hej2"},
     ok = enterdb:write(Name, [IMSI2, TS], Data2),
 
     %% write data 3
     Data3 = ["data hej3!"],
-    IMSI3 = {imsi, "hej3"},
+    IMSI3 = {"imsi", "hej3"},
     ok = enterdb:write(Name, [IMSI3, TS], Data3),
 
     %% read range
@@ -124,8 +158,8 @@ create_write_read_delete(Name) ->
 %%--------------------------------------------------------------------
 -spec create_wrapping_table(Name :: string()) -> ok.
 create_wrapping_table(Name) ->
-    Keys = [ts, imsi],
-    Columns = [value],
+    Keys = ["ts", "imsi"],
+    Columns = ["value"],
     Indexes = [],
     Options = [{type, leveldb_wrapped},
 	       {data_model,binary},
@@ -140,8 +174,8 @@ create_wrapping_table(Name) ->
 %%--------------------------------------------------------------------
 -spec create_mem_wrapping_table(Name :: string()) -> ok.
 create_mem_wrapping_table(Name) ->
-    Keys = [ts, imsi],
-    Columns = [value],
+    Keys = ["ts", "imsi"],
+    Columns = ["value"],
     Indexes = [],
     Options = [{type, ets_leveldb},
 	       {data_model,binary},
@@ -157,8 +191,8 @@ create_mem_wrapping_table(Name) ->
 %%--------------------------------------------------------------------
 -spec create_mem_wrapping_table_2(Name :: string()) -> ok.
 create_mem_wrapping_table_2(Name) ->
-    Keys = [ts, imsi],
-    Columns = [value1, value2],
+    Keys = ["ts", "imsi"],
+    Columns = ["value1", "value2"],
     Indexes = [],
     Options = [{type, ets_leveldb},
 	       {data_model,binary},
@@ -168,15 +202,15 @@ create_mem_wrapping_table_2(Name) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Writes to table of given name generated key and data
-%% based on Ts = erlang:now() where TS is an element of compound key.
+%% Writes to table of given name generated key and data based on
+%% Ts = os:timestamp()() where TS is an element of compound key.
 %% @end
 %%--------------------------------------------------------------------
 -spec write(Name :: string()) -> ok.
 write(Name) ->
     Ts = os:timestamp(),
-    EventKey = [{ts, Ts},
-		{imsi, "240020000000001"}],
+    EventKey = [{"ts", Ts},
+		{"imsi", "240020000000001"}],
     {{YYYY, MM, DD}, {HH, Mm, SS}} = calendar:now_to_local_time(Ts),
     Value = lists:concat([YYYY,"-",MM,"-",DD," ",HH,":",Mm,":",SS]),
     EventValue = [{value, Value}],

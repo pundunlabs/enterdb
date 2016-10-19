@@ -35,6 +35,7 @@
 	 approximate_size/3]).
 
 -export([make_db_key/2,
+	 make_db_key/3,
 	 make_key/2,
 	 make_key_columns/3,
 	 make_db_value/3,
@@ -43,6 +44,7 @@
 	 make_app_value/2,
 	 make_app_value/3,
 	 make_app_kvp/4,
+	 get_hash_key_def/2,
 	 check_error_response/1,
 	 map_shards/3]).
 
@@ -375,6 +377,16 @@ verify_table_options([{comparator, C}|Rest]) when C == descending;
 %% These keys will be hashed without but sorted with timestamp value
 verify_table_options([{time_series, T}|Rest]) when is_boolean(T) ->
     verify_table_options(Rest);
+%% hash exclude gets a list of key fields to be excluded from hash
+%% function. It is a generic alternative to time_series.
+verify_table_options([{hash_exclude, L}|Rest]) when is_list(L) ->
+    case verify_fields(L) of
+        ok ->
+	    verify_table_options(Rest);
+        {error, Reason} ->
+	    {error, Reason}
+    end;
+
 %% Bad Option
 verify_table_options([Elem|_])->
     {error, {Elem, "invalid_option"}};
@@ -1094,11 +1106,12 @@ approximate_size(Type, _, _) ->
     ?debug("Size approximation is not supported for type: ~p", [Type]),
     {error, "type_not_supported"}.
 
--spec sum_up_sizes(Sizes :: [pos_integer()], Sum :: pos_integer()) ->
+-spec sum_up_sizes(Sizes :: [{ok, integer()} | {error, Reason :: term()}],
+		   Sum :: pos_integer()) ->
     {ok, Size :: pos_integer()}.
 sum_up_sizes([], Sum) ->
     {ok, Sum};
-sum_up_sizes([Int | Rest], Sum) when is_integer(Int) ->
+sum_up_sizes([{ok, Int} | Rest], Sum) when is_integer(Int) ->
     sum_up_sizes(Rest, Sum + Int);
 sum_up_sizes([_ | Rest], Sum) ->
     sum_up_sizes(Rest, Sum).
@@ -1110,9 +1123,10 @@ sum_up_sizes([_ | Rest], Sum) ->
 %%--------------------------------------------------------------------
 -spec make_key(TD :: #enterdb_table{},
 	       Key :: [{string(), term()}]) ->
-    {ok, DbKey :: binary} | {error, Reason :: term()}.
+    {ok, DbKey :: binary(), HashKey :: binary()} |
+    {error, Reason :: term()}.
 make_key(TD, Key) ->
-    make_db_key(TD#enterdb_table.key, Key).
+    make_db_key(TD#enterdb_table.key, TD#enterdb_table.hash_key, Key).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1123,55 +1137,85 @@ make_key(TD, Key) ->
 -spec make_key_columns(TableDef :: #enterdb_table{},
 		       Key :: [{string(), term()}],
 		       Columns :: term()) ->
-    {ok, DbKey :: binary, Columns :: binary} | {error, Reason :: term()}.
+    {ok, DbKey :: binary(), HashKey :: binary(), Columns :: binary()} |
+    {error, Reason :: term()}.
 make_key_columns(TD, Key, Columns) ->
-    case make_db_key(TD#enterdb_table.key, Key) of
+    case make_db_key(TD#enterdb_table.key, TD#enterdb_table.hash_key, Key) of
 	{error, E} ->
 	    {error, E};
-	{ok, DBKey} ->
-	    make_key_columns_help(DBKey, TD, Columns)
+	{ok, DBKey, HashKey} ->
+	    make_key_columns_help(DBKey, HashKey, TD, Columns)
     end.
-make_key_columns_help(DBKey, TD, Columns) ->
+make_key_columns_help(DBKey, HashKey, TD, Columns) ->
     case make_db_value(TD#enterdb_table.data_model,
 		       TD#enterdb_table.columns, Columns) of
 	{error, E} ->
 	    {error, E};
 	{ok, DBValue} ->
-	    {ok, DBKey, DBValue}
+	    {ok, DBKey, HashKey, DBValue}
     end.
 
 %%-------------------------------------------------------------------
 %% @doc
 %% Make key according to KeyDef defined in table configuration and
-%% provided values in Key.
+%% provided values in Key. Return DBKey which is stored.
 %% @end
 %%--------------------------------------------------------------------
 -spec make_db_key(KeyDef :: [string()],
 		  Key :: [{string(), term()}]) ->
-    {ok, DbKey :: binary} | {error, Reason :: term()}.
+    {ok, DbKey :: binary()} | {error, Reason :: term()}.
 make_db_key(KeyDef, Key) ->
+    case make_db_key(KeyDef, [], Key) of
+	{ok, DbKey, _} -> {ok, DbKey};
+	Else -> Else
+    end.
+
+%%-------------------------------------------------------------------
+%% @doc
+%% Make key according to KeyDef defined in table configuration and
+%% provided values in Key. Return both DBKey which is stored and
+%% HashKey which is used in hash function to locate the shard that
+%% stores DBKey.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_db_key(KeyDef :: [string()],
+		  HashKeyDef :: [string()],
+		  Key :: [{string(), term()}]) ->
+    {ok, DbKey :: binary(), HashKey :: binary()} |
+    {error, Reason :: term()}.
+make_db_key(KeyDef, HashKeyDef, Key) ->
     KeyDefLen = length(KeyDef),
     KeyLen = length(Key),
     if KeyDefLen == KeyLen ->
-	make_db_key(KeyDef, Key, []);
+	make_db_key(KeyDef, HashKeyDef, Key, [], []);
        true ->
         {error, "key_mismatch"}
     end.
 
 -spec make_db_key(KeyDef :: [string()],
+		  HashKeyDef :: [string()],
 		  Key :: [{string(), term()}],
-		  DBKeyList :: [term()]) ->
-    ok | {error, Reason::term()}.
-make_db_key([Field | Rest], Key, DbKeyList) ->
+		  DBKeyList :: [term()],
+		  HashKeyList :: [term()]) ->
+    {ok, DBKey :: binary(), HashKey :: binary()} |
+    {error, Reason::term()}.
+make_db_key([Field | RestD], [Field | RestH], Key, DBKeyList, HashKeyList) ->
     case lists:keyfind(Field, 1, Key) of
-        {_, Value} ->
-            make_db_key(Rest, Key, [Value | DbKeyList]);
+        {_, Val} ->
+            make_db_key(RestD, RestH, Key, [Val|DBKeyList], [Val|HashKeyList]);
         false ->
             {error, "key_mismatch"}
     end;
-make_db_key([], _, DbKeyList) ->
-    Tuple = list_to_tuple(lists:reverse(DbKeyList)),
-    {ok, term_to_binary(Tuple)}.
+make_db_key([Field | RestD], RestH, Key, DBKeyList, HashKeyList) ->
+    case lists:keyfind(Field, 1, Key) of
+        {_, Val} ->
+            make_db_key(RestD, RestH, Key, [Val|DBKeyList], HashKeyList);
+        false ->
+            {error, "key_mismatch"}
+    end;
+make_db_key([], _, _, DBKeyList, HashKeyList) ->
+    TupleD = list_to_tuple(lists:reverse(DBKeyList)),
+    {ok, term_to_binary(TupleD), term_to_binary(HashKeyList)}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1341,6 +1385,37 @@ make_app_kvp(DataModel, KeyDef, ColumnsDef, KVP) ->
 		{error, {invalid_arg, KVP}}
 	end,
     {ok, AppKVP}.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Build the list of key fields those are going to be used in
+%% hash function when locating the shard that contains the entry with
+%% a given key.
+%% @end
+%%--------------------------------------------------------------------
+-spec get_hash_key_def(KeyDef :: [string()],
+		       Options :: [{atom(), term()}]) ->
+    HashKey :: [string()].
+get_hash_key_def(KeyDef, Options) ->
+    HashExclude = proplists:get_value(hash_exclude, Options, []),
+    case proplists:get_value(time_series, Options, false) of
+	false -> build_hash_key_def(KeyDef, HashExclude, []);
+	true -> build_hash_key_def(KeyDef, ["ts"|HashExclude], [])
+    end.
+
+-spec build_hash_key_def(KeyDef :: [string()],
+			 HashExclude :: [string()],
+			 Acc :: [string()]) ->
+    HashKey :: [string()].
+build_hash_key_def([F|Rest], HashExclude, Acc) ->
+    case lists:member(F, HashExclude) of
+	false ->
+	    build_hash_key_def(Rest, HashExclude, [F|Acc]);
+	true ->
+	    build_hash_key_def(Rest, HashExclude, Acc)
+    end;
+build_hash_key_def([], _HashExclude, Acc) ->
+    lists:reverse(Acc).
 
 -spec comparator_to_dir(Comparator :: descending | ascending) ->
     0 | 1.

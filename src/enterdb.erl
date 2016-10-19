@@ -96,10 +96,12 @@ create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
 	    DataModel = proplists:get_value(data_model, Options, binary),
 	    Comp = proplists:get_value(comparator, Options, descending),
 	    Dist = proplists:get_value(distributed, Options, true),
+	    HashKey = enterdb_lib:get_hash_key_def(KeyDef, Options),
 	    NewTab = EnterdbTab#enterdb_table{comparator = Comp,
 					      type = Type,
 					      data_model = DataModel,
-					      distributed = Dist},
+					      distributed = Dist,
+					      hash_key = HashKey},
 	    enterdb_lib:create_table(NewTab);
 	{error, Reason} ->
                 {error, Reason}
@@ -143,17 +145,17 @@ close_table(Name) ->
 read(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #enterdb_table{distributed = Dist} ->
-	    DBKey = enterdb_lib:make_key(TD, Key),
-	    read_(Tab, DBKey, Dist);
+	    DB_HashKey = enterdb_lib:make_key(TD, Key),
+	    read_(Tab, DB_HashKey, Dist);
 	{error, _} = R ->
 	    R
     end.
 
-read_(Tab, {ok, DBKey}, true) ->
-    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, DBKey),
+read_(Tab, {ok, DBKey, HashKey}, true) ->
+    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
     ?dyno:call(Ring, {?MODULE, do_read, [Shard, DBKey]}, read);
-read_(Tab, {ok, DBKey}, false) ->
-    {ok, Shard} = gb_hash:get_local_node(Tab, DBKey),
+read_(Tab, {ok, DBKey, HashKey}, false) ->
+    {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
     do_read(Shard, DBKey);
 read_(_Tab, {error, _} = E, _) ->
     E.
@@ -164,15 +166,15 @@ read_(_Tab, {error, _} = E, _) ->
 read_from_disk(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #enterdb_table{} ->
-	    DBKey = enterdb_lib:make_key(TD, Key),
-	    read_from_disk_(Tab, DBKey);
+	    DB_HashKey = enterdb_lib:make_key(TD, Key),
+	    read_from_disk_(Tab, DB_HashKey);
 	{error, _} = R ->
 	    R
     end.
 
 %% Key ok according to keydef
-read_from_disk_(Tab, {ok, DBKey}) ->
-    {ok, Shard} = gb_hash:get_local_node(Tab, DBKey),
+read_from_disk_(Tab, {ok, DBKey, HashKey}) ->
+    {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
     do_read_from_disk(Shard, DBKey);
 %% Key not ok
 read_from_disk_(_Tab, {error, _} = E) ->
@@ -216,22 +218,24 @@ do_read_from_disk(TD, ShardTab, Key) ->
 write(Tab, Key, Columns) ->
     case enterdb_lib:get_tab_def(Tab) of
 	    TD = #enterdb_table{distributed = Dist} ->
-	    DBKeyAndCols = enterdb_lib:make_key_columns(TD, Key, Columns),
-	    write_(Tab, DBKeyAndCols, Dist);
+	    DB_HashKeyAndCols = enterdb_lib:make_key_columns(TD, Key, Columns),
+	    write_(Tab, DB_HashKeyAndCols, Dist);
 	{error, _} = R ->
 	    R
     end.
 
 -spec write_(Tab :: string(),
-	     DB_Key_Columns :: {ok, DBKey :: binary(), DBColumns :: binary()} |
+	     DB_Key_Columns :: {ok, DBKey :: binary(),
+				HashKey :: binary(),
+				DBColumns :: binary()} |
 			       {error, Error :: term()},
 	     Dist :: true | false) ->
     ok | {error, Reason :: term()}.
-write_(Tab, {ok, DBKey, DBColumns}, true) ->
-    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, DBKey),
+write_(Tab, {ok, DBKey, HashKey, DBColumns}, true) ->
+    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
     ?dyno:call(Ring, {?MODULE, do_write, [Shard, DBKey, DBColumns]}, write);
-write_(Tab, {ok, DBKey, DBColumns}, false) ->
-    {ok, Shard} = gb_hash:get_local_node(Tab, DBKey),
+write_(Tab, {ok, DBKey, HashKey, DBColumns}, false) ->
+    {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
     do_write(Shard, DBKey, DBColumns);
 write_(_Tab, {error, _} = E, _) ->
     E.
@@ -304,17 +308,17 @@ do_write_to_disk(TD, ShardTab, Key, Columns) ->
 delete(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #enterdb_table{distributed = Dist} ->
-	    DBKey = enterdb_lib:make_key(TD, Key),
-	    delete_(Tab, DBKey, Dist);
+	    DB_HashKey = enterdb_lib:make_key(TD, Key),
+	    delete_(Tab, DB_HashKey, Dist);
 	{error, _} = R ->
 	    R
     end.
 
-delete_(Tab, {ok, DBKey}, true) ->
-    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, DBKey),
+delete_(Tab, {ok, DBKey, HashKey}, true) ->
+    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
     ?dyno:call(Ring, {?MODULE, do_delete, [Shard, DBKey]}, write);
-delete_(Tab, {ok, DBKey}, false) ->
-    {ok, Shard} = gb_hash:get_local_node(Tab, DBKey),
+delete_(Tab, {ok, DBKey, HashKey}, false) ->
+    {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
     do_delete(Shard, DBKey);
 delete_(_Tab, {error, _} = E, _) ->
     E.
@@ -357,12 +361,12 @@ read_range(_, Range, _) ->
     {error, {badarg, Range}}.
 
 -spec read_range_(Name :: string(),
-		   DBStartKey :: {ok, binary()},
-		   DBStopKey :: {ok, binary()},
+		   DBStartKey :: {ok, binary(), binary()},
+		   DBStopKey :: {ok, binary(), binary()},
 		   Chunk :: pos_integer()) ->
     {ok, [kvp()], Cont :: complete | key()} |
     {error, Reason :: term()}.
-read_range_(Tab, {ok, DBStartK}, {ok, DBStopK}, Chunk) ->
+read_range_(Tab, {ok, DBStartK, _}, {ok, DBStopK, _}, Chunk) ->
     Shards = gb_hash:get_nodes(Tab#enterdb_table.name),
     enterdb_lib:read_range_on_shards(Shards, Tab, {DBStartK, DBStopK}, Chunk);
 read_range_(_Tab, {error, _} = E, _, _N) ->
@@ -391,10 +395,10 @@ read_range_n(Name, StartKey, N) ->
 
 
 -spec read_range_n_(Tab :: #enterdb_table{},
-		    {ok, DBKey :: binary()},
+		    {ok, DBKey :: binary(), binary()},
 		    N :: pos_integer()) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
-read_range_n_(Tab, {ok, DBKey}, N) ->
+read_range_n_(Tab, {ok, DBKey, _}, N) ->
     Shards = gb_hash:get_nodes(Tab#enterdb_table.name),
     enterdb_lib:read_range_n_on_shards(Shards, Tab, DBKey, N);
 read_range_n_(_Tab, {error, _} = E, _N) ->

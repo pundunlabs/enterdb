@@ -69,7 +69,8 @@
 			 {shards, pos_integer()} |
 			 {distributed, boolean()} |
 			 {replication_factor, pos_integer()} |
-			 {clusters, [#enterdb_cluster{}]}].
+			 {clusters, [#enterdb_cluster{}]} |
+			 {hash_exclude, [string()]}].
 
 -type timestamp() :: {pos_integer(),  %% mega seconds &
 		      pos_integer(),  %% seconds &
@@ -96,6 +97,7 @@
                         type	:: type(),
 			data_model :: data_model(),
 			distributed :: boolean(),
+			hash_key :: [string()],
 			options :: [table_option()],
                         shards :: shards()}).
 %% enterdb shard tab
