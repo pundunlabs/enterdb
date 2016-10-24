@@ -53,7 +53,7 @@
 	 write_loop/1]).
 
 -include("enterdb.hrl").
--include("gb_log.hrl").
+-include_lib("gb_log/include/gb_log.hrl").
 
 load_test() ->
     %%enterdb_lib:open_leveldb_db("test_range").

@@ -68,7 +68,7 @@
 	 do_delete_table/1]).
 
 -include("enterdb.hrl").
--include("gb_log.hrl").
+-include_lib("gb_log/include/gb_log.hrl").
 
 %%%===================================================================
 %%% API

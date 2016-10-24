@@ -57,7 +57,7 @@
 -record(entry, {key, value}).
 
 -include("enterdb.hrl").
--include("gb_log.hrl").
+-include_lib("gb_log/include/gb_log.hrl").
 
 -define(COUNTER_TRESHOLD, 1000).
 

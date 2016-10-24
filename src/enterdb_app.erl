@@ -5,7 +5,7 @@
 %% Application callbacks
 -export([start/2, stop/1]).
 
--include("gb_log.hrl").
+-include_lib("gb_log/include/gb_log.hrl").
 
 %% ===================================================================
 %% Application callbacks

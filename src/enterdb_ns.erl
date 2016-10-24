@@ -40,7 +40,7 @@
 -record(state, {ns_table}).
 -record(ns_entry, {key, value}).
 
--include("gb_log.hrl").
+-include_lib("gb_log/include/gb_log.hrl").
 
 %%%===================================================================
 %%% API

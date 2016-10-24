@@ -46,7 +46,7 @@
 -define(SERVER, ?MODULE).
 
 -include("enterdb.hrl").
--include("gb_log.hrl").
+-include_lib("gb_log/include/gb_log.hrl").
 
 -record(state, {db_ref,
                 options,

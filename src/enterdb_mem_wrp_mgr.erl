@@ -6,7 +6,7 @@
 -module(enterdb_mem_wrp_mgr).
 
 -include("enterdb_mem.hrl").
--include("gb_log.hrl").
+-include_lib("gb_log/include/gb_log.hrl").
 
 %% gen_server callbacks
 -export([init/1,

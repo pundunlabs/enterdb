@@ -41,7 +41,7 @@
          code_change/3]).
 
 -include("enterdb.hrl").
--include("gb_log.hrl").
+-include_lib("gb_log/include/gb_log.hrl").
 
 -record(state, {name,
 		data_model,
