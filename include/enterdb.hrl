@@ -50,9 +50,6 @@
 			  time_margin :: time_margin(),
 			  size_margin :: size_margin()
 			 }).
--record(enterdb_cluster, {name :: string(),
-			  replication_factor :: pos_integer()
-			 }).
 
 %% bucket_span and num_buckets are used by mem_wrapper.
 %% We keep these seperate since the design of disk based wrapping
@@ -69,7 +66,6 @@
 			 {shards, pos_integer()} |
 			 {distributed, boolean()} |
 			 {replication_factor, pos_integer()} |
-			 {clusters, [#enterdb_cluster{}]} |
 			 {hash_exclude, [string()]}].
 
 -type timestamp() :: {pos_integer(),  %% mega seconds &
