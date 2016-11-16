@@ -118,7 +118,8 @@ delete(Shard, Key) ->
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec delete_db(Args :: [term()]) -> ok | {error, Reason :: term()}.
+-spec delete_db(Args :: [term()]) ->
+    ok | {error, Reason :: term()}.
 delete_db(Args) ->
     Name = proplists:get_value(name, Args),
     Subdir = proplists:get_value(subdir, Args),
@@ -130,7 +131,8 @@ delete_db(Args) ->
     {ok, Options} = leveldb:options(OptionsRec),
 
     FullPath = filename:join([Path, Subdir, Name]),
-    ok = leveldb:destroy_db(FullPath, Options).
+    ok = leveldb:destroy_db(FullPath, Options),
+    file:del_dir(FullPath).
 
 %%--------------------------------------------------------------------
 %% @doc
