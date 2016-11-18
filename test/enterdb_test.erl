@@ -69,11 +69,9 @@ delete_table(Name) ->
 -spec create_table(Name :: string()) -> ok.
 create_table(Name) ->
     Keys = ["ts", "imsi"],
-    Columns = ["value"],
-    Indexes = [],
     Options = [{type, leveldb},
 	       {data_model,binary}],
-    enterdb:create_table(Name, Keys, Columns, Indexes, Options).
+    enterdb:create_table(Name, Keys, Options).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -84,12 +82,10 @@ create_table(Name) ->
 -spec create_ts_table(Name :: string()) -> ok.
 create_ts_table(Name) ->
     Keys = ["ts", "imsi"],
-    Columns = ["value"],
-    Indexes = [],
     Options = [{type, leveldb},
 	       {data_model,binary},
 	       {time_series, true}],
-    enterdb:create_table(Name, Keys, Columns, Indexes, Options).
+    enterdb:create_table(Name, Keys, Options).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -100,12 +96,10 @@ create_ts_table(Name) ->
 -spec create_hash_exclude_table(Name :: string()) -> ok.
 create_hash_exclude_table(Name) ->
     Keys = ["ts", "imsi"],
-    Columns = ["value"],
-    Indexes = [],
     Options = [{type, leveldb},
 	       {data_model,binary},
 	       {hash_exclude, ["ts"]}],
-    enterdb:create_table(Name, Keys, Columns, Indexes, Options).
+    enterdb:create_table(Name, Keys, Options).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -116,11 +110,9 @@ create_hash_exclude_table(Name) ->
 -spec create_write_read_delete(Name :: string()) -> ok.
 create_write_read_delete(Name) ->
     Keys = ["ts", "imsi"],
-    Columns = ["value"],
-    Indexes = [],
     Options = [{type, leveldb},
 	       {data_model,binary}],
-    ok = enterdb:create_table(Name, Keys, Columns, Indexes, Options),
+    ok = enterdb:create_table(Name, Keys, Options),
     %% write data 1
     TS = {"ts", {1,2,3}},
     Data = ["data hej!"],
@@ -159,12 +151,10 @@ create_write_read_delete(Name) ->
 -spec create_wrapping_table(Name :: string()) -> ok.
 create_wrapping_table(Name) ->
     Keys = ["ts", "imsi"],
-    Columns = ["value"],
-    Indexes = [],
     Options = [{type, leveldb_wrapped},
 	       {data_model,binary},
 	       {wrapper, #enterdb_wrapper{num_of_buckets = 10, size_margin = {megabytes, 10}}}],
-    enterdb:create_table(Name, Keys, Columns, Indexes, Options).
+    enterdb:create_table(Name, Keys, Options).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -175,13 +165,11 @@ create_wrapping_table(Name) ->
 -spec create_mem_wrapping_table(Name :: string()) -> ok.
 create_mem_wrapping_table(Name) ->
     Keys = ["ts", "imsi"],
-    Columns = ["value"],
-    Indexes = [],
     Options = [{type, ets_leveldb},
 	       {data_model,binary},
 	       {mem_wrapper, {5, 12}},
 	       {wrapped, {16, 60}}],
-    enterdb:create_table(Name, Keys, Columns, Indexes, Options).
+    enterdb:create_table(Name, Keys, Options).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -192,13 +180,11 @@ create_mem_wrapping_table(Name) ->
 -spec create_mem_wrapping_table_2(Name :: string()) -> ok.
 create_mem_wrapping_table_2(Name) ->
     Keys = ["ts", "imsi"],
-    Columns = ["value1", "value2"],
-    Indexes = [],
     Options = [{type, ets_leveldb},
 	       {data_model,binary},
 	       {mem_wrapper, {2, 3}},
 	       {wrapped, {16, 60}}],
-    enterdb:create_table(Name, Keys, Columns, Indexes, Options).
+    enterdb:create_table(Name, Keys, Options).
 
 %%--------------------------------------------------------------------
 %% @doc

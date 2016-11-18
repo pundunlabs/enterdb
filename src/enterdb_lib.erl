@@ -26,7 +26,8 @@
 -export([get_db_path/0]).
 
 -export([verify_create_table_args/1,
-         create_table/1,
+         get_column_mapper/2,
+	 create_table/1,
          open_table/2,
          open_shards/1,
 	 close_table/2,
@@ -39,7 +40,6 @@
 	 make_key/2,
 	 make_key_columns/3,
 	 make_db_value/3,
-	 make_db_indexes/2,
 	 make_app_key/2,
 	 make_app_value/2,
 	 make_app_value/3,
@@ -140,29 +140,6 @@ verify_create_table_args([{key, Key}|Rest],
         {error, Reason} ->
            {error, {Key, Reason}}
     end;
-verify_create_table_args([{columns, Columns}|Rest],
-                          #enterdb_table{key = Key} = EdbTab) ->
-    case verify_columns(Columns) of
-        ok ->
-           OnlyDataColumns = lists:subtract(Columns, Key),
-           verify_create_table_args(Rest,
-	    EdbTab#enterdb_table{columns = OnlyDataColumns});
-        {error, Reason} ->
-           {error, {Columns, Reason}}
-    end;
-verify_create_table_args([{indexes, Indexes}|Rest],
-                         #enterdb_table{key = Key,
-                                        columns = Columns} = EnterdbTable)
-    when is_list(Indexes)->
-    case verify_fields(Indexes++Key) of
-        ok ->
-            {ok, NewColumns} = add_index_fields_to_columns(Indexes, Columns),
-            verify_create_table_args(Rest,
-		EnterdbTable#enterdb_table{columns = NewColumns,
-                                           indexes = Indexes});
-        {error, Reason} ->
-           {error, {Indexes, Reason}}
-    end;
 verify_create_table_args([{options, Options}|Rest],
                          #enterdb_table{} = EnterdbTable)
     when is_list(Options)->
@@ -234,26 +211,22 @@ verify_key(Key) when is_list(Key) ->
 verify_key(_) ->
     {error, "invalid_key"}.
 
--spec verify_columns(Columns :: [string()]) ->
-    ok | {error, Reason :: term()}.
-verify_columns(Columns) when is_list(Columns) ->
-    case length(Columns) of
-	Len when Len < 1 ->
-	    {error, "no_columns_field"};
-	Len when Len > 10000 ->
-	    {error, "too_many_columns"};
-	_ ->
-	    verify_fields(Columns)
-    end;
-verify_columns(_) ->
-    {error, "invalid_columns"}.
+-spec get_column_mapper(Name :: string(),
+			DataModel :: kv | array | map) ->
+    Mapper :: module().
+get_column_mapper(_, kv)->
+    undefined;
+get_column_mapper(Name, DataModel) when DataModel == array;
+					DataModel == map ->
+    {ok, Module} = gb_reg:new(Name),
+    Module.
 
 %%-------------------------------------------------------------------
 %% @doc
 %% Get table definition
 %% @end
 %%-------------------------------------------------------------------
--spec get_tab_def(string()) ->
+-spec get_tab_def(Tab :: string()) ->
     #enterdb_table{} | {error, Reason::term()}.
 get_tab_def(Tab) ->
     case mnesia:dirty_read(enterdb_table, Tab) of
@@ -300,18 +273,6 @@ update_bucket_list(ShardName, Buckets) ->
            {error, {aborted, Reason}}
     end.
 
--spec add_index_fields_to_columns(Indexes::[string()], Columns::[string()]) ->
-    {ok, NewColumns::[string()]}.
-add_index_fields_to_columns([], Columns)->
-    {ok, Columns};
-add_index_fields_to_columns([Elem|Rest], Columns)->
-    case lists:member(Elem, Columns) of
-        true ->
-            add_index_fields_to_columns(Rest, Columns);
-        fasle ->
-            add_index_fields_to_columns(Rest, Columns++[Elem])
-    end.
-
 -spec verify_table_options(Options::[table_option()]) ->
     ok | {error, Reason::term()}.
 %% Pre configured clusters
@@ -347,9 +308,9 @@ verify_table_options([{type, Type}|Rest])
 %% Data Model
 verify_table_options([{data_model, DM}|Rest])
     when
-	DM == binary;
+	DM == kv;
         DM == array;
-        DM == hash
+        DM == map
     ->
 	verify_table_options(Rest);
 
@@ -581,8 +542,7 @@ do_create_shard(Shard, EDBT) ->
 			  name = EDBT#enterdb_table.name,
 			  type = EDBT#enterdb_table.type,
 			  key  = EDBT#enterdb_table.key,
-			  columns = EDBT#enterdb_table.columns,
-			  indexes = EDBT#enterdb_table.indexes,
+			  column_mapper = EDBT#enterdb_table.column_mapper,
 			  comparator = EDBT#enterdb_table.comparator,
 			  data_model = DataModel,
 			  wrapper = Wrapper,
@@ -1131,7 +1091,7 @@ make_key(TD, Key) ->
 %%--------------------------------------------------------------------
 %% @doc
 %% Make key according to KeyDef defined in table configuration and also
-%% columns according to DataModel and Columns definition.
+%% columns according to DataModel and Column Mapper.
 %% @end
 %%--------------------------------------------------------------------
 -spec make_key_columns(TableDef :: #enterdb_table{},
@@ -1146,9 +1106,10 @@ make_key_columns(TD, Key, Columns) ->
 	{ok, DBKey, HashKey} ->
 	    make_key_columns_help(DBKey, HashKey, TD, Columns)
     end.
+
 make_key_columns_help(DBKey, HashKey, TD, Columns) ->
     case make_db_value(TD#enterdb_table.data_model,
-		       TD#enterdb_table.columns, Columns) of
+		       TD#enterdb_table.column_mapper, Columns) of
 	{error, E} ->
 	    {error, E};
 	{ok, DBValue} ->
@@ -1224,63 +1185,50 @@ make_db_key([], _, _, DBKeyList, HashKeyList) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec make_db_value(DataModel :: data_model(),
-		    Columnsdef :: [string()],
+		    ColumnMApper :: module(),
 		    Columns :: [{string(), term()}])->
     {ok, DbValue :: binary()} | {error, Reason :: term()}.
-make_db_value(binary, _, Columns) ->
+make_db_value(kv, _, Columns) ->
     {ok, term_to_binary(Columns)};
-make_db_value(array, ColumnsDef, Columns) ->
-    make_db_array_value(ColumnsDef, Columns);
-make_db_value(hash, ColumnsDef, Columns) ->
-    make_db_hash_value(ColumnsDef, Columns).
+make_db_value(array, ColumnMapper, Columns) ->
+    make_db_array_value(ColumnMapper, Columns);
+make_db_value(map, ColumnMapper, Columns) ->
+    make_db_map_value(ColumnMapper, Columns).
 
--spec make_db_array_value(ColumnsDef :: [string()],
+-spec make_db_array_value(Mapper :: module(),
 			  Columns :: [{string(), term()}]) ->
     {ok, DbValue :: binary()} | {error, Reason :: term()}.
-make_db_array_value(ColumnsDef, Columns) ->
-    ColDefLen = length(ColumnsDef),
-    ColLen = length(Columns),
-    if ColDefLen == ColLen ->
-        make_db_array_value(ColumnsDef, Columns, []);
-       true ->
-        {error, "column_mismatch"}
-    end.
-
--spec make_db_array_value(ColumnsDef :: [string()],
-		          Columns :: [{string(), term()}],
-		          DbValueList :: [term()]) ->
-    {ok, DbValue :: binary()} | {error, Reason :: term()}.
-make_db_array_value([Field|Rest], Columns, DbValueList) ->
-    case lists:keyfind(Field, 1, Columns) of
-        {_, Value} ->
-            make_db_array_value(Rest, Columns, [Value|DbValueList]);
-        false ->
-            {error, "column_mismatch"}
-    end;
-make_db_array_value([], _Columns, DbValueList) ->
-    Tuple = list_to_tuple(lists:reverse(DbValueList)),
-    {ok, term_to_binary(Tuple)}.
-
--spec make_db_hash_value(ColumnsDef :: [string()],
-		         Columns :: [{string(), term()}]) ->
-    {ok, DbValue :: binary()} | {error, Reason :: term()}.
-make_db_hash_value(_ColumnsDef, Columns) ->
-    Map = maps:from_list(Columns),
+make_db_array_value(Mapper, Columns) ->
+    Map = map_columns(Mapper, Columns, []),
     {ok, term_to_binary(Map)}.
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Make DB Indexes according to Index Definitons defined in table
-%% configuration and provided Cloumns.
-%% @end
-%%--------------------------------------------------------------------
--spec make_db_indexes(Indexes::[string()],
-		      Columns::[string()] ) ->
-    {ok, DbIndexes::[{string(), term()}]} | {error, Reason::term()}.
-make_db_indexes([],_) ->
-    {ok, []};
-make_db_indexes(_, _)->
-    {error, "not_supported_yet"}.
+-spec make_db_map_value(Mapper :: module(),
+		        Columns :: [{string(), term()}]) ->
+    {ok, DbValue :: binary()} | {error, Reason :: term()}.
+make_db_map_value(Mapper, Columns) ->
+    Map = map_columns(Mapper, Columns, []),
+    {ok, term_to_binary(Map)}.
+
+-spec map_columns(Mapper :: module(),
+		  Columns :: [{string(), term()}],
+		  Acc :: [binary()]) ->
+    [term()].
+map_columns(Mapper, [{Field, Value} | Rest], Acc) ->
+    case Mapper:lookup(Field) of
+	undefined ->
+	    map_columns(Mapper, Rest, [{'$no_mapping', Field, Value} | Acc]);
+	Bin ->
+	    map_columns(Mapper, Rest, [Bin, Value | Acc])
+    end;
+map_columns(Mapper, [], Acc) ->
+    case [Field || {'$no_mapping', Field, _} <- Acc] of
+	[] ->
+	    Acc;
+	AddKeys ->  
+	    Rest = [{Field, Value} || {'$no_mapping', Field, Value} <- Acc],
+	    ok = gb_reg:add_keys(AddKeys),
+	    map_columns(Mapper, Rest, Acc)
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1309,8 +1257,8 @@ make_app_value(_TD, {error, R}) ->
     {error, R};
 make_app_value(TD, {ok, DBValue}) ->
     #enterdb_stab{data_model = DataModel,
-		  columns    = ColumnsDef} = TD,
-    {ok, make_app_value(DataModel, ColumnsDef, DBValue)}.
+		  column_mapper = ColumnMapper} = TD,
+    {ok, make_app_value(DataModel, ColumnMapper, DBValue)}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1319,26 +1267,50 @@ make_app_value(TD, {ok, DBValue}) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec make_app_value(DataModel :: data_model(),
-		     ColumnsDef :: [string()],
+		     ColumnMapper :: module(),
 		     DBValue :: binary()) ->
     Columns :: [term()].
-make_app_value(DataModel, ColumnsDef, DBValue) when not is_binary(DBValue)  ->
-    format_app_value(DataModel, ColumnsDef, DBValue);
-make_app_value(DataModel, ColumnsDef, DBValue) ->
-    format_app_value(DataModel, ColumnsDef, binary_to_term(DBValue)).
+make_app_value(DataModel, Mapper, DBValue) when not is_binary(DBValue)  ->
+    format_app_value(DataModel, Mapper, DBValue);
+make_app_value(DataModel, Mapper, DBValue) ->
+    format_app_value(DataModel, Mapper, binary_to_term(DBValue)).
 
 -spec format_app_value(DataModel :: data_model(),
-		       ColumnsDef :: [string()],
+		       MApper :: module(),
 		       Value :: term()) ->
     Columns :: [{string(), term()}].
-format_app_value(binary, _, Columns) ->
-    Columns;
-format_app_value(array, ColumnsDef, Value) ->
-    Columns = tuple_to_list(Value),
-    lists:zip(ColumnsDef, Columns);
-format_app_value(hash, _, Value) ->
-    maps:to_list(Value).
+format_app_value(kv, _, Value) ->
+    Value;
+format_app_value(array, Mapper, Columns) ->
+    Sorted = sort_array_columns(Columns, []),
+    converse_columns(Mapper, Sorted, []);
+format_app_value(map, Mapper, Columns) ->
+    converse_columns(Mapper, Columns, []).
 
+-spec sort_array_columns(Columns :: [term()], Acc :: []) ->
+    Columns :: [term()].
+sort_array_columns([Bin, Value | Rest], Acc) ->
+    sort_array_columns(Rest, [{Bin, Value} | Acc]);
+sort_array_columns([], Acc) ->
+    Sorted = lists:sort(fun({A,_},{B,_}) -> A >= B end, Acc),
+    flatten_tuples(Sorted, []).
+
+-spec flatten_tuples(Sorted :: [{term(), term()}], Acc :: [term()]) ->
+    Acc :: [term].
+flatten_tuples([{K,V} | Rest], Acc) ->
+    flatten_tuples(Rest, [K, V | Acc]);
+flatten_tuples([], Acc) ->
+    Acc.
+
+-spec converse_columns(Mapper :: module(),
+		       Columns :: [term()],
+		       Acc :: [binary()]) ->
+    Columns :: [{string(), term()}].
+converse_columns(Mapper, [Bin, Value | Rest], Acc) ->
+    Field = Mapper:lookup(Bin),
+    converse_columns(Mapper, Rest, [{Field, Value} | Acc]);
+converse_columns(_, [], Acc) ->
+    Acc.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1351,9 +1323,9 @@ format_app_value(hash, _, Value) ->
 			  [{binary(), binary()}]) ->
     {ok, [{key(), value()}]} | {error, Reason :: term()}.
 make_app_kvp(#enterdb_table{key = KeyDef,
-			    columns = ColumnsDef,
+			    column_mapper = ColumnMapper,
 			    data_model = DataModel}, KVP) ->
-    make_app_kvp(DataModel, KeyDef, ColumnsDef, KVP).
+    make_app_kvp(DataModel, KeyDef, ColumnMapper, KVP).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1363,22 +1335,22 @@ make_app_kvp(#enterdb_table{key = KeyDef,
 %%--------------------------------------------------------------------
 -spec make_app_kvp(DataModel :: data_model(),
 		   KeyDef :: [string()],
-		   ColumnsDef :: [string()],
+		   ColumnMapper :: module(),
 		   KVP :: {binary(), binary()} |
 			  [{binary(), binary()}]) ->
     {ok, [{key(), value()}]} | {error, Reason :: term()}.
-make_app_kvp(DataModel, KeyDef, ColumnsDef, KVP) ->
+make_app_kvp(DataModel, KeyDef, Mapper, KVP) ->
     AppKVP =
 	case KVP of
 	    [_|_] ->
 		[begin
-		    K = enterdb_lib:make_app_key(KeyDef, BK),
-		    V = enterdb_lib:make_app_value(DataModel, ColumnsDef, BV),
+		    K = make_app_key(KeyDef, BK),
+		    V = make_app_value(DataModel, Mapper, BV),
 		    {K, V}
 		 end || {BK, BV} <- KVP];
 	    {BinKey, BinValue} ->
-		{enterdb_lib:make_app_key(KeyDef, BinKey),
-		 enterdb_lib:make_app_value(DataModel, ColumnsDef, BinValue)};
+		{make_app_key(KeyDef, BinKey),
+		 make_app_value(DataModel, Mapper, BinValue)};
 	    [] ->
 		[];
 	    _ ->
@@ -1400,7 +1372,7 @@ get_hash_key_def(KeyDef, Options) ->
     HashExclude = proplists:get_value(hash_exclude, Options, []),
     case proplists:get_value(time_series, Options, false) of
 	false -> build_hash_key_def(KeyDef, HashExclude, []);
-	true -> build_hash_key_def(KeyDef, ["ts"|HashExclude], [])
+	true -> build_hash_key_def(KeyDef, ["ts" | HashExclude], [])
     end.
 
 -spec build_hash_key_def(KeyDef :: [string()],

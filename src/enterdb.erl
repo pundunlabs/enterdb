@@ -23,7 +23,7 @@
 -module(enterdb).
 
 %% API
--export([create_table/5,
+-export([create_table/3,
          open_table/1,
 	 close_table/1,
 	 read/2,
@@ -69,35 +69,28 @@ write_loop(N) when N > 0 ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Creates a table that is defined by Name, KeyDef, ColumnsDef and
-%% optionally IndexesDef.
+%% Creates a table that is defined by Name, KeyDef and given Options.
 %% KeyDef is a list and if list has more than one element, then the key 
 %% will be a compound key.
-%% ColumnsDef list consist of name of each column as atom. Inclusion of
-%% key in ColumnsDef list is optional.
-%% IndexesDef list are optional and an index table will be created for each
-%% coulmn provided in this argument. Any given index column is not
-%% neccesarly included in ColumnsDef list.
 %% @end
 %%--------------------------------------------------------------------
 -spec create_table(Name :: string(), KeyDef :: [string()],
-                   ColumnsDef :: [string()], IndexesDef :: [string()],
                    Options :: [table_option()])->
     ok | {error, Reason :: term()}.
-create_table(Name, KeyDef, ColumnsDef, IndexesDef, Options)->
+create_table(Name, KeyDef, Options)->
     case enterdb_lib:verify_create_table_args([{name, Name},
 					       {key, KeyDef},
-					       {columns, ColumnsDef},
-					       {indexes,IndexesDef},
 					       {options, Options}]) of
 	{ok, EnterdbTab} ->
 	    %% Specific table options
 	    Type = proplists:get_value(type, Options, leveldb),
-	    DataModel = proplists:get_value(data_model, Options, binary),
+	    DataModel = proplists:get_value(data_model, Options, map),
+	    Mapper = enterdb_lib:get_column_mapper(Name, DataModel),
 	    Comp = proplists:get_value(comparator, Options, descending),
 	    Dist = proplists:get_value(distributed, Options, true),
 	    HashKey = enterdb_lib:get_hash_key_def(KeyDef, Options),
-	    NewTab = EnterdbTab#enterdb_table{comparator = Comp,
+	    NewTab = EnterdbTab#enterdb_table{column_mapper = Mapper,
+					      comparator = Comp,
 					      type = Type,
 					      data_model = DataModel,
 					      distributed = Dist,
@@ -432,8 +425,6 @@ table_info(Name) ->
 	[#enterdb_table{name = Name,
 			path = _Path,
 			key = KeyDefinition,
-			columns = ColumnsDefinition,
-			indexes = IndexesDefinition,
 			comparator = Comp,
 			options = Options,
 			shards = Shards,
@@ -443,8 +434,6 @@ table_info(Name) ->
 	    Rest = SizePL ++ Options,
 	    {ok, [{name, Name},
 		  {key, KeyDefinition},
-		  {columns, ColumnsDefinition},
-		  {indexes, IndexesDefinition},
 		  {comparator, Comp} | Rest]};
 	[] ->
 	    {error, "no_table"}
@@ -462,8 +451,6 @@ table_info(Name, Parameters) ->
 	[#enterdb_table{name = Name,
 			path = Path,
 			key = KeyDefinition,
-			columns = ColumnsDefinition,
-			indexes = IndexesDefinition,
 			comparator = Comp,
 			data_model = DataModel,
 			options = Options,
@@ -473,8 +460,6 @@ table_info(Name, Parameters) ->
 	    IList = [{name, Name},
 		    {path, Path},
 		    {key, KeyDefinition},
-		    {columns, ColumnsDefinition},
-		    {indexes, IndexesDefinition},
 		    {comparator, Comp},
 		    {data_model, DataModel},
 		    {shards, Shards},

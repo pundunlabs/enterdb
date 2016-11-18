@@ -30,3 +30,6 @@ erl_crash.dump
 
 # ignore rebar.lock file
 rebar.lock
+
+#other
+compile_commands.json

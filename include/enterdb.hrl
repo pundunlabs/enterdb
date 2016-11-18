@@ -34,7 +34,7 @@
 		leveldb_wrapped |
 		ets_leveldb_wrapped.
 
--type data_model() :: binary | array | hash.
+-type data_model() :: kv | array | map.
 
 -type time_margin() :: {seconds, pos_integer()} |
 		       {minutes, pos_integer()} |
@@ -87,8 +87,7 @@
 -record(enterdb_table, {name :: string(),
                         path :: string(),
                         key :: [string()],
-                        columns :: [string()],
-                        indexes :: [string()],
+                        column_mapper :: module(),
 			comparator :: comparator(),
                         type	:: type(),
 			data_model :: data_model(),
@@ -101,8 +100,7 @@
 		       name :: string(),
 		       type :: type(),
 		       key :: [string()],
-		       columns :: [string()],
-		       indexes :: [string()],
+		       column_mapper :: module(),
 		       comparator :: comparator(),
 		       data_model :: data_model(),
 		       wrapper :: #enterdb_wrapper{},
