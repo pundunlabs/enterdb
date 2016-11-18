@@ -1226,7 +1226,7 @@ map_columns(Mapper, [], Acc) ->
 	    Acc;
 	AddKeys ->  
 	    Rest = [{Field, Value} || {'$no_mapping', Field, Value} <- Acc],
-	    ok = gb_reg:add_keys(AddKeys),
+	    ok = gb_reg:add_keys(Mapper, AddKeys),
 	    map_columns(Mapper, Rest, Acc)
     end.
 
