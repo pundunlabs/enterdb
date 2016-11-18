@@ -46,7 +46,7 @@
 -record(state, {name,
 		data_model,
 		key,
-		columns,
+		column_mapper,
 		dir,
 		last_key,
 		iterators,
@@ -198,7 +198,7 @@ init(Args) ->
     Name = proplists:get_value(name, Args),
     DataModel = proplists:get_value(data_model, Args),
     Key = proplists:get_value(key, Args),
-    Columns = proplists:get_value(columns, Args),
+    Mapper = proplists:get_value(column_mapper, Args),
     Comp = proplists:get_value(comparator, Args),
     Dir = enterdb_lib:comparator_to_dir(Comp),
     case gb_hash:is_distributed(Name) of
@@ -213,7 +213,7 @@ init(Args) ->
 	    State = #state{name = Name,
 			   data_model = DataModel,
 			   key = Key,
-			   columns = Columns,
+			   column_mapper = Mapper,
 			   dir = Dir,
 			   iterators = Iterators,
 			   distributed = Dist,
@@ -239,35 +239,35 @@ init(Args) ->
 handle_call(first, _From, State = #state{iterators = Iterators,
 					 data_model = DataModel,
 					 key = Key,
-					 columns = Columns,
+					 column_mapper = Mapper,
 					 dir = Dir}) ->
     KVL_Map = iterate(Iterators, first),
     ?debug("KVL_Map: ~p", [KVL_Map]),
     FirstBin = apply_first(Dir, KVL_Map),
     CurrentKey = get_current_key(FirstBin),
-    First = make_app_kvp(FirstBin, DataModel, Key, Columns),
+    First = make_app_kvp(FirstBin, DataModel, Key, Mapper),
     {reply, First, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
 handle_call(last, _From, State = #state{iterators = Iterators,
 					data_model = DataModel,
 					key = Key,
-					columns = Columns,
+					column_mapper = Mapper,
 					dir = Dir}) ->
     KVL_Map = iterate(Iterators, last),
     LastBin = apply_last(Dir, KVL_Map),
     CurrentKey = get_current_key(LastBin),
-    Last = make_app_kvp(LastBin, DataModel, Key, Columns),
+    Last = make_app_kvp(LastBin, DataModel, Key, Mapper),
     {reply, Last, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
 handle_call({seek, SKey}, _From, State = #state{iterators = Iterators,
 						data_model = DataModel,
 						key = KeyDef,
-						columns = Columns,
+						column_mapper = Mapper,
 						dir = Dir}) ->
     case make_db_key(KeyDef, SKey) of
 	{ok, DBKey} ->
 	    KVL_Map = iterate(Iterators, {seek, DBKey}),
 	    FirstBin = apply_first(Dir, KVL_Map),
 	    CurrentKey = get_current_key(FirstBin),
-	    First = make_app_kvp(FirstBin, DataModel, KeyDef, Columns),
+	    First = make_app_kvp(FirstBin, DataModel, KeyDef, Mapper),
 	    {reply, First, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
 	{error, Reason} ->
 	    {reply, {error, Reason}, State, 0}
@@ -276,23 +276,23 @@ handle_call(next, _From, State = #state{iterators = Iterators,
 					last_key = LastKey,
 					data_model = DataModel,
 					key = Key,
-					columns = Columns,
+					column_mapper = Mapper,
 					dir = Dir}) ->
     KVL_Map = iterate(Iterators, {seek, LastKey}),
     ?debug("KVL_Map: ~p~nLastKey: ~p", [KVL_Map, LastKey]),
     NextBin = apply_next(Dir, KVL_Map, LastKey),
     CurrentKey = get_current_key(NextBin),
-    Next = make_app_kvp(NextBin, DataModel, Key, Columns),
+    Next = make_app_kvp(NextBin, DataModel, Key, Mapper),
     {reply, Next, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
 handle_call(prev, _From, State = #state{iterators = Iterators,
 					last_key = LastKey,
 					data_model = DataModel,
 					key = Key,
-					columns = Columns,
+					column_mapper = Mapper,
 					dir = Dir}) ->
     PrevBin = apply_prev(Dir, Iterators, LastKey),
     CurrentKey = get_current_key(PrevBin),
-    Prev = make_app_kvp(PrevBin, DataModel, Key, Columns),
+    Prev = make_app_kvp(PrevBin, DataModel, Key, Mapper),
     {reply, Prev, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
 handle_call(_Request, _From, State) ->
     Reply = ?debug("Unhandled request: ~p",[_Request]),
@@ -368,7 +368,7 @@ code_change(_OldVsn, State, _Extra) ->
 -spec get_args(Name :: string()) ->
     {ok, Args :: [{atom(), term()}]}.
 get_args(Name) ->
-    enterdb:table_info(Name,[name, data_model, key, columns, comparator]).
+    enterdb:table_info(Name,[name, data_model, key, column_mapper, comparator]).
 
 -spec init_iterators(Shards :: shards(), Dist :: boolean()) ->
     [{ok, pid()}] | {error, Reason :: term()}.
@@ -530,11 +530,11 @@ get_current_key({_,{Key,_}}) ->
 make_db_key(KeyDef, Key) ->
     enterdb_lib:make_db_key(KeyDef, Key).
 
-make_app_kvp({ok, {BK, BV}}, DataModel, Key, Columns) ->
-    ?debug("make_app_key(~p,~p,~p,~p)",[{ok, BK, BV}, DataModel, Key, Columns]),
+make_app_kvp({ok, {BK, BV}}, DataModel, Key, Mapper) ->
+    ?debug("make_app_key(~p,~p,~p,~p)",[{ok, BK, BV}, DataModel, Key, Mapper]),
     {ok,
      {enterdb_lib:make_app_key(Key, BK),
-      enterdb_lib:make_app_value(DataModel, Columns, BV)}};
+      enterdb_lib:make_app_value(DataModel, Mapper, BV)}};
 make_app_kvp(Else, _, _, _) ->
     ?debug("make_app_key(~p,....)",[Else]),
     Else.

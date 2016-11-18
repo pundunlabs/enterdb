@@ -1214,6 +1214,8 @@ make_db_map_value(Mapper, Columns) ->
 		  Acc :: [binary()]) ->
     [term()].
 map_columns(Mapper, [{Field, Value} | Rest], Acc) ->
+    ?debug("Looping: ~p ~p", [Mapper, {Field, Value}]),
+    timer:sleep(1000),
     case Mapper:lookup(Field) of
 	undefined ->
 	    map_columns(Mapper, Rest, [{'$no_mapping', Field, Value} | Acc]);
@@ -1224,11 +1226,16 @@ map_columns(Mapper, [{Field, Value} | Rest], Acc) ->
 map_columns(Mapper, [], Acc) ->
     case [Field || {'$no_mapping', Field, _} <- Acc] of
 	[] ->
+	    ?debug("All mapped: ~p",[Acc]),
 	    Acc;
 	AddKeys ->  
+	    ?debug("Add Keys: ~p",[AddKeys]),
 	    Rest = [{Field, Value} || {'$no_mapping', Field, Value} <- Acc],
+	    Done = lists:filter(fun({'$no_mapping',_,_}) -> false;
+				   (_) -> true
+				end, Acc),
 	    ok = gb_reg:add_keys(Mapper, AddKeys),
-	    map_columns(Mapper, Rest, Acc)
+	    map_columns(Mapper, Rest, Done)
     end.
 
 %%--------------------------------------------------------------------

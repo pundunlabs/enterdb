@@ -425,6 +425,7 @@ table_info(Name) ->
 	[#enterdb_table{name = Name,
 			path = _Path,
 			key = KeyDefinition,
+			column_mapper = Mapper,
 			comparator = Comp,
 			options = Options,
 			shards = Shards,
@@ -434,6 +435,7 @@ table_info(Name) ->
 	    Rest = SizePL ++ Options,
 	    {ok, [{name, Name},
 		  {key, KeyDefinition},
+		  {columns_mapper, Mapper},
 		  {comparator, Comp} | Rest]};
 	[] ->
 	    {error, "no_table"}
@@ -451,6 +453,7 @@ table_info(Name, Parameters) ->
 	[#enterdb_table{name = Name,
 			path = Path,
 			key = KeyDefinition,
+			column_mapper = Mapper,
 			comparator = Comp,
 			data_model = DataModel,
 			options = Options,
@@ -460,6 +463,7 @@ table_info(Name, Parameters) ->
 	    IList = [{name, Name},
 		    {path, Path},
 		    {key, KeyDefinition},
+		    {column_mapper, Mapper},
 		    {comparator, Comp},
 		    {data_model, DataModel},
 		    {shards, Shards},
