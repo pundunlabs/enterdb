@@ -1217,7 +1217,8 @@ map_columns(Mapper, [{Field, Value} | Rest], Acc) ->
     case Mapper:lookup(Field) of
 	undefined ->
 	    map_columns(Mapper, Rest, [{'$no_mapping', Field, Value} | Acc]);
-	Bin ->
+	Ref ->
+	    Bin = binary:encode_unsigned(Ref, big),
 	    map_columns(Mapper, Rest, [Bin, Value | Acc])
     end;
 map_columns(Mapper, [], Acc) ->
@@ -1307,7 +1308,7 @@ flatten_tuples([], Acc) ->
 		       Acc :: [binary()]) ->
     Columns :: [{string(), term()}].
 converse_columns(Mapper, [Bin, Value | Rest], Acc) ->
-    Field = Mapper:lookup(Bin),
+    Field = Mapper:lookup(binary:decode_unsigned(Bin, big)),
     converse_columns(Mapper, Rest, [{Field, Value} | Acc]);
 converse_columns(_, [], Acc) ->
     Acc.
