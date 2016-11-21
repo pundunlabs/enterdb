@@ -29,7 +29,8 @@
 	 read/2,
          read_from_disk/2,
 	 write/3,
-         delete/2,
+         update/3,
+	 delete/2,
 	 read_range/3,
 	 read_range_n/3,
 	 delete_table/1,
@@ -44,6 +45,7 @@
 	 ]).
 
 -export([do_write/3,
+	 do_update/3,
 	 do_read/2,
 	 do_write_to_disk/3,
 	 do_read_from_disk/2,
@@ -210,7 +212,7 @@ do_read_from_disk(TD, ShardTab, Key) ->
             Columns :: [column()]) -> ok | {error, Reason :: term()}.
 write(Tab, Key, Columns) ->
     case enterdb_lib:get_tab_def(Tab) of
-	    TD = #enterdb_table{distributed = Dist} ->
+	TD = #enterdb_table{distributed = Dist} ->
 	    DB_HashKeyAndCols = enterdb_lib:make_key_columns(TD, Key, Columns),
 	    write_(Tab, DB_HashKeyAndCols, Dist);
 	{error, _} = R ->
@@ -289,6 +291,76 @@ do_write_to_disk(#enterdb_stab{type = Type,
 do_write_to_disk(TD, ShardTab, Key, Columns) ->
     do_write(TD, ShardTab, Key, Columns).
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Updates Key according to operation definition Op.
+%% @end
+%%--------------------------------------------------------------------
+-spec update(Name :: string(),
+	     Key :: key(),
+	     Op :: update_op()) ->
+    ok | {error, Reason :: term()}.
+update(Tab, Key, Op) ->
+    case enterdb_lib:get_tab_def(Tab) of
+	#enterdb_table{data_model = kv} ->
+	    {error, can_not_update_kv};
+	TD = #enterdb_table{distributed = Dist} ->
+	    DB_HashKey = enterdb_lib:make_key(TD, Key),
+	    update_(Tab, DB_HashKey, Op, Dist);
+	{error, _} = R ->
+	    R
+    end.
+
+-spec update_(Tab :: string(),
+	      DB_Key :: {ok, DBKey :: binary(),
+			     HashKey :: binary()} |
+			{error, Error :: term()},
+	      Op :: update_op(),
+	      Dist :: true | false) ->
+    ok | {error, Reason :: term()}.
+update_(Tab, {ok, DBKey, HashKey}, Op, true) ->
+    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
+    ?dyno:call(Ring, {?MODULE, do_update, [Shard, DBKey, Op]}, write);
+update_(Tab, {ok, DBKey, HashKey}, Op, false) ->
+    {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
+    do_update(Shard, DBKey, Op);
+update_(_Tab, {error, _} = E, _, _) ->
+    E.
+
+do_update(Shard, DBKey, Op) ->
+    TD = enterdb_lib:get_shard_def(Shard),
+    enterdb_lib:make_app_value(TD, do_update(TD, Shard, DBKey, Op)).
+
+do_update(_TD = #enterdb_stab{type = Type}, ShardTab, Key, Op)
+when Type =:= ets_leveldb_wrapped ->
+    case find_timestamp_in_key(Key) of
+	undefined ->
+	    undefined;
+	{ok, Ts} ->
+	    case enterdb_mem_wrp:update(ShardTab, Ts, Key, Op) of
+		{error, _} = _E ->
+		    %% Write to disk
+		    enterdb_ldb_wrp:update(Ts, ShardTab, Key, Op);
+		Res ->
+		    Res
+	    end
+    end;
+do_update(_TD = #enterdb_stab{column_mapper = Mapper,
+			      type = leveldb_wrapped,
+			      data_model = DataModel},
+	  ShardTab, Key, Op) ->
+    enterdb_ldb_wrp:update(ShardTab, Key, Op, DataModel, Mapper);
+do_update(_TD = #enterdb_stab{column_mapper = Mapper,
+			      type = leveldb,
+			      data_model = DataModel}, ShardTab, Key, Op) ->
+    enterdb_ldb_worker:update(ShardTab, Key, Op, DataModel, Mapper);
+do_update(_TD = #enterdb_stab{type = ets_leveldb}, _Tab, _Key, _Op) ->
+    ok;
+do_update({error, R}, _, _Key, _Op) ->
+    {error, R};
+do_update(TD, Tab, Key, _Op) ->
+    ?debug("could not update ~p", [{TD, Tab, Key}]),
+    {error, {bad_tab, {Tab,TD}}}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -435,7 +507,7 @@ table_info(Name) ->
 	    Rest = SizePL ++ Options,
 	    {ok, [{name, Name},
 		  {key, KeyDefinition},
-		  {columns_mapper, Mapper},
+		  {column_mapper, Mapper},
 		  {comparator, Comp} | Rest]};
 	[] ->
 	    {error, "no_table"}

@@ -23,11 +23,24 @@
 -define(ITERATOR_TIMEOUT, 10000).
 -define(dyno, gb_dyno_dist).
 
--type key() :: [{string(), term()}].
+-type field_name() :: string().
+-type key() :: [{field_name(), term()}].
 -type key_range() :: {key(), key()}.
 -type value() :: term().
 -type kvp() :: {key(), value()}.
--type column() :: {string(), term()}.
+-type column() :: {field_name(), term()}.
+
+-type update_treshold() :: pos_integer().
+-type update_setvalue() :: pos_integer().
+-type update_instruction() :: increment |
+			      {increment, update_treshold(), update_setvalue()} |
+			      overwrite.
+-type update_data() :: pos_integer() | term().
+-type update_default() :: pos_integer() | term().
+-type update_op() :: [
+		      {field_name(), update_instruction(), update_data()}|
+		      {field_name(), update_instruction(), update_data(), update_default()}
+		     ].
 
 -type type() :: leveldb |
 		ets_leveldb |

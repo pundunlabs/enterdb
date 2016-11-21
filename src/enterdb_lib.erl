@@ -44,6 +44,7 @@
 	 make_app_value/2,
 	 make_app_value/3,
 	 make_app_kvp/4,
+	 apply_update_op/4,
 	 get_hash_key_def/2,
 	 check_error_response/1,
 	 map_shards/3]).
@@ -1199,8 +1200,8 @@ make_db_value(map, ColumnMapper, Columns) ->
 			  Columns :: [{string(), term()}]) ->
     {ok, DbValue :: binary()} | {error, Reason :: term()}.
 make_db_array_value(Mapper, Columns) ->
-    Map = map_columns(Mapper, Columns, []),
-    {ok, term_to_binary(Map)}.
+    Array = serialize_columns(Mapper, Columns, 0, []),
+    {ok, term_to_binary(Array)}.
 
 -spec make_db_map_value(Mapper :: module(),
 		        Columns :: [{string(), term()}]) ->
@@ -1208,6 +1209,39 @@ make_db_array_value(Mapper, Columns) ->
 make_db_map_value(Mapper, Columns) ->
     Map = map_columns(Mapper, Columns, []),
     {ok, term_to_binary(Map)}.
+
+-spec serialize_columns(Mapper :: module(),
+			Columns :: [{string(), term()}],
+			Ref :: integer(),
+			Acc :: [binary()]) ->
+    [term()].
+serialize_columns(Mapper, Columns, Ref, Acc) ->
+    case Mapper:lookup(Ref) of
+	undefined ->
+	    add_columns(Mapper, Columns, Ref, Acc);
+	Field ->
+	    case lists:keytake(Field, 1, Columns) of
+		{_, {_,Value}, Rest} ->
+		    NewRef= Ref+1,
+		    serialize_columns(Mapper, Rest, NewRef, [{NewRef, Value} | Acc]);
+		false ->
+		    serialize_columns(Mapper, Columns, Ref+1, Acc)
+	    end
+    end.
+
+-spec add_columns(Mapper :: module(),
+		  Columns :: [{string(), term()}],
+		  Ref :: integer(),
+		  Acc :: [{integer(), term()}]) ->
+    {Arity :: integer(), InitList :: [{integer(), term()}]}.
+add_columns(_Mapper, [], _Ref, []) ->
+    {};
+add_columns(_Mapper, [], _Ref, [{Arity,_}|_] = Acc) ->
+    erlang:make_tuple(Arity, undefined, Acc);
+add_columns(Mapper, Columns, Ref, Acc) ->
+    AddKeys = [Field || {Field, _} <- Columns],
+    ok = gb_reg:add_keys(Mapper, AddKeys),
+    serialize_columns(Mapper, Columns, Ref, Acc).
 
 -spec map_columns(Mapper :: module(),
 		  Columns :: [{string(), term()}],
@@ -1280,31 +1314,27 @@ make_app_value(DataModel, Mapper, DBValue) ->
     format_app_value(DataModel, Mapper, binary_to_term(DBValue)).
 
 -spec format_app_value(DataModel :: data_model(),
-		       MApper :: module(),
+		       Mapper :: module(),
 		       Value :: term()) ->
     Columns :: [{string(), term()}].
 format_app_value(kv, _, Value) ->
     Value;
 format_app_value(array, Mapper, Columns) ->
-    Sorted = sort_array_columns(Columns, []),
-    converse_columns(Mapper, Sorted, []);
+    Array = erlang:tuple_to_list(Columns),
+    converse_array_columns(Mapper, Array, 0, []);
 format_app_value(map, Mapper, Columns) ->
     converse_columns(Mapper, Columns, []).
 
--spec sort_array_columns(Columns :: [term()], Acc :: []) ->
-    Columns :: [term()].
-sort_array_columns([Bin, Value | Rest], Acc) ->
-    sort_array_columns(Rest, [{Bin, Value} | Acc]);
-sort_array_columns([], Acc) ->
-    Sorted = lists:sort(fun({A,_},{B,_}) -> A >= B end, Acc),
-    flatten_tuples(Sorted, []).
-
--spec flatten_tuples(Sorted :: [{term(), term()}], Acc :: [term()]) ->
-    Acc :: [term].
-flatten_tuples([{K,V} | Rest], Acc) ->
-    flatten_tuples(Rest, [K, V | Acc]);
-flatten_tuples([], Acc) ->
-    Acc.
+-spec converse_array_columns(Mapper :: module(),
+			     Columns :: [term()],
+			     Ref :: integer(),
+			     Acc :: [{string(), term()}]) ->
+    Columns :: [{string(), term()}].
+converse_array_columns(Mapper, [Value | Rest], Ref, Acc) ->
+    Field = Mapper:lookup(Ref),
+    converse_array_columns(Mapper, Rest, Ref+1, [{Field, Value} | Acc]);
+converse_array_columns(_, [], _Ref, Acc) ->
+    lists:reverse(Acc).
 
 -spec converse_columns(Mapper :: module(),
 		       Columns :: [term()],
@@ -1361,6 +1391,57 @@ make_app_kvp(DataModel, KeyDef, Mapper, KVP) ->
 		{error, {invalid_arg, KVP}}
 	end,
     {ok, AppKVP}.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Given update operation, overwrite fields with new values on given
+%% DB Value.
+%% @end
+%%--------------------------------------------------------------------
+-spec apply_update_op(Op :: update_op(),
+		      DBValue :: binary(),
+		      DataModel :: data_model(),
+		      Mapper :: module()) ->
+    {ok, UpdatedValue :: binary()}.
+apply_update_op(Op, DBValue, DataModel, Mapper) ->
+    Columns = make_app_value(DataModel, Mapper, DBValue),
+    UpdatedColumns = apply_update_op(Op, Columns),
+    make_db_value(DataModel, Mapper, UpdatedColumns).
+
+apply_update_op([], UpdatedColumns) ->
+    UpdatedColumns;
+apply_update_op([{Field, Inst, Data, Default} | Rest], Columns) ->
+    case lists:keytake(Field, 1, Columns) of
+	false ->
+	    Value = {value, {Field, Default}, Columns},
+	    UpdatedColumns = apply_instruction(Inst, Data, Value),
+	    apply_update_op(Rest, UpdatedColumns);
+	Value ->
+	    UpdatedColumns = apply_instruction(Inst, Data, Value),
+	    apply_update_op(Rest, UpdatedColumns)
+    end;
+apply_update_op([{Field, Inst, Data} | Rest], Columns) ->
+    case lists:keytake(Field, 1, Columns) of
+	false ->
+	    apply_update_op(Rest, Columns);
+	Value ->
+	    UpdatedColumns = apply_instruction(Inst, Data, Value),
+	    apply_update_op(Rest, UpdatedColumns)
+    end.
+
+apply_instruction(increment, I, {_, {F, V}, R}) when is_integer(I) ->
+    [{F, V+I} | R];
+apply_instruction({increment, T, S}, I, {_, {F, V}, R}) when is_integer(I) ->
+    U = V+I,
+    if U > T ->
+	    [{F, S+(U-T-1)} | R];
+	true ->
+	    [{F, U} | R]
+    end;
+apply_instruction(overwrite, Term, {_, {F, _}, R}) ->
+    [{F, Term} | R];
+apply_instruction(_, _, {_, E, R}) ->
+    [E | R].
 
 %%--------------------------------------------------------------------
 %% @doc

@@ -33,6 +33,7 @@
 
 -export([read/2,
          write/3,
+         update/5,
          delete/2,
 	 delete_db/1,
 	 read_range_binary/3,
@@ -99,6 +100,20 @@ read(Shard, Key) ->
 write(Shard, Key, Columns) ->
     ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, {write, Key, Columns}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Update Key according to Op on given shard.
+%% @end
+%%--------------------------------------------------------------------
+-spec update(Shard :: string(),
+             Key :: key(),
+             Op :: update_op(),
+	     DataModel :: data_model(),
+	     Mapper :: module()) -> ok | {error, Reason :: term()}.
+update(Shard, Key, Op, DataModel, Mapper) ->
+    ServerRef = enterdb_ns:get(Shard),
+    gen_server:call(ServerRef, {update, Key, Op, DataModel, Mapper}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -297,6 +312,26 @@ handle_call({write, Key, Columns}, _From, State) ->
            writeoptions = WriteOptions} = State,
     Reply = leveldb:put(DB, WriteOptions, Key, Columns),
     {reply, Reply, State};
+handle_call({update, DBKey, Op, DataModel, Mapper}, _From, State) ->
+    #state{db_ref = DB,
+	   readoptions = ReadOptions,
+           writeoptions = WriteOptions} = State,
+    BinValue =
+	case leveldb:get(DB, ReadOptions, DBKey) of
+	    {ok, Value} -> Value;
+	    _ -> make_empty_entry(DataModel)
+	end,
+    case enterdb_lib:apply_update_op(Op, BinValue, DataModel, Mapper) of
+	{ok, BinValue} ->
+	    {reply, {error, not_found}, State};
+	{ok, Columns} ->
+	    Reply =
+		case leveldb:put(DB, WriteOptions, DBKey, Columns) of
+		    ok -> {ok, Columns};
+		    Else -> Else
+		end,
+	    {reply, Reply, State}
+    end;
 handle_call({delete, DBKey}, _From, State) ->
     #state{db_ref = DB,
            writeoptions = WriteOptions} = State,
@@ -543,3 +578,10 @@ delete_enterdb_ldb_resource(Name) ->
         {aborted, Reason} ->
            {error, {aborted, Reason}}
     end.
+
+make_empty_entry(map) ->
+    <<131,106>>;
+make_empty_entry(array) ->
+    <<131,104,0>>;
+make_empty_entry(kv)->
+    <<>>.

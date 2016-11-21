@@ -32,6 +32,7 @@
 	 init_buckets/3,
 	 read/2,
 	 write/4,
+	 update/5,
 	 delete/2,
 	 read_range_binary/4,
 	 read_range_n_binary/4,
@@ -129,13 +130,29 @@ read(Shard, Key) ->
 -spec write(Shard :: string(),
 	    Wrapper :: #enterdb_wrapper{},
             Key :: binary(),
-            Columns :: binary()) -> ok | {error, Reason :: term()}.
+            Columns :: binary()) ->
+    ok | {error, Reason :: term()}.
 write(Shard, #enterdb_wrapper{size_margin = SizeMargin}, Key, Columns) ->
     UpdateOp = {#entry.value, 1, ?COUNTER_TRESHOLD, 0},
     Count =  ets:update_counter(?COUNTER, Shard, UpdateOp),
     check_counter_wrap(Count, Shard, SizeMargin),
     [Bucket|_]  = get_buckets(Shard),
     enterdb_ldb_worker:write(Bucket, Key, Columns).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Update Key according to Op on given shard.
+%% @end
+%%--------------------------------------------------------------------
+-spec update(Shard :: string(),
+             Key :: binary(),
+             Op :: update_op(),
+	     DataModel :: data_model(),
+	     Mapper :: module()) ->
+    ok | {error, Reason :: term()}.
+update(Shard, Key, Op, DataModel, Mapper) ->
+    Buckets  = get_buckets(Shard),
+    update_on_buckets(Buckets, Key, Op, DataModel, Mapper).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -517,6 +534,22 @@ delete_from_buckets([Bucket|Rest], Key, ErrAcc) ->
 	    delete_from_buckets(Rest, Key, ErrAcc);
 	{error, Reason} ->
 	    delete_from_buckets(Rest, Key, [{Bucket, Reason} | ErrAcc])
+    end.
+
+-spec update_on_buckets(Buckets :: [shard_name()],
+			Key :: term(),
+			Op :: update_op(),
+			DataModel ::  data_model(),
+			Mapper :: module()) ->
+    {ok, Value :: binary()} | {error, Reason :: term()}.
+update_on_buckets([], _, _, _, _) ->
+    {error, not_found};
+update_on_buckets([Bucket|Rest], Key, Op, DataModel, Mapper) ->
+    case enterdb_ldb_worker:update(Bucket, Key, Op, DataModel, Mapper) of
+	{ok, Value} ->
+	    {ok, Value};
+	{error, _} ->
+	    update_on_buckets(Rest, Key, Op, DataModel, Mapper)
     end.
 
 -spec unique([{DBKey :: binary(), DBVal :: binary()}]) ->
