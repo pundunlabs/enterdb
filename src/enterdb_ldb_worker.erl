@@ -146,8 +146,7 @@ delete_db(Args) ->
     {ok, Options} = leveldb:options(OptionsRec),
 
     FullPath = filename:join([Path, Subdir, Name]),
-    ok = leveldb:destroy_db(FullPath, Options),
-    file:del_dir(FullPath).
+    leveldb:destroy_db(FullPath, Options).
 
 %%--------------------------------------------------------------------
 %% @doc

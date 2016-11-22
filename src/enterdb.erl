@@ -96,7 +96,8 @@ create_table(Name, KeyDef, Options)->
 					      type = Type,
 					      data_model = DataModel,
 					      distributed = Dist,
-					      hash_key = HashKey},
+					      hash_key = HashKey,
+					      path = enterdb_lib:get_db_path()},
 	    enterdb_lib:create_table(NewTab);
 	{error, Reason} ->
                 {error, Reason}

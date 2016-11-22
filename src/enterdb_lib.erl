@@ -905,6 +905,10 @@ delete_shard_help({error, Reason}) ->
     {error, Reason}.
 
 cleanup_table(Name) ->
+    Tab = enterdb_lib:get_tab_def(Name),
+    FullPath = filename:join([Tab#enterdb_table.path, Name]),
+    file:del_dir(FullPath),
+    gb_reg:purge(Tab#enterdb_table.column_mapper),
     mnesia:dirty_delete(enterdb_table, Name),
     gb_hash:delete_ring(Name).
 
