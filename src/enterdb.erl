@@ -86,7 +86,7 @@ create_table(Name, KeyDef, Options)->
 	{ok, EnterdbTab} ->
 	    %% Specific table options
 	    Type = proplists:get_value(type, Options, leveldb),
-	    DataModel = proplists:get_value(data_model, Options, map),
+	    DataModel = proplists:get_value(data_model, Options, array),
 	    Mapper = enterdb_lib:get_column_mapper(Name, DataModel),
 	    Comp = proplists:get_value(comparator, Options, descending),
 	    Dist = proplists:get_value(distributed, Options, true),
@@ -294,6 +294,16 @@ do_write_to_disk(TD, ShardTab, Key, Columns) ->
 %%--------------------------------------------------------------------
 %% @doc
 %% Updates Key according to operation definition Op.
+%% field_name() :: string().
+%% treshold() :: pos_integer().
+%% setvalue() :: pos_integer().
+%% update_instruction() :: increment |
+%%			   {increment, treshold(), setvalue()} |
+%%			   overwrite.
+%% data() :: pos_integer() | term().
+%% default() :: pos_integer() | term().
+%% Op :: [{field_name(), instruction(), data()} |
+%%	  {field_name(), instruction(), data(), default()}].
 %% @end
 %%--------------------------------------------------------------------
 -spec update(Name :: string(),
