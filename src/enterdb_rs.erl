@@ -1,7 +1,7 @@
 %%%===================================================================
-%% @author Jonas Falkevik
+%% @author Erdem Aksu
 %%--------------------------------------------------------------------
-%% @copyright 2015 Pundun Labs AB
+%% @copyright 2016 Pundun Labs AB
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -18,7 +18,7 @@
 %% @doc
 %%
 %% @end
-%% Created : 2015-06-17 16:10:00
+%% Created : 2016-11-28 16:10:00
 %%-------------------------------------------------------------------
 -module(enterdb_rs).
 
@@ -61,12 +61,14 @@ start_link() ->
 register_pid(Pid) ->
     gen_server:call(?MODULE, {register_pid, Pid}).
 
+-spec get(Key :: term()) ->
+    pid() | binary() | {error, not_found}.
 get(Key) ->
     case ets:lookup(enterdb_rs, Key) of
 	[{_,Value}] ->
 	    Value;
 	_ ->
-	    {error, no_ns_entry}
+	    {error, not_found}
     end.
 
 %%%===================================================================

@@ -20,7 +20,7 @@
 
 
 -define(MAX_TABLE_NAME_LENGTH, 64).
--define(ITERATOR_TIMEOUT, 10000).
+-define(ITERATOR_TIMEOUT, 30000).
 -define(dyno, gb_dyno_dist).
 
 -type field_name() :: string().
