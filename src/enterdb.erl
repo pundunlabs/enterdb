@@ -510,6 +510,8 @@ table_info(Name) ->
 			key = KeyDefinition,
 			column_mapper = Mapper,
 			comparator = Comp,
+			type = Type,
+			data_model = DataModel,
 			options = Options,
 			shards = Shards,
 			distributed = Dist
@@ -519,7 +521,10 @@ table_info(Name) ->
 	    {ok, [{name, Name},
 		  {key, KeyDefinition},
 		  {column_mapper, Mapper},
-		  {comparator, Comp} | Rest]};
+		  {comparator, Comp},
+		  {type, Type},
+		  {data_model, DataModel},
+		  {distributed, Dist} | Rest]};
 	[] ->
 	    {error, "no_table"}
     end.
@@ -538,6 +543,7 @@ table_info(Name, Parameters) ->
 			key = KeyDefinition,
 			column_mapper = Mapper,
 			comparator = Comp,
+			type = Type,
 			data_model = DataModel,
 			options = Options,
 			shards = Shards,
@@ -548,6 +554,7 @@ table_info(Name, Parameters) ->
 		    {key, KeyDefinition},
 		    {column_mapper, Mapper},
 		    {comparator, Comp},
+		    {type, Type},
 		    {data_model, DataModel},
 		    {shards, Shards},
 		    {distributed, Dist} | Options],
