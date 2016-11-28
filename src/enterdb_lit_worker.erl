@@ -83,18 +83,19 @@ stop(Pid) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec first(Name :: string()) ->
-    {ok, kvp(), pid()} | {error, Reason :: term()}.
+    {ok, kvp(), binary()} | {error, Reason :: term()}.
 first(Name) ->
     first_(get_args(Name)).
 
 -spec first_(ArgsT :: {ok, [{atom(), term()}]} | {error, Reason :: term()}) ->
-    {ok, kvp(), pid()} | {error, Reason :: term()}.
+    {ok, kvp(), binary()} | {error, Reason :: term()}.
 first_({ok, Args}) ->
     case supervisor:start_child(enterdb_lit_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, first) of
 		{ok, First} ->
-		    {ok, First, Pid};
+		    {ok, Ref} = enterdb_rs:register_pid(Pid),
+		    {ok, First, Ref};
 		{error, invalid} ->
 		    {error, invalid}
 	    end;
@@ -110,18 +111,19 @@ first_({error, Reason}) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec last(Name :: string()) ->
-    {ok, kvp(), pid()} | {error, Reason :: term()}.
+    {ok, kvp(), binary()} | {error, Reason :: term()}.
 last(Name) ->
     last_(get_args(Name)).
 
 -spec last_(ArgsT :: {ok, [{atom(), term()}]} | {error, Reason :: term()}) ->
-    {ok, kvp(), pid()} | {error, Reason :: term()}.
+    {ok, kvp(), binary()} | {error, Reason :: term()}.
 last_({ok, Args}) ->
     case supervisor:start_child(enterdb_lit_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, last) of
 		{ok, Last} ->
-		    {ok, Last, Pid};
+		    {ok, Ref} = enterdb_rs:register_pid(Pid),
+		    {ok, Last, Ref};
 		{error, invalid} ->
 		    {error, invalid}
 	    end;
@@ -137,19 +139,20 @@ last_({error, Reason}) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec seek(Name :: string(), Key :: key()) ->
-    {ok, kvp(), pid()} | {error, Reason :: term()}.
+    {ok, kvp(), binary()} | {error, Reason :: term()}.
 seek(Name, Key) ->
     seek_(get_args(Name), Key).
 
 -spec seek_(ArgsT :: {ok, [{atom(), term()}]} | {error, Reason :: term()},
 	    Key :: key()) ->
-    {ok, kvp(), pid()} | {error, Reason :: term()}.
+    {ok, kvp(), binary()} | {error, Reason :: term()}.
 seek_({ok, Args}, Key) ->
     case supervisor:start_child(enterdb_lit_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, {seek, Key}) of
 		{ok, Rec} ->
-		    {ok, Rec, Pid};
+		    {ok, Ref} = enterdb_rs:register_pid(Pid),
+		    {ok, Rec, Ref};
 		{error, Reason} ->
 		    {error, Reason}
 	    end;
@@ -164,9 +167,10 @@ seek_({error, Reason}, _) ->
 %% Return the next record for iterator defined by Pid.
 %% @end
 %%--------------------------------------------------------------------
--spec next(Pid :: pid()) ->
+-spec next(Ref :: binary()) ->
     {ok, kvp()} | {error, Reason :: term()}.
-next(Pid) ->
+next(Ref) ->
+    Pid = enterdb_rs:get(Ref),
     gen_server:call(Pid, next).
 
 %%--------------------------------------------------------------------
@@ -174,9 +178,10 @@ next(Pid) ->
 %% Return the next record for iterator defined by Pid.
 %% @end
 %%--------------------------------------------------------------------
--spec prev(Pid :: pid()) ->
+-spec prev(Ref :: binary()) ->
     {ok, kvp()} | {error, Reason :: term()}.
-prev(Pid) ->
+prev(Ref) ->
+    Pid = enterdb_rs:get(Ref),
     gen_server:call(Pid, prev).
 
 %%%===================================================================

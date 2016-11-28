@@ -586,7 +586,7 @@ get_size_param(Parameters, Options, Shards, Dist) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec first(Name :: string()) ->
-    {ok, KVP :: kvp(), Ref :: pid()} |
+    {ok, KVP :: kvp(), Ref :: binary()} |
     {error, Reason :: invalid | term()}.
 first(Name) ->
     enterdb_lit_worker:first(Name).
@@ -597,7 +597,7 @@ first(Name) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec last(Name :: string()) ->
-    {ok, KVP :: kvp(), Ref :: pid()} |
+    {ok, KVP :: kvp(), Ref :: binary()} |
     {error, Reason :: invalid | term()}.
 last(Name) ->
     enterdb_lit_worker:last(Name).
@@ -608,7 +608,7 @@ last(Name) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec seek(Name :: string(), Key :: key()) ->
-    {ok, KVP :: kvp(), Ref :: pid()} |
+    {ok, KVP :: kvp(), Ref :: binary()} |
     {error, Reason :: invalid | term()}.
 seek(Name, Key) ->
     enterdb_lit_worker:seek(Name, Key).
@@ -619,7 +619,7 @@ seek(Name, Key) ->
 %% reference Ref.
 %% @end
 %%--------------------------------------------------------------------
--spec next(Ref :: pid()) ->
+-spec next(Ref :: binary()) ->
     {ok, KVP :: kvp()} | {error, Reason :: invalid | term()}.
 next(Ref) ->
     enterdb_lit_worker:next(Ref).
@@ -630,7 +630,7 @@ next(Ref) ->
 %% reference Ref.
 %% @end
 %%--------------------------------------------------------------------
--spec prev(Ref :: pid()) ->
+-spec prev(Ref :: binary()) ->
     {ok, KVP :: kvp()} | {error, Reason :: invalid | term()}.
 prev(Ref) ->
     enterdb_lit_worker:prev(Ref).
