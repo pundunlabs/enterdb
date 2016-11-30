@@ -26,7 +26,6 @@
 -export([get_db_path/0]).
 
 -export([verify_create_table_args/1,
-         get_column_mapper/2,
 	 create_table/1,
          open_table/2,
          open_shards/1,
@@ -515,12 +514,16 @@ create_table({error, Reason}, _EnterdbTable) ->
 %%--------------------------------------------------------------------
 -spec do_create_shards(EDBT :: #enterdb_table{}) ->
     ok | {error, Reason :: term()}.
-do_create_shards(#enterdb_table{shards = Shards} = EDBT) ->
+do_create_shards(#enterdb_table{name = Name,
+				data_model = DataModel,
+				shards = Shards} = EDBT) ->
     LocalShards = find_local_shards(Shards),
-    ResL = [do_create_shard(Shard, EDBT) || Shard <- LocalShards],
+    Mapper = get_column_mapper(Name, DataModel),
+    NewEDBT = EDBT#enterdb_table{column_mapper = Mapper},
+    ResL = [do_create_shard(Shard, NewEDBT) || Shard <- LocalShards],
     case check_error_response(lists:usort(ResL)) of
 	ok ->
-	    write_enterdb_table(EDBT);
+	    write_enterdb_table(NewEDBT);
 	Else ->
 	    Else
     end.
@@ -1244,7 +1247,8 @@ add_columns(_Mapper, [], _Ref, [{Arity,_}|_] = Acc) ->
     erlang:make_tuple(Arity, undefined, Acc);
 add_columns(Mapper, Columns, Ref, Acc) ->
     AddKeys = [Field || {Field, _} <- Columns],
-    ok = gb_reg:add_keys(Mapper, AddKeys),
+    ok = ?dyno:topo_call({gb_reg, add_keys, [Mapper, AddKeys]},
+			    [{timeout, 10000}]),
     serialize_columns(Mapper, Columns, Ref, Acc).
 
 -spec map_columns(Mapper :: module(),
@@ -1268,7 +1272,8 @@ map_columns(Mapper, [], Acc) ->
 	    Done = lists:filter(fun({'$no_mapping',_,_}) -> false;
 				   (_) -> true
 				end, Acc),
-	    ok = gb_reg:add_keys(Mapper, AddKeys),
+	    ok = ?dyno:topo_call({gb_reg, add_keys, [Mapper, AddKeys]},
+				    [{timeout, 10000}]),
 	    map_columns(Mapper, Rest, Done)
     end.
 

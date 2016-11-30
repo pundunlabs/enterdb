@@ -87,12 +87,10 @@ create_table(Name, KeyDef, Options)->
 	    %% Specific table options
 	    Type = proplists:get_value(type, Options, leveldb),
 	    DataModel = proplists:get_value(data_model, Options, array),
-	    Mapper = enterdb_lib:get_column_mapper(Name, DataModel),
 	    Comp = proplists:get_value(comparator, Options, descending),
 	    Dist = proplists:get_value(distributed, Options, true),
 	    HashKey = enterdb_lib:get_hash_key_def(KeyDef, Options),
-	    NewTab = EnterdbTab#enterdb_table{column_mapper = Mapper,
-					      comparator = Comp,
+	    NewTab = EnterdbTab#enterdb_table{comparator = Comp,
 					      type = Type,
 					      data_model = DataModel,
 					      distributed = Dist,
