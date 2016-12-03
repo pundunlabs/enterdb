@@ -116,6 +116,7 @@
 		       column_mapper :: module(),
 		       comparator :: comparator(),
 		       data_model :: data_model(),
+		       distributed :: boolean(),
 		       wrapper :: #enterdb_wrapper{},
 		       buckets :: [shard_name()],
 		       db_path :: string()}).

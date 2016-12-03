@@ -33,7 +33,7 @@
 
 -export([read/2,
          write/3,
-         update/5,
+         update/6,
          delete/2,
 	 delete_db/1,
 	 read_range_binary/3,
@@ -110,10 +110,11 @@ write(Shard, Key, Columns) ->
              Key :: key(),
              Op :: update_op(),
 	     DataModel :: data_model(),
-	     Mapper :: module()) -> ok | {error, Reason :: term()}.
-update(Shard, Key, Op, DataModel, Mapper) ->
+	     Mapper :: module(),
+	     Distributed :: boolean()) -> ok | {error, Reason :: term()}.
+update(Shard, Key, Op, DataModel, Mapper, Dist) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {update, Key, Op, DataModel, Mapper}).
+    gen_server:call(ServerRef, {update, Key, Op, DataModel, Mapper, Dist}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -311,7 +312,7 @@ handle_call({write, Key, Columns}, _From, State) ->
            writeoptions = WriteOptions} = State,
     Reply = leveldb:put(DB, WriteOptions, Key, Columns),
     {reply, Reply, State};
-handle_call({update, DBKey, Op, DataModel, Mapper}, _From, State) ->
+handle_call({update, DBKey, Op, DataModel, Mapper, Dist}, _From, State) ->
     #state{db_ref = DB,
 	   readoptions = ReadOptions,
            writeoptions = WriteOptions} = State,
@@ -320,7 +321,7 @@ handle_call({update, DBKey, Op, DataModel, Mapper}, _From, State) ->
 	    {ok, Value} -> Value;
 	    _ -> make_empty_entry(DataModel)
 	end,
-    case enterdb_lib:apply_update_op(Op, BinValue, DataModel, Mapper) of
+    case enterdb_lib:apply_update_op(Op, BinValue, DataModel, Mapper, Dist) of
 	{ok, BinValue} ->
 	    {reply, {error, not_found}, State};
 	{ok, Columns} ->

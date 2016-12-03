@@ -38,12 +38,12 @@
 	 make_db_key/3,
 	 make_key/2,
 	 make_key_columns/3,
-	 make_db_value/3,
+	 make_db_value/4,
 	 make_app_key/2,
 	 make_app_value/2,
 	 make_app_value/3,
 	 make_app_kvp/4,
-	 apply_update_op/4,
+	 apply_update_op/5,
 	 get_hash_key_def/2,
 	 check_error_response/1,
 	 map_shards/3]).
@@ -549,6 +549,7 @@ do_create_shard(Shard, EDBT) ->
 			  column_mapper = EDBT#enterdb_table.column_mapper,
 			  comparator = EDBT#enterdb_table.comparator,
 			  data_model = DataModel,
+			  distributed = EDBT#enterdb_table.distributed,
 			  wrapper = Wrapper,
 			  buckets = Buckets,
 			  db_path = DB_Path},
@@ -1117,7 +1118,8 @@ make_key_columns(TD, Key, Columns) ->
 
 make_key_columns_help(DBKey, HashKey, TD, Columns) ->
     case make_db_value(TD#enterdb_table.data_model,
-		       TD#enterdb_table.column_mapper, Columns) of
+		       TD#enterdb_table.column_mapper,
+		       TD#enterdb_table.distributed, Columns) of
 	{error, E} ->
 	    {error, E};
 	{ok, DBValue} ->
@@ -1194,76 +1196,89 @@ make_db_key([], _, _, DBKeyList, HashKeyList) ->
 %%--------------------------------------------------------------------
 -spec make_db_value(DataModel :: data_model(),
 		    ColumnMApper :: module(),
+		    Distributed :: boolean(),
 		    Columns :: [{string(), term()}])->
     {ok, DbValue :: binary()} | {error, Reason :: term()}.
-make_db_value(kv, _, Columns) ->
+make_db_value(kv, _, _, Columns) ->
     {ok, term_to_binary(Columns)};
-make_db_value(array, ColumnMapper, Columns) ->
-    make_db_array_value(ColumnMapper, Columns);
-make_db_value(map, ColumnMapper, Columns) ->
-    make_db_map_value(ColumnMapper, Columns).
+make_db_value(array, ColumnMapper, Distributed, Columns) ->
+    make_db_array_value(ColumnMapper, Distributed, Columns);
+make_db_value(map, ColumnMapper, Distributed, Columns) ->
+    make_db_map_value(ColumnMapper, Distributed, Columns).
 
 -spec make_db_array_value(Mapper :: module(),
+			  Distributed :: boolean(),
 			  Columns :: [{string(), term()}]) ->
     {ok, DbValue :: binary()} | {error, Reason :: term()}.
-make_db_array_value(Mapper, Columns) ->
-    Array = serialize_columns(Mapper, Columns, 0, []),
+make_db_array_value(Mapper, Distributed, Columns) ->
+    Array = serialize_columns(Mapper, Distributed, Columns, 0, []),
     {ok, term_to_binary(Array)}.
 
 -spec make_db_map_value(Mapper :: module(),
-		        Columns :: [{string(), term()}]) ->
+		        Distributed :: boolean(),
+			Columns :: [{string(), term()}]) ->
     {ok, DbValue :: binary()} | {error, Reason :: term()}.
-make_db_map_value(Mapper, Columns) ->
-    Map = map_columns(Mapper, Columns, []),
+make_db_map_value(Mapper, Distributed, Columns) ->
+    Map = map_columns(Mapper, Distributed, Columns, []),
     {ok, term_to_binary(Map)}.
 
 -spec serialize_columns(Mapper :: module(),
+			Distributed :: boolean(),
 			Columns :: [{string(), term()}],
 			Ref :: integer(),
 			Acc :: [binary()]) ->
     [term()].
-serialize_columns(Mapper, Columns, Ref, Acc) ->
+serialize_columns(Mapper, Distributed, Columns, Ref, Acc) ->
     case Mapper:lookup(Ref) of
 	undefined ->
-	    add_columns(Mapper, Columns, Ref, Acc);
+	    add_columns(Mapper, Distributed, Columns, Ref, Acc);
 	Field ->
 	    case lists:keytake(Field, 1, Columns) of
 		{_, {_,Value}, Rest} ->
 		    NewRef= Ref+1,
-		    serialize_columns(Mapper, Rest, NewRef, [{NewRef, Value} | Acc]);
+		    serialize_columns(Mapper, Distributed, Rest,
+				      NewRef, [{NewRef, Value} | Acc]);
 		false ->
-		    serialize_columns(Mapper, Columns, Ref+1, Acc)
+		    serialize_columns(Mapper, Distributed, Columns, Ref+1, Acc)
 	    end
     end.
 
 -spec add_columns(Mapper :: module(),
+		  Distributed :: boolean(),
 		  Columns :: [{string(), term()}],
 		  Ref :: integer(),
 		  Acc :: [{integer(), term()}]) ->
     {Arity :: integer(), InitList :: [{integer(), term()}]}.
-add_columns(_Mapper, [], _Ref, []) ->
+add_columns(_Mapper, _Distributed, [], _Ref, []) ->
     {};
-add_columns(_Mapper, [], _Ref, [{Arity,_}|_] = Acc) ->
+add_columns(_Mapper, _Distributed, [], _Ref, [{Arity,_}|_] = Acc) ->
     erlang:make_tuple(Arity, undefined, Acc);
-add_columns(Mapper, Columns, Ref, Acc) ->
+add_columns(Mapper, Distributed, Columns, Ref, Acc) ->
     AddKeys = [Field || {Field, _} <- Columns],
-    ok = ?dyno:topo_call({gb_reg, add_keys, [Mapper, AddKeys]},
-			    [{timeout, 10000}]),
-    serialize_columns(Mapper, Columns, Ref, Acc).
+    case Distributed of
+	true ->
+	    ?dyno:topo_call({gb_reg, add_keys, [Mapper, AddKeys]},
+		    [{timeout, 10000}]);
+	false ->
+	    gb_reg:add_keys(Mapper, AddKeys)
+    end,
+    serialize_columns(Mapper, Distributed, Columns, Ref, Acc).
 
 -spec map_columns(Mapper :: module(),
+		  Distributed :: boolean(),
 		  Columns :: [{string(), term()}],
 		  Acc :: [binary()]) ->
     [term()].
-map_columns(Mapper, [{Field, Value} | Rest], Acc) ->
+map_columns(Mapper, Distributed, [{Field, Value} | Rest], Acc) ->
     case Mapper:lookup(Field) of
 	undefined ->
-	    map_columns(Mapper, Rest, [{'$no_mapping', Field, Value} | Acc]);
+	    map_columns(Mapper, Distributed, Rest,
+			[{'$no_mapping', Field, Value} | Acc]);
 	Ref ->
 	    Bin = binary:encode_unsigned(Ref, big),
-	    map_columns(Mapper, Rest, [Bin, Value | Acc])
+	    map_columns(Mapper, Distributed, Rest, [Bin, Value | Acc])
     end;
-map_columns(Mapper, [], Acc) ->
+map_columns(Mapper, Distributed, [], Acc) ->
     case [Field || {'$no_mapping', Field, _} <- Acc] of
 	[] ->
 	    Acc;
@@ -1272,9 +1287,14 @@ map_columns(Mapper, [], Acc) ->
 	    Done = lists:filter(fun({'$no_mapping',_,_}) -> false;
 				   (_) -> true
 				end, Acc),
-	    ok = ?dyno:topo_call({gb_reg, add_keys, [Mapper, AddKeys]},
-				    [{timeout, 10000}]),
-	    map_columns(Mapper, Rest, Done)
+	    case Distributed of
+		true ->
+		    ?dyno:topo_call({gb_reg, add_keys, [Mapper, AddKeys]},
+				    [{timeout, 10000}]);
+		false ->
+		    gb_reg:add_keys(Mapper, AddKeys)
+	    end,
+	    map_columns(Mapper, Distributed, Rest, Done)
     end.
 
 %%--------------------------------------------------------------------
@@ -1410,12 +1430,13 @@ make_app_kvp(DataModel, KeyDef, Mapper, KVP) ->
 -spec apply_update_op(Op :: update_op(),
 		      DBValue :: binary(),
 		      DataModel :: data_model(),
-		      Mapper :: module()) ->
+		      Mapper :: module(),
+		      Distributed :: boolean()) ->
     {ok, UpdatedValue :: binary()}.
-apply_update_op(Op, DBValue, DataModel, Mapper) ->
+apply_update_op(Op, DBValue, DataModel, Mapper, Distributed) ->
     Columns = make_app_value(DataModel, Mapper, DBValue),
     UpdatedColumns = apply_update_op(Op, Columns),
-    make_db_value(DataModel, Mapper, UpdatedColumns).
+    make_db_value(DataModel, Mapper, Distributed, UpdatedColumns).
 
 apply_update_op([], UpdatedColumns) ->
     UpdatedColumns;

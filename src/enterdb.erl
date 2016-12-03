@@ -356,13 +356,15 @@ when Type =:= ets_leveldb_wrapped ->
     end;
 do_update(_TD = #enterdb_stab{column_mapper = Mapper,
 			      type = leveldb_wrapped,
-			      data_model = DataModel},
+			      data_model = DataModel,
+			      distributed = Dist},
 	  ShardTab, Key, Op) ->
-    enterdb_ldb_wrp:update(ShardTab, Key, Op, DataModel, Mapper);
+    enterdb_ldb_wrp:update(ShardTab, Key, Op, DataModel, Mapper, Dist);
 do_update(_TD = #enterdb_stab{column_mapper = Mapper,
 			      type = leveldb,
-			      data_model = DataModel}, ShardTab, Key, Op) ->
-    enterdb_ldb_worker:update(ShardTab, Key, Op, DataModel, Mapper);
+			      data_model = DataModel,
+			      distributed = Dist}, ShardTab, Key, Op) ->
+    enterdb_ldb_worker:update(ShardTab, Key, Op, DataModel, Mapper, Dist);
 do_update(_TD = #enterdb_stab{type = ets_leveldb}, _Tab, _Key, _Op) ->
     ok;
 do_update({error, R}, _, _Key, _Op) ->
