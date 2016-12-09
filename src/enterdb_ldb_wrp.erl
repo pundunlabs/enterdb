@@ -32,7 +32,7 @@
 	 init_buckets/3,
 	 read/2,
 	 write/4,
-	 update/5,
+	 update/6,
 	 delete/2,
 	 read_range_binary/4,
 	 read_range_n_binary/4,
@@ -148,11 +148,12 @@ write(Shard, #enterdb_wrapper{size_margin = SizeMargin}, Key, Columns) ->
              Key :: binary(),
              Op :: update_op(),
 	     DataModel :: data_model(),
-	     Mapper :: module()) ->
+	     Mapper :: module(),
+	     Dist :: boolean()) ->
     ok | {error, Reason :: term()}.
-update(Shard, Key, Op, DataModel, Mapper) ->
+update(Shard, Key, Op, DataModel, Mapper, Dist) ->
     Buckets  = get_buckets(Shard),
-    update_on_buckets(Buckets, Key, Op, DataModel, Mapper).
+    update_on_buckets(Buckets, Key, Op, DataModel, Mapper, Dist).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -540,16 +541,17 @@ delete_from_buckets([Bucket|Rest], Key, ErrAcc) ->
 			Key :: term(),
 			Op :: update_op(),
 			DataModel ::  data_model(),
-			Mapper :: module()) ->
+			Mapper :: module(),
+			Dist :: boolean()) ->
     {ok, Value :: binary()} | {error, Reason :: term()}.
-update_on_buckets([], _, _, _, _) ->
+update_on_buckets([], _, _, _, _, _) ->
     {error, not_found};
-update_on_buckets([Bucket|Rest], Key, Op, DataModel, Mapper) ->
-    case enterdb_ldb_worker:update(Bucket, Key, Op, DataModel, Mapper) of
+update_on_buckets([Bucket|Rest], Key, Op, DataModel, Mapper, Dist) ->
+    case enterdb_ldb_worker:update(Bucket, Key, Op, DataModel, Mapper, Dist) of
 	{ok, Value} ->
 	    {ok, Value};
 	{error, _} ->
-	    update_on_buckets(Rest, Key, Op, DataModel, Mapper)
+	    update_on_buckets(Rest, Key, Op, DataModel, Mapper, Dist)
     end.
 
 -spec unique([{DBKey :: binary(), DBVal :: binary()}]) ->
