@@ -348,6 +348,12 @@ verify_table_options([{hash_exclude, L}|Rest]) when is_list(L) ->
 	    {error, Reason}
     end;
 
+%% hash method specifies which strategy to be used by gb_hash app.
+verify_table_options([{hashing_method, M}|Rest]) when M == virtual_nodes;
+						      M == cosistent;
+						      M == uniform;
+						      M == rendezvous ->
+    verify_table_options(Rest);
 %% Bad Option
 verify_table_options([Elem|_])->
     {error, {Elem, "invalid_option"}};
@@ -470,7 +476,8 @@ create_table(#enterdb_table{name = Name,
     {ok, Shards} = get_local_shards(Name, NumOfShards),
     
     %%Create local ring with given allocated shards
-    HashOpts = [local, {algorithm, sha}, {strategy, uniform}],
+    Strategy = proplists:get_value(hashing_method, Options, uniform),
+    HashOpts = [local, {algorithm, sha256}, {strategy, Strategy}],
     {ok, _Beam} = gb_hash:create_ring(Name, Shards, HashOpts),
     do_create_shards(EnterdbTable#enterdb_table{shards = Shards});
 
@@ -485,7 +492,8 @@ create_table(#enterdb_table{name = Name,
     ?debug("table allocated shards ~p", [AllocatedShards]),
     
     %%Create local ring with given allocated shards
-    HashOpts = [{algorithm, sha}, {strategy, uniform}],
+    Strategy = proplists:get_value(hashing_method, Options, uniform),
+    HashOpts = [{algorithm, sha256}, {strategy, Strategy}],
     {ok, Beam} = gb_hash:create_ring(Name, AllocatedShards, HashOpts),
     
     %% Distribute the ring
@@ -1539,7 +1547,7 @@ find_local_shards([], _Node, _DC, Acc) ->
 %% Parallel map requests on local node. Args will be constructed by 
 %% Adding Elements from List to BaseArgs. apply(Mod, Fun, Args)
 %% will be called on local node. Result list will be in respective
-%% to request list.
+%% order to request list.
 %% @end
 %%--------------------------------------------------------------------
 -spec pmap({Mod:: module(), Fun :: function(), BaseArgs :: [term()]},

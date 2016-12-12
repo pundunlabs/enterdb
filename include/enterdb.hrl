@@ -59,6 +59,8 @@
 
 -type comparator() :: ascending | descending.
 
+-type hashing_method() :: virtual_nodes | consistent | uniform | rendezvous.
+
 -record(enterdb_wrapper, {num_of_buckets :: pos_integer(),
 			  time_margin :: time_margin(),
 			  size_margin :: size_margin()
@@ -70,6 +72,7 @@
 -type bucket_span() :: pos_integer().
 -type num_buckets() :: pos_integer().
 
+
 -type table_option() :: [{type, type()} |
                          {data_model, data_model()} |
 			 {wrapper, #enterdb_wrapper{}} |
@@ -79,7 +82,8 @@
 			 {shards, pos_integer()} |
 			 {distributed, boolean()} |
 			 {replication_factor, pos_integer()} |
-			 {hash_exclude, [string()]}].
+			 {hash_exclude, [string()]} |
+			 {hashing_method, hashing_method()}].
 
 -type timestamp() :: {pos_integer(),  %% mega seconds &
 		      pos_integer(),  %% seconds &
@@ -107,7 +111,8 @@
 			distributed :: boolean(),
 			hash_key :: [string()],
 			options :: [table_option()],
-                        shards :: shards()}).
+                        shards :: shards(),
+			redistributing :: boolean()}).
 %% enterdb shard tab
 -record(enterdb_stab, {shard :: shard_name(),
 		       name :: string(),
