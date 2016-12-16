@@ -185,7 +185,7 @@ delete_shard(Args) ->
     Tid = get_tid(Shard),
     cancel_timer(Tid),
     ESTAB = proplists:get_value(tab_rec, Args),
-    Buckets = ESTAB#enterdb_stab.buckets,
+    Buckets = maps:get(buckets, ESTAB),
     [ begin
 	  NewArgs = lists:keyreplace(name, 1, Args, {name, Bucket}),
 	  ok = enterdb_ldb_worker:delete_db(NewArgs)
@@ -234,15 +234,9 @@ get_tid(Shard) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([Start, #enterdb_stab{shard = Shard,
-			   wrapper = #{num_of_buckets := N},
-			   buckets = undefined} = ESTAB]) ->
-    ?info("Creating EnterDB LevelDB WRP Server for Shard ~p",[Shard]),
-    List = [lists:concat([Shard, "_", Index]) || Index <- lists:seq(0, N-1)],
-    init([Start, ESTAB#enterdb_stab{buckets = List}]);
-init([Start, #enterdb_stab{shard = Shard,
-			   wrapper = Wrapper,
-			   buckets = Buckets} = ESTAB]) ->
+init([Start, #{shard := Shard,
+	       wrapper := Wrapper,
+	       buckets := Buckets} = ESTAB]) ->
     ?info("Starting EnterDB LevelDB WRP Server for Shard ~p",[Shard]),
     Options = [public,{read_concurrency, true},{keypos, #entry.key}],
     Tid = ets:new(bucket, Options),
@@ -255,8 +249,12 @@ init([Start, #enterdb_stab{shard = Shard,
     ets:insert(Tid, #entry{key='$counter', value=0}),
     TimeMargin = maps:get(time_margin, Wrapper, undefined),
     register_timeout(Tid, Shard, TimeMargin),
-    {ok, #s{tid=Tid, shard=Shard}}.
-
+    {ok, #s{tid=Tid, shard=Shard}};
+init([Start, #{shard := Shard,
+	       wrapper := #{num_of_buckets := N}} = ESTAB]) ->
+    ?info("Creating EnterDB LevelDB WRP Server for Shard ~p",[Shard]),
+    List = [lists:concat([Shard, "_", Index]) || Index <- lists:seq(0, N-1)],
+    init([Start, ESTAB#{buckets => List}]).
 %%--------------------------------------------------------------------
 %% @private
 %% @doc

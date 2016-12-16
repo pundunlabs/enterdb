@@ -119,7 +119,7 @@ write_(Shard, #{num_of_buckets := S,
 %% Update Key according to Op on given shard.
 %% @end
 %%--------------------------------------------------------------------
--spec update(TD :: #enterdb_stab{},
+-spec update(TD :: #{},
              Key :: key(),
              DBKey :: binary(),
              Op :: update_op()) ->
@@ -127,18 +127,18 @@ write_(Shard, #{num_of_buckets := S,
 update(TD, Key, DBKey, Op) ->
     update_(TD, find_timestamp_in_key(Key), DBKey, Op).
 
--spec update_(#enterdb_stab{},
+-spec update_(#{},
 	      Ts :: integer(),
 	      DBKey :: binary(),
 	      Op :: update_op()) ->
     ok | {error, Reason :: term()}.
-update_(#enterdb_stab{shard = Shard,
-		      tda = #{num_of_buckets := S,
-			      time_margin := {_, _} = TM,
-			      precision := P},
-		      data_model = DataModel,
-		      column_mapper = Mapper,
-		      distributed = Dist},
+update_(#{shard := Shard,
+	  tda := #{num_of_buckets := S,
+		  time_margin := {_, _} = TM,
+		  precision := P},
+	  data_model := DataModel,
+	  column_mapper := Mapper,
+	  distributed := Dist},
        Ts, DBKey, Op) when is_integer(Ts) ->
     N = get_nanoseconds(P, Ts) div get_nanoseconds(TM),
     BucketId = N rem S,
@@ -268,14 +268,7 @@ get_tid(Shard) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([Start, #enterdb_stab{shard = Shard,
-			   tda = #{num_of_buckets := N},
-			   buckets = undefined} = ESTAB]) ->
-    ?info("Creating EnterDB LevelDB TDA Server for Shard ~p",[Shard]),
-    List = [lists:concat([Shard, "_", Index]) || Index <- lists:seq(0, N-1)],
-    init([Start, ESTAB#enterdb_stab{buckets = List}]);
-init([Start, #enterdb_stab{shard = Shard,
-			   buckets = Buckets} = ESTAB]) ->
+init([Start, #{shard := Shard, buckets := Buckets} = ESTAB]) ->
     ?info("Starting EnterDB LevelDB TDA Server for Shard ~p",[Shard]),
     Options = [public,{read_concurrency, true},{keypos, #entry.key}],
     Tid = ets:new(bucket, Options),
@@ -285,7 +278,11 @@ init([Start, #enterdb_stab{shard = Shard,
     [{ok, _} = supervisor:start_child(enterdb_ldb_sup,
 	[lists:keyreplace(name, 1, ChildArgs, {name, Bucket})]) ||
 	Bucket <- Buckets],
-    {ok, #s{tid = Tid}}.
+    {ok, #s{tid = Tid}};
+init([Start, #{shard := Shard, tda := #{num_of_buckets := N}} = ESTAB]) ->
+    ?info("Creating EnterDB LevelDB TDA Server for Shard ~p",[Shard]),
+    List = [lists:concat([Shard, "_", Index]) || Index <- lists:seq(0, N-1)],
+    init([Start, ESTAB#{buckets => List}]).
 %%--------------------------------------------------------------------
 %% @private
 %% @doc

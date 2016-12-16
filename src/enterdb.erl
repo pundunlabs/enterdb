@@ -85,17 +85,24 @@ create_table(Name, KeyDef, Options)->
 					       {options, Options}]) of
 	{ok, EnterdbTab} ->
 	    %% Specific table options
-	    Type = proplists:get_value(type, Options, leveldb),
-	    DataModel = proplists:get_value(data_model, Options, array),
-	    Comp = proplists:get_value(comparator, Options, descending),
-	    Dist = proplists:get_value(distributed, Options, true),
-	    HashKey = enterdb_lib:get_hash_key_def(KeyDef, Options),
-	    NewTab = EnterdbTab#enterdb_table{comparator = Comp,
-					      type = Type,
-					      data_model = DataModel,
-					      distributed = Dist,
-					      hash_key = HashKey,
-					      path = enterdb_lib:get_db_path()},
+	    HashExclude = maps:get(hash_exclude, EnterdbTab, []),
+	    Ts = maps:get(time_series, EnterdbTab, false),
+	    HashKey = enterdb_lib:get_hash_key_def(KeyDef, HashExclude, Ts),
+	    Dist = maps:get(distributed, EnterdbTab, true),
+	    DataModel = maps:get(data_model, EnterdbTab, array),
+	    RF = maps:get(replication_factor, EnterdbTab, 1),
+	    HashingMethod = maps:get(hashing_method, EnterdbTab, uniform),
+	    DefaultNOS = enterdb_lib:get_num_of_local_shards(),
+	    NumberOfShards = maps:get(num_of_shards, EnterdbTab, DefaultNOS),
+	    Comparator = maps:get(comparator, EnterdbTab, descending),
+	    NewTab = EnterdbTab#{comparator => Comparator,
+				 distributed => Dist,
+				 data_model => DataModel,
+				 hash_key => HashKey,
+				 hashing_method => HashingMethod,
+				 num_of_shards => NumberOfShards,
+				 path => enterdb_lib:get_db_path(),
+				 replication_factor => RF},
 	    enterdb_lib:create_table(NewTab);
 	{error, Reason} ->
                 {error, Reason}
@@ -138,7 +145,7 @@ close_table(Name) ->
            Key :: key()) -> {ok, value()} | {error, Reason :: term()}.
 read(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
-	TD = #enterdb_table{distributed = Dist} ->
+	TD = #{distributed := Dist} ->
 	    DB_HashKey = enterdb_lib:make_key(TD, Key),
 	    read_(Tab, Key, DB_HashKey, Dist);
 	{error, _} = R ->
@@ -159,7 +166,7 @@ read_(_Tab, {error, _} = E, _, _) ->
     ok | {error, Reason :: term()}.
 read_from_disk(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
-	TD = #enterdb_table{} ->
+	TD = #{} ->
 	    DB_HashKey = enterdb_lib:make_key(TD, Key),
 	    read_from_disk_(Tab, Key, DB_HashKey);
 	{error, _} = R ->
@@ -183,28 +190,28 @@ do_read_from_disk(Shard, Key, DBKey) ->
     enterdb_lib:make_app_value(TD, do_read_from_disk(TD, Shard, Key, DBKey)).
 
 %% internal read based on table / shard type
-do_read(_TD = #enterdb_stab{type = leveldb}, ShardTab, _Key, DBKey) ->
+do_read(_TD = #{type := leveldb}, ShardTab, _Key, DBKey) ->
     enterdb_ldb_worker:read(ShardTab, DBKey);
-do_read(_TD = #enterdb_stab{type = leveldb_wrapped}, ShardTab, _Key, DBKey) ->
+do_read(_TD = #{type := leveldb_wrapped}, ShardTab, _Key, DBKey) ->
     enterdb_ldb_wrp:read(ShardTab, DBKey);
-do_read(_TD = #enterdb_stab{type = leveldb_tda,
-			    tda = Tda}, ShardTab, Key, DBKey) ->
+do_read(_TD = #{type := leveldb_tda,
+		tda := Tda}, ShardTab, Key, DBKey) ->
     enterdb_ldb_tda:read(ShardTab, Tda, Key, DBKey);
-do_read(_TD = #enterdb_stab{type = Type}, _ShardTab, _Key, _DBKey) ->
+do_read(_TD = #{type := Type}, _ShardTab, _Key, _DBKey) ->
     {error, {"read_not_supported", Type}};
 do_read({error, R}, _, _, _) ->
     {error, R}.
 
-do_read_from_disk(TD = #enterdb_stab{type = Type}, ShardTab, _Key, DBKey)
+do_read_from_disk(TD = #{type := Type}, ShardTab, _Key, DBKey)
     when Type =:= mem_leveldb ->
     enterdb_ldb_worker:read(TD, ShardTab, DBKey);
 
-do_read_from_disk(TD = #enterdb_stab{type = Type}, ShardTab, _Key, DBKey)
+do_read_from_disk(TD = #{type := Type}, ShardTab, _Key, DBKey)
     when Type =:= mem_leveldb_wrapped ->
     enterdb_ldb_wrp:read(TD, ShardTab, DBKey);
 
-do_read_from_disk(#enterdb_stab{type = mem_leveldb_tda,
-				tda = Tda},
+do_read_from_disk(#{type := mem_leveldb_tda,
+		    tda := Tda},
 		  ShardTab, Key, DBKey) ->
     enterdb_ldb_tda:read(ShardTab, Tda, Key, DBKey);
 
@@ -222,7 +229,7 @@ do_read_from_disk(TD, ShardTab, Key, DBKey) ->
             Columns :: [column()]) -> ok | {error, Reason :: term()}.
 write(Tab, Key, Columns) ->
     case enterdb_lib:get_tab_def(Tab) of
-	TD = #enterdb_table{distributed = Dist} ->
+	TD = #{distributed := Dist} ->
 	    DB_HashKeyAndCols = enterdb_lib:make_key_columns(TD, Key, Columns),
 	    write_(Tab, Key, DB_HashKeyAndCols, Dist);
 	{error, _} = R ->
@@ -266,7 +273,7 @@ do_write(Shard, Key, DBKey, DBColumns) ->
     TD = enterdb_lib:get_shard_def(Shard),
     do_write(TD, Shard, Key, DBKey, DBColumns).
 
-do_write(_TD = #enterdb_stab{type = Type}, ShardTab, Key, DBKey, DBColumns)
+do_write(_TD = #{type := Type}, ShardTab, Key, DBKey, DBColumns)
 when Type =:= mem_leveldb_wrapped ->
     case find_timestamp_in_key(Key) of
 	undefined ->
@@ -280,17 +287,15 @@ when Type =:= mem_leveldb_wrapped ->
 		    Res
 	    end
     end;
-do_write(#enterdb_stab{type = leveldb_wrapped,
-		       wrapper = Wrapper},
+do_write(#{type := leveldb_wrapped, wrapper := Wrapper},
 	 ShardTab, _Key, DBKey, DBColumns) ->
     enterdb_ldb_wrp:write(ShardTab, Wrapper, DBKey, DBColumns);
-do_write(#enterdb_stab{type = leveldb_tda,
-		       tda = Tda},
+do_write(#{type := leveldb_tda, tda := Tda},
 	 ShardTab, Key, DBKey, DBColumns) ->
     enterdb_ldb_tda:write(ShardTab, Tda, Key, DBKey, DBColumns);
-do_write(#enterdb_stab{type = leveldb}, ShardTab, _Key, DBKey, DBColumns) ->
+do_write(#{type := leveldb}, ShardTab, _Key, DBKey, DBColumns) ->
     enterdb_ldb_worker:write(ShardTab, DBKey, DBColumns);
-do_write(#enterdb_stab{type = mem_leveldb}, _Tab, _Key, _DBKey, _DBColumns) ->
+do_write(#{type := mem_leveldb}, _Tab, _Key, _DBKey, _DBColumns) ->
     ok;
 do_write({error, R}, _, _Key, _DBKey, _DBColumns) ->
     {error, R};
@@ -298,8 +303,7 @@ do_write(TD, Tab, Key, _DBKey, _DBColumns) ->
     ?debug("could not write ~p", [{TD, Tab, Key}]),
     {error, {bad_tab, {Tab, TD}}}.
 
-do_write_to_disk(#enterdb_stab{type = Type,
-			       wrapper = Wrapper},
+do_write_to_disk(#{type := Type, wrapper := Wrapper},
 		 ShardTab, _Key, DBKey, DBColumns)
     when Type =:= mem_leveldb_wrapped ->
     enterdb_ldb_wrp:write(ShardTab, Wrapper, DBKey, DBColumns);
@@ -328,9 +332,9 @@ do_write_to_disk(TD, ShardTab, Key, DBKey, DBColumns) ->
     ok | {error, Reason :: term()}.
 update(Tab, Key, Op) ->
     case enterdb_lib:get_tab_def(Tab) of
-	#enterdb_table{data_model = kv} ->
+	#{data_model := kv} ->
 	    {error, can_not_update_kv};
-	TD = #enterdb_table{distributed = Dist} ->
+	TD = #{distributed := Dist} ->
 	    DB_HashKey = enterdb_lib:make_key(TD, Key),
 	    update_(Tab, Key, DB_HashKey, Op, Dist);
 	{error, _} = R ->
@@ -358,7 +362,7 @@ do_update(Shard, Key, DBKey, Op) ->
     TD = enterdb_lib:get_shard_def(Shard),
     enterdb_lib:make_app_value(TD, do_update(TD, Shard, Key, DBKey, Op)).
 
-do_update(_TD = #enterdb_stab{type = Type}, Shard, Key, DBKey, Op)
+do_update(_TD = #{type := Type}, Shard, Key, DBKey, Op)
 when Type =:= mem_leveldb_wrapped ->
     case find_timestamp_in_key(Key) of
 	undefined ->
@@ -372,14 +376,14 @@ when Type =:= mem_leveldb_wrapped ->
 		    Res
 	    end
     end;
-do_update(TD = #enterdb_stab{type = leveldb_wrapped}, Shard, _Key, DBKey, Op) ->
+do_update(TD = #{type := leveldb_wrapped}, Shard, _Key, DBKey, Op) ->
     enterdb_ldb_wrp:update(TD, Shard, DBKey, Op);
-do_update(TD = #enterdb_stab{type = leveldb_tda},
+do_update(TD = #{type := leveldb_tda},
 	  ShardTab, Key, DBKey, Op) ->
     enterdb_ldb_tda:update(TD, ShardTab, Key, DBKey, Op);
-do_update(TD = #enterdb_stab{type = leveldb}, Shard, _Key, DBKey, Op) ->
+do_update(TD = #{type := leveldb}, Shard, _Key, DBKey, Op) ->
     enterdb_ldb_worker:update(TD, Shard, DBKey, Op);
-do_update(_TD = #enterdb_stab{type = mem_leveldb}, _Tab, _Key, _DBKey, _Op) ->
+do_update(_TD = #{type := mem_leveldb}, _Tab, _Key, _DBKey, _Op) ->
     ok;
 do_update({error, R}, _, _Key, _DBKey, _Op) ->
     {error, R};
@@ -397,7 +401,7 @@ do_update(TD, Tab, Key, _DBKey, _Op) ->
                             {error, Reason :: term()}.
 delete(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
-	TD = #enterdb_table{distributed = Dist} ->
+	TD = #{distributed := Dist} ->
 	    DB_HashKey = enterdb_lib:make_key(TD, Key),
 	    delete_(Tab, Key, DB_HashKey, Dist);
 	{error, _} = R ->
@@ -418,14 +422,13 @@ do_delete(Shard, Key, DBKey) ->
     do_delete(TD, Shard, Key, DBKey).
 
 %% internal read based on table / shard type
-do_delete(_TD = #enterdb_stab{type = leveldb}, ShardTab, _Key, DBKey) ->
+do_delete(_TD = #{type := leveldb}, ShardTab, _Key, DBKey) ->
     enterdb_ldb_worker:delete(ShardTab, DBKey);
-do_delete(_TD = #enterdb_stab{type = leveldb_wrapped}, ShardTab, _Key, DBKey) ->
+do_delete(_TD = #{type := leveldb_wrapped}, ShardTab, _Key, DBKey) ->
     enterdb_ldb_wrp:delete(ShardTab, DBKey);
-do_delete(_TD = #enterdb_stab{type = leveldb_tda,
-			      tda = Tda}, ShardTab, Key, DBKey) ->
+do_delete(_TD = #{type := leveldb_tda, tda := Tda}, ShardTab, Key, DBKey) ->
     enterdb_ldb_tda:delete(ShardTab, Tda, Key, DBKey);
-do_delete(_TD = #enterdb_stab{type = Type}, _ShardTab, _Key, _DBKey) ->
+do_delete(_TD = #{type := Type}, _ShardTab, _Key, _DBKey) ->
     {error, {delete_not_supported, Type}};
 do_delete({error, R}, _, _, _) ->
     {error, R}.
@@ -443,7 +446,7 @@ do_delete({error, R}, _, _, _) ->
     {error, Reason :: term()}.
 read_range(Name, {StartKey, StopKey}, Chunk) ->
     case enterdb_lib:get_tab_def(Name) of
-	Tab = #enterdb_table{} ->
+	Tab = #{} ->
 	    DBStartKey = enterdb_lib:make_key(Tab, StartKey),
 	    DBStopKey = enterdb_lib:make_key(Tab, StopKey),
 	    read_range_(Tab, DBStartKey, DBStopKey, Chunk);
@@ -453,14 +456,14 @@ read_range(Name, {StartKey, StopKey}, Chunk) ->
 read_range(_, Range, _) ->
     {error, {badarg, Range}}.
 
--spec read_range_(Tab :: #enterdb_table{},
+-spec read_range_(Tab :: #{},
 		  DBStartKey :: {ok, binary(), binary()},
 		  DBStopKey :: {ok, binary(), binary()},
 		  Chunk :: pos_integer()) ->
     {ok, [kvp()], Cont :: complete | key()} |
     {error, Reason :: term()}.
 read_range_(Tab, {ok, DBStartK, _}, {ok, DBStopK, _}, Chunk) ->
-    Shards = gb_hash:get_nodes(Tab#enterdb_table.name),
+    Shards = gb_hash:get_nodes(maps:get(name,Tab)),
     enterdb_lib:read_range_on_shards(Shards, Tab, {DBStartK, DBStopK}, Chunk);
 read_range_(_Tab, {error, _} = E, _, _N) ->
     E;
@@ -479,7 +482,7 @@ read_range_(_Tab, _, {error, _} = E, _N) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
 read_range_n(Name, StartKey, N) ->
     case enterdb_lib:get_tab_def(Name) of
-	Tab = #enterdb_table{} ->
+	Tab = #{}->
 	    DBKey = enterdb_lib:make_key(Tab, StartKey),
 	    read_range_n_(Tab, DBKey, N);
 	{error, _} = R ->
@@ -487,12 +490,12 @@ read_range_n(Name, StartKey, N) ->
     end.
 
 
--spec read_range_n_(Tab :: #enterdb_table{},
+-spec read_range_n_(Tab :: #{},
 		    {ok, DBKey :: binary(), binary()},
 		    N :: pos_integer()) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
 read_range_n_(Tab, {ok, DBKey, _}, N) ->
-    Shards = gb_hash:get_nodes(Tab#enterdb_table.name),
+    Shards = gb_hash:get_nodes(maps:get(name, Tab)),
     enterdb_lib:read_range_n_on_shards(Shards, Tab, DBKey, N);
 read_range_n_(_Tab, {error, _} = E, _N) ->
     E.
@@ -523,25 +526,13 @@ delete_table(Name) ->
 table_info(Name) ->
     case mnesia:dirty_read(enterdb_table, Name) of
 	[#enterdb_table{name = Name,
-			path = _Path,
-			key = KeyDefinition,
-			column_mapper = Mapper,
-			comparator = Comp,
-			type = Type,
-			data_model = DataModel,
-			options = Options,
-			shards = Shards,
-			distributed = Dist
-			}] ->
-	    SizePL = get_size_param([size], Options, Shards, Dist),
-	    Rest = SizePL ++ Options,
-	    {ok, [{name, Name},
-		  {key, KeyDefinition},
-		  {column_mapper, Mapper},
-		  {comparator, Comp},
-		  {type, Type},
-		  {data_model, DataModel},
-		  {distributed, Dist} | Rest]};
+			map = Map}] ->
+	    Type = maps:get(type, Map),
+	    Dist = maps:get(distributed, Map),
+	    Shards = maps:get(shards, Map),
+	    SizePL = get_size_param([size], Type, Shards, Dist),
+	    Info = SizePL ++ maps:to_list(Map),
+	    {ok, lists:keysort(1, Info)};
 	[] ->
 	    {error, "no_table"}
     end.
@@ -556,36 +547,21 @@ table_info(Name) ->
 table_info(Name, Parameters) ->
     case mnesia:dirty_read(enterdb_table, Name) of
 	[#enterdb_table{name = Name,
-			path = Path,
-			key = KeyDefinition,
-			column_mapper = Mapper,
-			comparator = Comp,
-			type = Type,
-			data_model = DataModel,
-			options = Options,
-			shards = Shards,
-			distributed = Dist
-			}] ->
-	    IList = [{name, Name},
-		    {path, Path},
-		    {key, KeyDefinition},
-		    {column_mapper, Mapper},
-		    {comparator, Comp},
-		    {type, Type},
-		    {data_model, DataModel},
-		    {shards, Shards},
-		    {distributed, Dist} | Options],
-	    SizePL = get_size_param(Parameters, Options, Shards, Dist),
-	    List = SizePL ++ IList,
-	    {ok, [ proplists:lookup(P, List) || P <- Parameters]};
+			map = Map}] ->
+	    Type = maps:get(type, Map),
+	    Dist = maps:get(distributed, Map),
+	    Shards = maps:get(shards, Map),
+	    SizePL = get_size_param(Parameters, Type, Shards, Dist),
+	    List = SizePL ++ maps:to_list(Map),
+	    Info = [ proplists:lookup(P, List) || P <- Parameters],
+	    {ok, lists:keysort(1, Info)};
 	[] ->
 	    {error, "no_table"}
     end.
 
-get_size_param(Parameters, Options, Shards, Dist) ->
+get_size_param(Parameters, Type, Shards, Dist) ->
     case lists:member(size, Parameters) of
 	true ->
-	    Type = proplists:get_value(type, Options),
 	    case enterdb_lib:approximate_size(Type, Shards, Dist) of
 		{error, _Reason} ->
 		    [];

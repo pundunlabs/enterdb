@@ -87,7 +87,7 @@
 			 {mem_wrapper, {bucket_span(), num_buckets()}} |
 			 {comparator, comparator()} |
 			 {time_series, boolean()} |
-			 {shards, pos_integer()} |
+			 {num_of_shards, pos_integer()} |
 			 {distributed, boolean()} |
 			 {replication_factor, pos_integer()} |
 			 {hash_exclude, [string()]} |
@@ -104,36 +104,13 @@
 -type shards() :: [{shard_name(), map()}] |
 		  [shard_name()].
 
--type it() :: pid().
-
--record(enterdb_shard, {name :: shard_name(),
-			node :: atom()}).
+-type it() :: binary().
 
 -record(enterdb_table, {name :: string(),
-                        path :: string(),
-                        key :: [string()],
-                        column_mapper :: module(),
-			comparator :: comparator(),
-                        type	:: type(),
-			data_model :: data_model(),
-			distributed :: boolean(),
-			hash_key :: [string()],
-			options :: [table_option()],
-                        shards :: shards(),
-			redistributing :: boolean()}).
-%% enterdb shard tab
--record(enterdb_stab, {shard :: shard_name(),
-		       name :: string(),
-		       type :: type(),
-		       key :: [string()],
-		       column_mapper :: module(),
-		       comparator :: comparator(),
-		       data_model :: data_model(),
-		       distributed :: boolean(),
-		       wrapper :: wrapper(),
-		       tda :: tda(),
-		       buckets :: [shard_name()],
-		       db_path :: string()}).
+			map :: #{}}).
+
+-record(enterdb_stab, {shard :: string(),
+		       map :: #{}}).
 
 -record(enterdb_ldb_resource, {name :: shard_name(),
 			       resource :: binary()
