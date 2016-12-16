@@ -72,6 +72,7 @@
 
 -type tda() :: #{num_of_buckets := pos_integer(),
 		 time_margin := time_margin(),
+		 ts_field := string(),
 		 precision := time_unit()}.
 
 %% bucket_span and num_buckets are used by mem_wrapper.

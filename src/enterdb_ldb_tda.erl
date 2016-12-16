@@ -74,8 +74,8 @@ start_link(Args) ->
 	   Key :: key(),
 	   DBKey :: binary()) ->
     {ok, Value :: term()} | {error, Reason :: term()}.
-read(Shard, Tda, Key, DBKey) ->
-    read_(Shard, Tda, find_timestamp_in_key(Key), DBKey).
+read(Shard, Tda = #{ts_field := KF}, Key, DBKey) ->
+    read_(Shard, Tda, find_timestamp_in_key(KF, Key), DBKey).
 
 -spec read_(Shard :: string(),
 	    Tda :: tda(),
@@ -101,8 +101,8 @@ read_(Shard, #{num_of_buckets := S,
             DBKey :: binary(),
             DBColumns :: binary()) ->
     ok | {error, Reason :: term()}.
-write(Shard, Tda, Key, DBKey, DBColumns) ->
-    write_(Shard, Tda, find_timestamp_in_key(Key), DBKey, DBColumns).
+write(Shard, Tda = #{ts_field := KF}, Key, DBKey, DBColumns) ->
+    write_(Shard, Tda, find_timestamp_in_key(KF, Key), DBKey, DBColumns).
 
 write_(Shard, #{num_of_buckets := S,
 	       time_margin := {_, _} = TM,
@@ -124,8 +124,8 @@ write_(Shard, #{num_of_buckets := S,
              DBKey :: binary(),
              Op :: update_op()) ->
     ok | {error, Reason :: term()}.
-update(TD, Key, DBKey, Op) ->
-    update_(TD, find_timestamp_in_key(Key), DBKey, Op).
+update(TD = #{tda :=  #{ts_field := KF}}, Key, DBKey, Op) ->
+    update_(TD, find_timestamp_in_key(KF, Key), DBKey, Op).
 
 -spec update_(#{},
 	      Ts :: integer(),
@@ -157,8 +157,8 @@ update_(#{shard := Shard,
 	     Key :: key(),
 	     DBKey :: binary()) ->
     ok | {error, Reason :: term()}.
-delete(Shard, Tda, Key, DBKey) ->
-    delete_(Shard, Tda, find_timestamp_in_key(Key), DBKey).
+delete(Shard, Tda = #{ts_field := KF}, Key, DBKey) ->
+    delete_(Shard, Tda, find_timestamp_in_key(KF, Key), DBKey).
 
 delete_(Shard, #{num_of_buckets := S,
 		 time_margin := {_, _} = TM,
@@ -482,14 +482,15 @@ unique([{AK,AV}, {AK,_AVS} | Rest], Acc) ->
 unique([{AK,AV}, {BK,BV} | Rest], Acc) ->
     unique([{BK,BV} | Rest], [{AK,AV} | Acc]).
 
--spec find_timestamp_in_key(Key :: [{string(), term()}]) ->
+-spec find_timestamp_in_key(TsField :: string(),
+			    Key :: [{string(), term()}]) ->
     undefined | {ok, Ts :: timestamp()}.
-find_timestamp_in_key([])->
+find_timestamp_in_key(_, [])->
     undefined;
-find_timestamp_in_key([{"ts", Ts}|_Rest]) ->
+find_timestamp_in_key(TsField, [{TsField, Ts}|_Rest]) ->
     Ts;
-find_timestamp_in_key([_|Rest]) ->
-    find_timestamp_in_key(Rest).
+find_timestamp_in_key(TsField, [_|Rest]) ->
+    find_timestamp_in_key(TsField, Rest).
 
 -spec get_nanoseconds(TimeMargin :: time_margin()) ->
     pos_integer() | {error, Reason :: term()}.

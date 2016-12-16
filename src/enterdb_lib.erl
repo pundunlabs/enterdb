@@ -376,7 +376,10 @@ verify_table_options([]) ->
     ok | {error, Reason :: term()}.
 verify_tda(#{num_of_buckets := N,
 	     time_margin := TimeMargin,
-	     precision := Unit} = Tda) when is_integer(N), N > 2 ->
+	     ts_field := TsField,
+	     precision := Unit} = Tda) when is_integer(N),
+					    N > 2,
+					    is_list(TsField) ->
     case (valid_time_margin(TimeMargin) and valid_tda(Unit)) of
 	true -> ok;
 	false -> {error, {Tda, "invalid_option"}}
