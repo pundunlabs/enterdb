@@ -59,7 +59,8 @@
 	 delete_shard/1,
 	 reduce_cont/2,
 	 cut_kvl_at/2,
-	 comparator_to_dir/1]).
+	 comparator_to_dir/1,
+	 get_ldb_worker_args/2]).
 
 %% Inter-Node API
 -export([do_create_shards/1,
@@ -299,9 +300,11 @@ when is_integer(RF), RF > 0 ->
 verify_table_options([{type, Type}|Rest])
     when
 	 Type =:= leveldb;
-         %Type =:= ets_leveldb;
-	 Type =:= leveldb_wrapped
-	 %Type =:= ets_levedb_wrapped
+         %Type =:= mem_leveldb;
+	 Type =:= leveldb_wrapped;
+	 %Type =:= mem_levedb_wrapped;
+	 Type =:= leveldb_tda
+	 %Type =:= mem_leveldb_tda
     ->
 	verify_table_options(Rest);
 
@@ -313,6 +316,15 @@ verify_table_options([{data_model, DM}|Rest])
         DM == map
     ->
 	verify_table_options(Rest);
+
+%% Tda details for leveldb parts
+verify_table_options([{tda, Tda} | Rest]) ->
+    case verify_tda(Tda) of
+        ok ->
+	    verify_table_options(Rest);
+        {error, Reason} ->
+	    {error, Reason}
+    end;
 
 %% Wrapping details for leveldb parts
 verify_table_options([{wrapper, Wrapper} | Rest]) ->
@@ -361,20 +373,40 @@ verify_table_options([Elem|_])->
 verify_table_options([]) ->
     ok.
 
--spec verify_wrapper(Wrapper :: #enterdb_wrapper{}) ->
+-spec verify_tda(Tda :: #{}) ->
     ok | {error, Reason :: term()}.
-verify_wrapper(#enterdb_wrapper{time_margin = undefined,
-				size_margin = undefined} = Wrp) ->
-    {error, {Wrp, "invalid_option"}};
-verify_wrapper(#enterdb_wrapper{num_of_buckets = NumOfBuckets,
-				time_margin = TimeMargin,
-				size_margin = SizeMargin} = Wrp)
-    when is_integer(NumOfBuckets), NumOfBuckets > 2 ->
-    TM = valid_time_margin(TimeMargin),
-    SM = valid_size_margin(SizeMargin),
-    case (TM or SM) of
+verify_tda(#{num_of_buckets := N,
+	     time_margin := TimeMargin,
+	     precision := Unit} = Tda) when is_integer(N), N > 2 ->
+    case (valid_time_margin(TimeMargin) and valid_tda(Unit)) of
 	true -> ok;
-	false -> {error, {Wrp, "invalid_option"}}
+	false -> {error, {Tda, "invalid_option"}}
+    end;
+verify_tda(Tda) ->
+    {error, {Tda, "invalid_option"}}.
+
+
+-spec verify_wrapper(Wrapper :: #{}) ->
+    ok | {error, Reason :: term()}.
+verify_wrapper(#{num_of_buckets := N} = Wrp) when is_integer(N), N > 2 ->
+    case Wrp of
+	#{time_margin := TimeMargin, size_margin := SizeMargin} ->
+	    TM = valid_time_margin(TimeMargin),
+	    SM = valid_size_margin(SizeMargin),
+	    case (TM or SM) of
+		true -> ok;
+		false -> {error, {Wrp, "invalid_option"}}
+	    end;
+	#{time_margin := TimeMargin} ->
+	    case valid_time_margin(TimeMargin) of
+		true -> ok;
+		false -> {error, {Wrp, "invalid_option"}}
+	    end;
+	#{size_margin := TimeMargin} ->
+	    case valid_size_margin(TimeMargin) of
+		true -> ok;
+		false -> {error, {Wrp, "invalid_option"}}
+	    end
     end;
 verify_wrapper(Elem)->
     {error, {Elem, "invalid_option"}}.
@@ -395,6 +427,16 @@ valid_time_margin(_) ->
 valid_size_margin({megabytes, Size}) when is_integer(Size), Size > 0 ->
     true;
 valid_size_margin(_) ->
+    false.
+
+-spec valid_tda(SizeMargin :: time_unit()) ->
+    true | false.
+valid_tda(Unit) when Unit == second;
+		     Unit == millisecond;
+		     Unit == microsecond;
+		     Unit == nanosecond ->
+    true;
+valid_tda(_) ->
     false.
 
 -spec check_if_table_exists(Name :: string()) ->
@@ -528,13 +570,9 @@ do_create_shards(#enterdb_table{name = Name,
     LocalShards = find_local_shards(Shards),
     Mapper = get_column_mapper(Name, DataModel),
     NewEDBT = EDBT#enterdb_table{column_mapper = Mapper},
+    write_enterdb_table(NewEDBT),
     ResL = [do_create_shard(Shard, NewEDBT) || Shard <- LocalShards],
-    case check_error_response(lists:usort(ResL)) of
-	ok ->
-	    write_enterdb_table(NewEDBT);
-	Else ->
-	    Else
-    end.
+    check_error_response(lists:usort(ResL)).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -549,7 +587,7 @@ do_create_shard(Shard, EDBT) ->
     Options = EDBT#enterdb_table.options,
     DataModel = EDBT#enterdb_table.data_model,
     Wrapper = proplists:get_value(wrapper, Options),
-    Buckets = get_buckets(Shard, EDBT#enterdb_table.type, Wrapper),
+    Tda = proplists:get_value(tda, Options),
     ESTAB = #enterdb_stab{shard = Shard,
 			  name = EDBT#enterdb_table.name,
 			  type = EDBT#enterdb_table.type,
@@ -559,24 +597,27 @@ do_create_shard(Shard, EDBT) ->
 			  data_model = DataModel,
 			  distributed = EDBT#enterdb_table.distributed,
 			  wrapper = Wrapper,
-			  buckets = Buckets,
+			  tda = Tda,
 			  db_path = DB_Path},
     write_shard_table(ESTAB),
     do_create_shard_type(ESTAB).
 
 -spec do_create_shard_type(ESTAB :: #enterdb_stab{}) ->
-    ok.
+    ok | {error, Reason :: term()}.
 do_create_shard_type(#enterdb_stab{type = leveldb} = ESTAB) ->
     create_leveldb_shard(ESTAB);
 
 do_create_shard_type(#enterdb_stab{type = leveldb_wrapped} = ESTAB) ->
     create_leveldb_wrp_shard(ESTAB);
 
-do_create_shard_type(#enterdb_stab{type = ets_leveldb} = ESTAB) ->
+do_create_shard_type(#enterdb_stab{type = leveldb_tda} = ESTAB) ->
+    create_leveldb_tda_shard(ESTAB);
+
+do_create_shard_type(#enterdb_stab{type = mem_leveldb} = ESTAB) ->
     %% TODO: init LRU-Cache here as well
     create_leveldb_shard(ESTAB);
 
-do_create_shard_type(#enterdb_stab{type = ets_leveldb_wrapped} = ESTAB)->
+do_create_shard_type(#enterdb_stab{type = mem_leveldb_wrapped} = ESTAB)->
     %% TODO: init wrapping LRU-Cache here as well
     create_leveldb_shard(ESTAB).
 
@@ -602,7 +643,9 @@ do_open_shard(#enterdb_stab{type = leveldb} = EDBT) ->
     open_leveldb_shard(EDBT);
 do_open_shard(#enterdb_stab{type = leveldb_wrapped} = EDBT) ->
     open_leveldb_wrp_shard(EDBT);
-do_open_shard(#enterdb_stab{type = ets_leveldb} = EDBT) ->
+do_open_shard(#enterdb_stab{type = leveldb_tda} = EDBT) ->
+    open_leveldb_tda_shard(EDBT);
+do_open_shard(#enterdb_stab{type = mem_leveldb} = EDBT) ->
     %% TODO: init LRU-Cache here as well
     open_leveldb_shard(EDBT);
 do_open_shard(Else)->
@@ -629,6 +672,9 @@ do_close_shard(#enterdb_stab{shard=Shard,
 do_close_shard(#enterdb_stab{shard=Shard,
 			     type = leveldb_wrapped})->
     enterdb_ldb_wrp:close_shard(Shard);
+do_close_shard(#enterdb_stab{shard=Shard,
+			     type = leveldb_tda})->
+    enterdb_ldb_tda:close_shard(Shard);
 do_close_shard(Else)->
     ?debug("enterdb:close_table: {type, ~p} not supported", [Else]),
     {error, "type_not_supported"}.
@@ -638,13 +684,7 @@ do_close_shard(Else)->
 -spec create_leveldb_shard(ESTAB :: #enterdb_stab{}) ->
     ok.
 create_leveldb_shard(ESTAB) ->
-    Options = [{comparator, ESTAB#enterdb_stab.comparator},
-	       {create_if_missing, true},
-	       {error_if_exists, true}],
-    ChildArgs = [{name, ESTAB#enterdb_stab.shard},
-		 {db_path, ESTAB#enterdb_stab.db_path},
-		 {subdir, ESTAB#enterdb_stab.name},
-                 {options, Options}, {tab_rec, ESTAB}],
+    ChildArgs = get_ldb_worker_args(create, ESTAB),
     {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
     ok.
 
@@ -653,70 +693,41 @@ create_leveldb_shard(ESTAB) ->
 -spec open_leveldb_shard(ESTAB :: #enterdb_stab{}) ->
     ok.
 open_leveldb_shard(ESTAB) ->
-    Options = [{comparator, ESTAB#enterdb_stab.comparator},
-	       {create_if_missing, false},
-	       {error_if_exists, false}],
-    ChildArgs = [{name, ESTAB#enterdb_stab.shard},
-		 {db_path, ESTAB#enterdb_stab.db_path},
-		 {subdir, ESTAB#enterdb_stab.name},
-                 {options, Options}, {tab_rec, ESTAB}],
+    ChildArgs = get_ldb_worker_args(open, ESTAB),
     {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
     ok.
 
 -spec create_leveldb_wrp_shard(ESTAB :: #enterdb_stab{}) ->
-    ok.
-create_leveldb_wrp_shard(#enterdb_stab{wrapper = undefined} = ESTAB) ->
-    create_leveldb_shard(ESTAB);
-create_leveldb_wrp_shard(#enterdb_stab{shard = Shard,
-				       wrapper = Wrapper,
-				       buckets = Buckets} = ESTAB) ->
-
-    Options = [{comparator, ESTAB#enterdb_stab.comparator},
-	       {create_if_missing, true},
-	       {error_if_exists, true}],
-    ChildArgs = [{db_path, ESTAB#enterdb_stab.db_path},
-                 {subdir, ESTAB#enterdb_stab.name},
-                 {options, Options}, {tab_rec, ESTAB}],
-
-    ok = enterdb_ldb_wrp:init_buckets(Shard, Buckets, Wrapper),
-    [{ok, _Pid} = supervisor:start_child(enterdb_ldb_sup,
-					 [[{name, Bucket} | ChildArgs]]) ||
-	Bucket <- Buckets],
+    ok | {error, Reason :: term()}.
+create_leveldb_wrp_shard(#enterdb_stab{wrapper = undefined}) ->
+    {error, "wrapper_not_defined"};
+create_leveldb_wrp_shard(ESTAB) ->
+    Args = [create, ESTAB],
+    {ok, _Pid} = supervisor:start_child(enterdb_wrp_sup, [Args]),
     ok.
 
 -spec open_leveldb_wrp_shard(ESTAB :: #enterdb_stab{}) ->
     ok.
-open_leveldb_wrp_shard(#enterdb_stab{wrapper = undefined} = ESTAB) ->
-    open_leveldb_shard(ESTAB);
-open_leveldb_wrp_shard(#enterdb_stab{shard = Shard,
-				     wrapper = Wrapper,
-				     buckets = Buckets} = ESTAB) ->
-    Options = [{comparator, ESTAB#enterdb_stab.comparator},
-	       {create_if_missing, false},
-	       {error_if_exists, false}],
-    ChildArgs = [{db_path, ESTAB#enterdb_stab.db_path},
-                 {subdir, ESTAB#enterdb_stab.name},
-                 {options, Options}, {tab_rec, ESTAB}],
-
-    ok = enterdb_ldb_wrp:init_buckets(Shard, Buckets, Wrapper),
-    [{ok, _Pid} = supervisor:start_child(enterdb_ldb_sup,
-					 [[{name, Bucket} | ChildArgs]]) ||
-	Bucket <- Buckets],
+open_leveldb_wrp_shard(ESTAB) ->
+    Args = [open, ESTAB],
+    {ok, _Pid} = supervisor:start_child(enterdb_wrp_sup, [Args]),
     ok.
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Creates bucket names for a wrapped shard.
-%% @end
-%%--------------------------------------------------------------------
--spec get_buckets(Shard :: shard_name(),
-		  Type :: type(),
-		  Wrapper :: #enterdb_wrapper{}) ->
-    [shard_name()] | undefined.
-get_buckets(Shard, leveldb_wrapped, Wrapper) ->
-    enterdb_ldb_wrp:create_bucket_list(Shard, Wrapper);
-get_buckets(_Shard, _, _Wrapper) ->
-    undefined.
+-spec create_leveldb_tda_shard(ESTAB :: #enterdb_stab{}) ->
+    ok | {error, Reason :: term()}.
+create_leveldb_tda_shard(#enterdb_stab{tda = undefined}) ->
+    {error, "tda_not_defined"};
+create_leveldb_tda_shard(ESTAB) ->
+    Args = [create, ESTAB],
+    {ok, _Pid} = supervisor:start_child(enterdb_tda_sup, [Args]),
+    ok.
+
+-spec open_leveldb_tda_shard(ESTAB :: #enterdb_stab{}) ->
+    ok.
+open_leveldb_tda_shard(ESTAB) ->
+    Args = [open, ESTAB],
+    {ok, _Pid} = supervisor:start_child(enterdb_tda_sup, [Args]),
+    ok.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -891,37 +902,32 @@ delete_shards([]) ->
 
 delete_shard(Shard) ->
     SD = get_shard_def(Shard),
-    ok = delete_shard_help(SD),
+    delete_shard_help(SD),
     mnesia:dirty_delete(enterdb_stab, Shard).
 
 %% add delete per type
 delete_shard_help(ESTAB = #enterdb_stab{type = leveldb}) ->
-    Options = [{comparator, ESTAB#enterdb_stab.comparator},
-	       {create_if_missing, false},
-	       {error_if_exists, false}],
-    Args = [{name, ESTAB#enterdb_stab.shard},
-	    {db_path, ESTAB#enterdb_stab.db_path},
-	    {subdir, ESTAB#enterdb_stab.name},
-            {options, Options}, {tab_rec, ESTAB}],
+    Args = get_ldb_worker_args(delete, ESTAB),
     enterdb_ldb_worker:delete_db(Args);
 delete_shard_help(ESTAB = #enterdb_stab{type = leveldb_wrapped}) ->
-    Options = [{comparator, ESTAB#enterdb_stab.comparator},
-	       {create_if_missing, false},
-	       {error_if_exists, false}],
-    Args = [{name, ESTAB#enterdb_stab.shard},
-	    {db_path, ESTAB#enterdb_stab.db_path},
-	    {subdir, ESTAB#enterdb_stab.name},
-            {options, Options}, {tab_rec, ESTAB}],
+    Args = get_ldb_worker_args(delete, ESTAB),
     enterdb_ldb_wrp:delete_shard(Args);
+delete_shard_help(ESTAB = #enterdb_stab{type = leveldb_tda}) ->
+    Args = get_ldb_worker_args(delete, ESTAB),
+    enterdb_ldb_tda:delete_shard(Args);
 delete_shard_help({error, Reason}) ->
     {error, Reason}.
 
 cleanup_table(Name) ->
-    Tab = enterdb_lib:get_tab_def(Name),
-    FullPath = filename:join([Tab#enterdb_table.path, Name]),
-    file:del_dir(FullPath),
-    gb_reg:purge(Tab#enterdb_table.column_mapper),
-    mnesia:dirty_delete(enterdb_table, Name),
+    case enterdb_lib:get_tab_def(Name) of
+	{error,"no_table"} ->
+	    ok;
+	Tab ->
+	    FullPath = filename:join([Tab#enterdb_table.path, Name]),
+	    file:del_dir(FullPath),
+	    gb_reg:purge(Tab#enterdb_table.column_mapper),
+	    mnesia:dirty_delete(enterdb_table, Name)
+    end,
     gb_hash:delete_ring(Name).
 
 %%--------------------------------------------------------------------
@@ -945,19 +951,17 @@ read_range_on_shards({ok, Shards},
     {CallbackMod, TrailingArgs} =
 	case Type of
 	    leveldb -> {enterdb_ldb_worker, []};
-	    ets_leveldb -> {enterdb_ldb_worker, []};
+	    mem_leveldb -> {enterdb_ldb_worker, []};
 	    leveldb_wrapped -> {enterdb_ldb_wrp, [Dir]};
-	    ets_leveldb_wrapped -> {enterdb_ldb_worker, []}
+	    leveldb_tda -> {enterdb_ldb_tda, [Dir]};
+	    mem_leveldb_wrapped -> {enterdb_ldb_worker, []}
 	end,
-
     BaseArgs = [RangeDB, Chunk | TrailingArgs],
     Req = {CallbackMod, read_range_binary, BaseArgs},
     ResL = map_shards(Dist, Req, Shards),
     {KVLs, Conts} =  unzip_range_result(ResL, []),
-
     ContKeys = [K || K <- Conts, K =/= complete],
     {ok, KVL, ContKey} = merge_and_cut_kvls(Dir, KeyDef, KVLs, ContKeys),
-
     {ok, ResultKVL} = make_app_kvp(Tab, KVL),
     {ok, ResultKVL, ContKey}.
 
@@ -1042,9 +1046,10 @@ read_range_n_on_shards({ok, Shards},
     {CallbackMod, TrailingArgs} =
 	case Type of
 	    leveldb -> {enterdb_ldb_worker, []};
-	    ets_leveldb -> {enterdb_ldb_worker, []};
+	    mem_leveldb -> {enterdb_ldb_worker, []};
 	    leveldb_wrapped -> {enterdb_ldb_wrp, [Dir]};
-	    ets_leveldb_wrapped -> {enterdb_ldb_worker, []}
+	    leveldb_tda -> {enterdb_ldb_tda, [Dir]};
+	    mem_leveldb_wrapped -> {enterdb_ldb_worker, []}
 	end,
     %%To be more efficient we can read less number of records from each shard.
     %%NofShards = length(Shards),
@@ -1053,9 +1058,7 @@ read_range_n_on_shards({ok, Shards},
     BaseArgs = [DBStartKey, N | TrailingArgs],
     Req = {CallbackMod, read_range_n_binary, BaseArgs},
     ResL = map_shards(Dist, Req, Shards),
-
     KVLs = [begin {ok, R} = Res, R end || Res <- ResL],
-    ?debug("KVLs: ~p",[KVLs]),
     {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls(Dir, KVLs),
     N_KVP = lists:sublist(MergedKVL, N),
     make_app_kvp(Tab, N_KVP).
@@ -1597,3 +1600,31 @@ do_yield(Pid, Timeout) ->
         after Timeout ->
             timeout
     end. 
+
+-spec get_ldb_worker_args(Start :: create | open,
+			  ESTAB :: #enterdb_stab{}) ->
+    [term()].
+get_ldb_worker_args(create, ESTAB) ->
+    Options = [{comparator, ESTAB#enterdb_stab.comparator},
+	       {create_if_missing, true},
+	       {error_if_exists, true}],
+    [{name, ESTAB#enterdb_stab.shard},
+     {db_path, ESTAB#enterdb_stab.db_path},
+     {subdir, ESTAB#enterdb_stab.name},
+     {options, Options}, {tab_rec, ESTAB}];
+get_ldb_worker_args(open, ESTAB) ->
+    Options = [{comparator, ESTAB#enterdb_stab.comparator},
+	       {create_if_missing, false},
+	       {error_if_exists, false}],
+    [{name, ESTAB#enterdb_stab.shard},
+     {db_path, ESTAB#enterdb_stab.db_path},
+     {subdir, ESTAB#enterdb_stab.name},
+     {options, Options}, {tab_rec, ESTAB}];
+get_ldb_worker_args(delete, ESTAB) ->
+    Options = [{comparator, ESTAB#enterdb_stab.comparator},
+	       {create_if_missing, false},
+	       {error_if_exists, false}],
+    [{name, ESTAB#enterdb_stab.shard},
+     {db_path, ESTAB#enterdb_stab.db_path},
+     {subdir, ESTAB#enterdb_stab.name},
+     {options, Options}, {tab_rec, ESTAB}].

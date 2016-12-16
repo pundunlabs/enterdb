@@ -43,9 +43,11 @@
 		     ].
 
 -type type() :: leveldb |
-		ets_leveldb |
+		mem_leveldb |
 		leveldb_wrapped |
-		ets_leveldb_wrapped.
+		mem_leveldb_wrapped |
+		leveldb_tda |
+		mem_leveldb_tda.
 
 -type data_model() :: kv | array | map.
 
@@ -55,16 +57,22 @@
 		       undefined.
 
 -type size_margin() :: {megabytes, pos_integer()} |
+		       {gigabytes, pos_integer()} |
 		       undefined.
+
+-type time_unit() :: second | millisecond | microsecond | nanosecond.
 
 -type comparator() :: ascending | descending.
 
 -type hashing_method() :: virtual_nodes | consistent | uniform | rendezvous.
 
--record(enterdb_wrapper, {num_of_buckets :: pos_integer(),
-			  time_margin :: time_margin(),
-			  size_margin :: size_margin()
-			 }).
+-type wrapper() :: #{num_of_buckets := pos_integer(),
+		     time_margin => time_margin(),
+		     size_margin => size_margin()}.
+
+-type tda() :: #{num_of_buckets := pos_integer(),
+		 time_margin := time_margin(),
+		 precision := time_unit()}.
 
 %% bucket_span and num_buckets are used by mem_wrapper.
 %% We keep these seperate since the design of disk based wrapping
@@ -75,7 +83,7 @@
 
 -type table_option() :: [{type, type()} |
                          {data_model, data_model()} |
-			 {wrapper, #enterdb_wrapper{}} |
+			 {wrapper, wrapper()} |
 			 {mem_wrapper, {bucket_span(), num_buckets()}} |
 			 {comparator, comparator()} |
 			 {time_series, boolean()} |
@@ -83,20 +91,20 @@
 			 {distributed, boolean()} |
 			 {replication_factor, pos_integer()} |
 			 {hash_exclude, [string()]} |
-			 {hashing_method, hashing_method()}].
+			 {hashing_method, hashing_method()} |
+			 {tda, tda()}].
 
 -type timestamp() :: {pos_integer(),  %% mega seconds &
 		      pos_integer(),  %% seconds &
 		      pos_integer()}. %% micro seconds since start of epoch(UNIX)
-
--type op() :: first | last | {seek, key()} | next | prev.
--type it() :: pid().
 
 -type node_name() :: atom().
 -type shard_name() :: string().
 
 -type shards() :: [{shard_name(), map()}] |
 		  [shard_name()].
+
+-type it() :: pid().
 
 -record(enterdb_shard, {name :: shard_name(),
 			node :: atom()}).
@@ -122,7 +130,8 @@
 		       comparator :: comparator(),
 		       data_model :: data_model(),
 		       distributed :: boolean(),
-		       wrapper :: #enterdb_wrapper{},
+		       wrapper :: wrapper(),
+		       tda :: tda(),
 		       buckets :: [shard_name()],
 		       db_path :: string()}).
 

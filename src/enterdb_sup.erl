@@ -74,20 +74,25 @@ init([]) ->
 
     EdbMemMgrServer = {enterdb_mem_wrp_mgr, {enterdb_mem_wrp_mgr, start_link, []},
 			permanent, 2000, worker, [enterdb_mem_wrp_mgr]},
-    EdbLDBSup	    = {enterdb_ldb_sup,
+    EdbLdbSup	    = {enterdb_ldb_sup,
 			{enterdb_simple_sup, start_link,[leveldb]},
 			permanent, infinity, supervisor,[enterdb_simple_sup]},
-    EdbLITSup	    = {enterdb_lit_sup,
+    EdbLdbWrpSup    = {enterdb_wrp_sup,
+			{enterdb_simple_sup, start_link,[leveldb_wrp]},
+			permanent, infinity, supervisor,[enterdb_simple_sup]},
+    EdbLdbTdaSup    = {enterdb_tda_sup,
+			{enterdb_simple_sup, start_link,[leveldb_tda]},
+			permanent, infinity, supervisor,[enterdb_simple_sup]},
+    EdbLitSup	    = {enterdb_lit_sup,
 			{enterdb_simple_sup, start_link,[leveldb_it]},
 			permanent, infinity, supervisor,[enterdb_simple_sup]},
     EdbNS	    = {enterdb_ns, {enterdb_ns, start_link, []},
 			permanent, 20000, worker, [enterdb_ns]},
     EdbRS	    = {enterdb_rs, {enterdb_rs, start_link, []},
 			permanent, 20000, worker, [enterdb_rs]},
-    EdbLdbWrp	    = {enterdb_ldb_wrp, {enterdb_ldb_wrp, start_link, []},
-			permanent, 20000, worker, [enterdb_ldb_wrp]},
 
-    {ok, {SupFlags, [EdbNS, EdbRS, EdbLdbWrp, EdbLITSup, EdbLDBSup,
+    {ok, {SupFlags, [EdbNS, EdbRS, EdbLitSup,
+		     EdbLdbWrpSup, EdbLdbTdaSup, EdbLdbSup,
 		     EdbMemMgrServer]}}.
 
 %%%===================================================================

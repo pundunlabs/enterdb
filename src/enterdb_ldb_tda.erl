@@ -20,7 +20,7 @@
 %%%===================================================================
 
 
--module(enterdb_ldb_wrp).
+-module(enterdb_ldb_tda).
 
 -behaviour(gen_server).
 
@@ -28,18 +28,14 @@
 -export([start_link/1]).
 
 %% API exports
--export([read/2,
-	 write/4,
-	 update/6,
-	 delete/2,
+-export([read/4,
+	 write/5,
+	 update/4,
+	 delete/4,
 	 read_range_binary/4,
 	 read_range_n_binary/4,
 	 close_shard/1,
 	 delete_shard/1]).
-
-%% Exports for self spawned process
--export([size_wrap/3,
-	 time_wrap/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -50,13 +46,10 @@
          code_change/3]).
 
 -record(entry, {key, value}).
+-record(s, {tid}).
 
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
-
--define(COUNTER_TRESHOLD, 10000).
-
--record(s, {tid, shard}).
 
 %%%===================================================================
 %%% API functions
@@ -77,11 +70,25 @@ start_link(Args) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec read(Shard :: string(),
-	   Key :: binary()) ->
+	   Tda :: tda(),
+	   Key :: key(),
+	   DBKey :: binary()) ->
     {ok, Value :: term()} | {error, Reason :: term()}.
-read(Shard, Key) ->
-    Buckets = get_buckets(get_tid(Shard)),
-    read_from_buckets(Buckets, Key).
+read(Shard, Tda, Key, DBKey) ->
+    read_(Shard, Tda, find_timestamp_in_key(Key), DBKey).
+
+-spec read_(Shard :: string(),
+	    Tda :: tda(),
+	    Ts :: undefined | integer(),
+	    DBKey :: binary()) ->
+    {ok, Value :: term()} | {error, Reason :: term()}.
+read_(Shard, #{num_of_buckets := S,
+	       time_margin := {_, _} = TM,
+	       precision := P}, Ts, DBKey) when is_integer(Ts) -> 
+    N = get_nanoseconds(P, Ts) div get_nanoseconds(TM),
+    BucketId = N rem S,
+    Tid = get_tid(Shard),
+    enterdb_ldb_worker:read(get_bucket(Tid, BucketId), DBKey).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -89,34 +96,56 @@ read(Shard, Key) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec write(Shard :: string(),
-	    Wrapper :: #{num_of_buckets := pos_integer()},
-            Key :: binary(),
-            Columns :: binary()) ->
+	    Tda :: tda(),
+            Key :: key(),
+            DBKey :: binary(),
+            DBColumns :: binary()) ->
     ok | {error, Reason :: term()}.
-write(Shard, W, Key, Columns) ->
-    UpdateOp = {#entry.value, 1, ?COUNTER_TRESHOLD, 0},
+write(Shard, Tda, Key, DBKey, DBColumns) ->
+    write_(Shard, Tda, find_timestamp_in_key(Key), DBKey, DBColumns).
+
+write_(Shard, #{num_of_buckets := S,
+	       time_margin := {_, _} = TM,
+	       precision := P}, Ts, DBKey, DBColumns) when is_integer(Ts) ->
+    N = get_nanoseconds(P, Ts) div get_nanoseconds(TM),
+    BucketId = N rem S,
     Tid = get_tid(Shard),
-    Count =  ets:update_counter(Tid, '$counter', UpdateOp),
-    SizeMargin = maps:get(size_margin, W, undefined),
-    check_counter_wrap(Count, Tid, Shard, SizeMargin),
-    [Bucket|_]  = get_buckets(Tid),
-    enterdb_ldb_worker:write(Bucket, Key, Columns).
+    {Old, Bucket} = get_bucket_n(Tid, BucketId),
+    ok = wrap(Shard, N, Old, BucketId),
+    enterdb_ldb_worker:write(Bucket, DBKey, DBColumns).
 
 %%--------------------------------------------------------------------
 %% @doc
 %% Update Key according to Op on given shard.
 %% @end
 %%--------------------------------------------------------------------
--spec update(Shard :: string(),
-             Key :: binary(),
-             Op :: update_op(),
-	     DataModel :: data_model(),
-	     Mapper :: module(),
-	     Dist :: boolean()) ->
+-spec update(TD :: #enterdb_stab{},
+             Key :: key(),
+             DBKey :: binary(),
+             Op :: update_op()) ->
     ok | {error, Reason :: term()}.
-update(Shard, Key, Op, DataModel, Mapper, Dist) ->
-    Buckets  = get_buckets(get_tid(Shard)),
-    update_on_buckets(Buckets, Key, Op, DataModel, Mapper, Dist).
+update(TD, Key, DBKey, Op) ->
+    update_(TD, find_timestamp_in_key(Key), DBKey, Op).
+
+-spec update_(#enterdb_stab{},
+	      Ts :: integer(),
+	      DBKey :: binary(),
+	      Op :: update_op()) ->
+    ok | {error, Reason :: term()}.
+update_(#enterdb_stab{shard = Shard,
+		      tda = #{num_of_buckets := S,
+			      time_margin := {_, _} = TM,
+			      precision := P},
+		      data_model = DataModel,
+		      column_mapper = Mapper,
+		      distributed = Dist},
+       Ts, DBKey, Op) when is_integer(Ts) ->
+    N = get_nanoseconds(P, Ts) div get_nanoseconds(TM),
+    BucketId = N rem S,
+    Tid = get_tid(Shard),
+    {Old, Bucket}  = get_bucket_n(Tid, BucketId),
+    ok = wrap(Shard, N, Old, BucketId),
+    enterdb_ldb_worker:update(Bucket, DBKey, Op, DataModel, Mapper, Dist).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -124,11 +153,21 @@ update(Shard, Key, Op, DataModel, Mapper, Dist) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec delete(Shard :: string(),
-	     Key :: binary()) ->
+	     Tda :: tda(),
+	     Key :: key(),
+	     DBKey :: binary()) ->
     ok | {error, Reason :: term()}.
-delete(Shard, Key) ->
-    Buckets = get_buckets(get_tid(Shard)),
-    delete_from_buckets(Buckets, Key).
+delete(Shard, Tda, Key, DBKey) ->
+    delete_(Shard, Tda, find_timestamp_in_key(Key), DBKey).
+
+delete_(Shard, #{num_of_buckets := S,
+		 time_margin := {_, _} = TM,
+		 precision := P}, Ts, DBKey) when is_integer(Ts) ->
+    N = get_nanoseconds(P, Ts) div get_nanoseconds(TM),
+    BucketId = N rem S,
+    Tid = get_tid(Shard),
+    Bucket  = get_bucket(Tid, BucketId),
+    enterdb_ldb_worker:delete(Bucket, DBKey).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -142,7 +181,7 @@ delete(Shard, Key) ->
 			Dir :: 0 | 1) ->
     {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
 read_range_binary(Shard, Range, Chunk, Dir) ->
-    Buckets = get_buckets(get_tid(Shard)),
+    Buckets = get_bucket_list(get_tid(Shard)),
     read_range_from_buckets(Buckets, Range, Chunk, Dir).
 
 %%--------------------------------------------------------------------
@@ -157,7 +196,7 @@ read_range_binary(Shard, Range, Chunk, Dir) ->
 			  Dir :: 0 | 1) ->
     {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
 read_range_n_binary(Shard, StartKey, N, Dir) ->
-    Buckets = get_buckets(get_tid(Shard)),
+    Buckets = get_bucket_list(get_tid(Shard)),
     read_range_n_from_buckets(Buckets, StartKey, N, Dir).
 
 %%--------------------------------------------------------------------
@@ -167,11 +206,9 @@ read_range_n_binary(Shard, StartKey, N, Dir) ->
 %%--------------------------------------------------------------------
 -spec close_shard(Shard :: shard_name()) -> ok | {error, Reason :: term()}.
 close_shard(Shard) ->
-    Tid = get_tid(Shard),
-    cancel_timer(Tid),
-    Buckets = get_buckets(Tid),
+    BucketList = get_bucket_list(get_tid(Shard)),
     Res = [supervisor:terminate_child(enterdb_ldb_sup, enterdb_ns:get(B)) ||
-	    B <- Buckets],
+	    B <- BucketList],
     enterdb_lib:check_error_response(lists:usort(Res)).
 
 %%--------------------------------------------------------------------
@@ -181,37 +218,34 @@ close_shard(Shard) ->
 %%--------------------------------------------------------------------
 -spec delete_shard(Args :: [term()]) -> ok | {error, Reason :: term()}.
 delete_shard(Args) ->
-    Shard = proplists:get_value(name, Args),
-    Tid = get_tid(Shard),
-    cancel_timer(Tid),
     ESTAB = proplists:get_value(tab_rec, Args),
-    Buckets = ESTAB#enterdb_stab.buckets,
-    [ begin
+    BucketList = get_bucket_list(get_tid(ESTAB#enterdb_stab.shard)),
+    delete_shard(Args, BucketList).
+
+-spec delete_shard(Args :: [term()],
+		   BucketList :: [string()] | undefined) ->
+    ok | {error, Reason :: term()}.
+delete_shard(_Args, undefined) ->
+    {error, "buckets_not_found"};
+delete_shard(Args, BucketList) ->
+    [begin
 	  NewArgs = lists:keyreplace(name, 1, Args, {name, Bucket}),
 	  ok = enterdb_ldb_worker:delete_db(NewArgs)
-      end || Bucket <- Buckets],
+     end || Bucket <- BucketList],
     ok.
 
--spec size_wrap(Tid :: term(),
-		Shard :: shard_name(),
-		SizeMargin :: size_margin()) ->
+-spec wrap(Shard :: string(),
+	   N :: pos_integer(),
+	   Old :: pos_integer(),
+	   BucketId :: integer()) ->
     ok.
-size_wrap(Tid, Shard, SizeMargin) ->
-    [Bucket|_]  = get_buckets(Tid),
-    {ok, Size} =  enterdb_ldb_worker:approximate_size(Bucket),
-    case size_exceeded(Size, SizeMargin) of
-	true ->
-	    Pid = enterdb_ns:get(Shard),
-	    gen_server:call(Pid, wrap);
-	false ->
-	    ok
-    end.
-
--spec time_wrap(Shard :: shard_name()) ->
-    ok.
-time_wrap(Shard) ->
+wrap(_, N, N, _) ->
+    ok;
+wrap(_, N, Old, _) when Old > N ->
+    ok;
+wrap(Shard, N, _, BucketId) ->
     Pid = enterdb_ns:get(Shard),
-    ok = gen_server:call(Pid, wrap).
+    gen_server:call(Pid, {wrap, N, BucketId}).
 
 -spec get_tid(Shard :: string()) ->
     Tid :: term().
@@ -235,28 +269,23 @@ get_tid(Shard) ->
 %% @end
 %%--------------------------------------------------------------------
 init([Start, #enterdb_stab{shard = Shard,
-			   wrapper = #{num_of_buckets := N},
+			   tda = #{num_of_buckets := N},
 			   buckets = undefined} = ESTAB]) ->
-    ?info("Creating EnterDB LevelDB WRP Server for Shard ~p",[Shard]),
+    ?info("Creating EnterDB LevelDB TDA Server for Shard ~p",[Shard]),
     List = [lists:concat([Shard, "_", Index]) || Index <- lists:seq(0, N-1)],
     init([Start, ESTAB#enterdb_stab{buckets = List}]);
 init([Start, #enterdb_stab{shard = Shard,
-			   wrapper = Wrapper,
 			   buckets = Buckets} = ESTAB]) ->
-    ?info("Starting EnterDB LevelDB WRP Server for Shard ~p",[Shard]),
+    ?info("Starting EnterDB LevelDB TDA Server for Shard ~p",[Shard]),
     Options = [public,{read_concurrency, true},{keypos, #entry.key}],
     Tid = ets:new(bucket, Options),
     enterdb_ns:register_pid(self(), Shard),
-    register_buckets(Tid, Shard, Buckets),
+    register_bucket_list(Tid, Buckets),
     ChildArgs = enterdb_lib:get_ldb_worker_args(Start, ESTAB),
     [{ok, _} = supervisor:start_child(enterdb_ldb_sup,
 	[lists:keyreplace(name, 1, ChildArgs, {name, Bucket})]) ||
 	Bucket <- Buckets],
-    ets:insert(Tid, #entry{key='$counter', value=0}),
-    TimeMargin = maps:get(time_margin, Wrapper, undefined),
-    register_timeout(Tid, Shard, TimeMargin),
-    {ok, #s{tid=Tid, shard=Shard}}.
-
+    {ok, #s{tid = Tid}}.
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -273,13 +302,16 @@ init([Start, #enterdb_stab{shard = Shard,
 %%--------------------------------------------------------------------
 handle_call(get_tid, _From, State) ->
     {reply, State#s.tid, State};
-handle_call(wrap, _From, State = #s{tid=Tid, shard=Shard}) ->
-    Buckets = get_buckets(Tid),
-    LastBucket = lists:last(Buckets),
-    ok = enterdb_ldb_worker:recreate_shard(LastBucket),
-    WrappedBuckets = [LastBucket | lists:droplast(Buckets)],
-    reset_timer(Tid, Shard),
-    true = register_buckets(Tid, Shard, WrappedBuckets),
+handle_call({wrap, N, BucketId}, _From, State) ->
+    case get_bucket_n(State#s.tid, BucketId) of
+	{O, Bucket} when O < N ->
+	    ?debug("Wrapping tda ~p: ~p -> ~p", [BucketId, O, N]),
+	    ok = enterdb_ldb_worker:recreate_shard(Bucket),
+	    true = register_bucket(State#s.tid, BucketId, N, Bucket);
+	{O, _} ->
+	    ?debug("Not Wrapping tda ~p: ~p -> ~p", [BucketId, O, N]),
+	    ok
+    end,
     {reply, ok, State}.
 
 %%--------------------------------------------------------------------
@@ -337,112 +369,49 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
--spec register_buckets(Tid :: term(),
-		       Shard :: string(),
-		       Buckets :: [shard_name()]) ->
+-spec register_bucket(Tid :: pid(),
+		      BucketId :: integer(),
+		      N :: pos_integer(),
+		      Bucket :: string()) ->
     true.
-register_buckets(Tid, Shard, Buckets) ->
-    ok = enterdb_lib:update_bucket_list(Shard, Buckets),
-    ets:insert(Tid, #entry{key='$buckets', value=Buckets}).
+register_bucket(Tid, BucketId, N, Bucket) ->
+    ets:insert(Tid, #entry{key=BucketId, value={N, Bucket}}).
 
--spec get_buckets(Tid :: term()) ->
-    ok.
-get_buckets(Tid) ->
-    case ets:lookup(Tid, '$buckets') of
-	[#entry{value=Value}] ->
-	    Value;
+-spec register_bucket_list(Tid :: pid(),
+			   BucketList :: [shard_name()]) ->
+    true.
+register_bucket_list(Tid, BucketList) ->
+    register_bucket_list(Tid, BucketList, 0).
+
+register_bucket_list(Tid, [Bucket|Rest], BucketId) ->
+    ets:insert(Tid, #entry{key=BucketId, value={0, Bucket}}),
+    register_bucket_list(Tid, Rest, BucketId+1);
+register_bucket_list(_Tid, [], _) ->
+    true.
+
+-spec get_bucket_list(Tid :: pid()) ->
+    [Bucket :: string()].
+get_bucket_list(Tid) ->
+    ets:foldl(fun(#entry{value = {_,B}}, Acc) -> [B | Acc] end, [], Tid).
+
+-spec get_bucket(Tid :: pid(), BucketId :: integer()) ->
+    Bucket :: string().
+get_bucket(Tid, BucketId) ->
+    case ets:lookup(Tid, BucketId) of
+	[#entry{value={_, Bucket}}] ->
+	    Bucket;
 	_ ->
 	    {error, no_entry}
     end.
 
--spec register_timeout(Tid :: term(),
-		       Shard :: string(),
-		       TimeMargin :: time_margin()) -> ok.
-register_timeout(_, _, undefined) ->
-    ok;
-register_timeout(Tid, Shard, TimeMargin) ->
-    Time = calc_milliseconds(TimeMargin),
-    {ok, Tref} = timer:apply_after(Time, ?MODULE, time_wrap, [Shard]),
-    true = register_timer_ref(Tid, #{tref=>Tref, time_margin=>TimeMargin}),
-    ok.
-
--spec register_timer_ref(Tid :: term(), Map :: map()) ->
-    true.
-register_timer_ref(Tid, Map) ->
-    ets:insert(Tid, #entry{key='$reference', value=Map}).
-
--spec reset_timer(Tid :: term(), Shard :: string()) ->
-    ok.
-reset_timer(Tid, Shard) ->
-    case ets:lookup(Tid, '$reference') of
-	[] ->
-	    ok;
-	[#entry{value=Map}] ->
-	    Tref = maps:get(tref, Map),
-	    timer:cancel(Tref),
-	    TimeMargin = maps:get(time_margin, Map),
-	    register_timeout(Tid, Shard, TimeMargin)
-    end.
-
--spec cancel_timer(Tid :: term()) ->
-    ok.
-cancel_timer(Tid) ->
-    case ets:lookup(Tid, '$reference') of
-	[] ->
-	    ok;
-	[#entry{value=Map}] ->
-	    Tref = maps:get(tref, Map),
-	    timer:cancel(Tref),
-	    ets:delete(Tid, '$reference')
-    end.
-
--spec calc_milliseconds(TimeMargin :: time_margin()) ->
-    pos_integer().
-calc_milliseconds({seconds, Seconds}) ->
-    Seconds * 1000;
-calc_milliseconds({minutes, Minutes}) ->
-    Minutes * 60000;
-calc_milliseconds({hours, Hours}) ->
-    Hours * 3600000.
-
--spec check_counter_wrap(Count :: integer(),
-			 Tid :: term(),
-			 Shard :: shard_name(),
-			 SizeMargin :: size_margin()) ->
-    ok.
-check_counter_wrap(_, _, _, undefined) ->
-    ok;
-check_counter_wrap(Count, _, _, _) when Count < ?COUNTER_TRESHOLD ->
-    ok;
-check_counter_wrap(Count, Tid, Shard, SizeMargin)
-    when Count == ?COUNTER_TRESHOLD ->
-    erlang:spawn(?MODULE, size_wrap, [Tid, Shard, SizeMargin]).
-
--spec size_exceeded(Size :: integer(),
-		    SizeMargin :: size_margin()) ->
-    true | false.
-size_exceeded(Size, SizeMargin) ->
-    BytesMargin = calc_bytes(SizeMargin),
-    Size > BytesMargin.
-
--spec calc_bytes(SizeMargin :: size_margin()) ->
-    Bytes :: integer().
-calc_bytes({gigabytes, Gigabytes}) ->
-    Gigabytes * 1073741824;
-calc_bytes({megabytes, Megabytes}) ->
-    Megabytes * 1048576.
-
--spec read_from_buckets(Buckets :: [shard_name()],
-			Key :: term()) ->
-    {ok, Value :: term()} | {error, Reason :: term()}.
-read_from_buckets([], _) ->
-    {error, not_found};
-read_from_buckets([Bucket|Rest], Key) ->
-    case enterdb_ldb_worker:read(Bucket, Key) of
-	{ok, Value} ->
-	    {ok, Value};
-	{error, _Reason} ->
-	    read_from_buckets(Rest, Key)
+-spec get_bucket_n(Tid :: pid(), BucketId :: integer()) ->
+    {N :: undefined | pos_integer(), Bucket :: string()}.
+get_bucket_n(Tid, BucketId) ->
+    case ets:lookup(Tid, BucketId) of
+	[#entry{value=Value}] ->
+	    Value;
+	_ ->
+	    {error, no_entry}
     end.
 
 -spec read_range_from_buckets(Buckets :: [shard_name()],
@@ -499,45 +468,6 @@ read_range_n_from_buckets(Buckets, SKey, N, Dir) ->
     UniqueKVL = unique(MergedKVL),
     {ok, lists:sublist(UniqueKVL, N)}.
 
--spec delete_from_buckets(Buckets :: [shard_name()],
-			  Key :: term()) ->
-    ok | {error, Reason :: term()}.
-delete_from_buckets(Buckets, Key) ->
-    delete_from_buckets(Buckets, Key, []).
-
--spec delete_from_buckets(Buckets :: [shard_name()],
-			  Key :: term(),
-			  ErrAcc :: []) ->
-    ok | {error, Reason :: term()}.
-delete_from_buckets([], _, []) ->
-    ok;
-delete_from_buckets([], _, Error) ->
-    {error, Error};
-delete_from_buckets([Bucket|Rest], Key, ErrAcc) ->
-    case enterdb_ldb_worker:delete(Bucket, Key) of
-	ok ->
-	    delete_from_buckets(Rest, Key, ErrAcc);
-	{error, Reason} ->
-	    delete_from_buckets(Rest, Key, [{Bucket, Reason} | ErrAcc])
-    end.
-
--spec update_on_buckets(Buckets :: [shard_name()],
-			Key :: term(),
-			Op :: update_op(),
-			DataModel ::  data_model(),
-			Mapper :: module(),
-			Dist :: boolean()) ->
-    {ok, Value :: binary()} | {error, Reason :: term()}.
-update_on_buckets([], _, _, _, _, _) ->
-    {error, not_found};
-update_on_buckets([Bucket|Rest], Key, Op, DataModel, Mapper, Dist) ->
-    case enterdb_ldb_worker:update(Bucket, Key, Op, DataModel, Mapper, Dist) of
-	{ok, Value} ->
-	    {ok, Value};
-	{error, _} ->
-	    update_on_buckets(Rest, Key, Op, DataModel, Mapper, Dist)
-    end.
-
 -spec unique([{DBKey :: binary(), DBVal :: binary()}]) ->
     [{binary(), binary()}].
 unique(KVL) ->
@@ -554,3 +484,27 @@ unique([{AK,AV}, {AK,_AVS} | Rest], Acc) ->
     unique([{AK,AV} | Rest], Acc);
 unique([{AK,AV}, {BK,BV} | Rest], Acc) ->
     unique([{BK,BV} | Rest], [{AK,AV} | Acc]).
+
+-spec find_timestamp_in_key(Key :: [{string(), term()}]) ->
+    undefined | {ok, Ts :: timestamp()}.
+find_timestamp_in_key([])->
+    undefined;
+find_timestamp_in_key([{"ts", Ts}|_Rest]) ->
+    Ts;
+find_timestamp_in_key([_|Rest]) ->
+    find_timestamp_in_key(Rest).
+
+-spec get_nanoseconds(TimeMargin :: time_margin()) ->
+    pos_integer() | {error, Reason :: term()}.
+get_nanoseconds({seconds, S}) -> S * 1000000000;
+get_nanoseconds({minutes, M}) -> M * 60000000000;
+get_nanoseconds({hours, H}) -> H * 3600000000000;
+get_nanoseconds(TM) -> {error, {time_margin, TM}}.
+
+-spec get_nanoseconds(P :: time_unit(), Ts :: integer()) ->
+    integer() | {error, Reason :: term()}.
+get_nanoseconds(second, Ts) -> Ts * 1000000000;
+get_nanoseconds(millisecond, Ts) -> Ts * 1000000;
+get_nanoseconds(microsecond, Ts) -> Ts * 1000;
+get_nanoseconds(nanosecond, Ts) -> Ts;
+get_nanoseconds(P, _Ts) -> {error, {precision, P}}.

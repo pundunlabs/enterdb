@@ -153,7 +153,8 @@ create_wrapping_table(Name) ->
     Keys = ["ts", "imsi"],
     Options = [{type, leveldb_wrapped},
 	       {data_model,binary},
-	       {wrapper, #enterdb_wrapper{num_of_buckets = 10, size_margin = {megabytes, 10}}}],
+	       {wrapper, #{num_of_buckets => 10,
+			   size_margin => {megabytes, 10}}}],
     enterdb:create_table(Name, Keys, Options).
 
 %%--------------------------------------------------------------------
@@ -165,7 +166,7 @@ create_wrapping_table(Name) ->
 -spec create_mem_wrapping_table(Name :: string()) -> ok.
 create_mem_wrapping_table(Name) ->
     Keys = ["ts", "imsi"],
-    Options = [{type, ets_leveldb},
+    Options = [{type, mem_leveldb},
 	       {data_model,binary},
 	       {mem_wrapper, {5, 12}},
 	       {wrapped, {16, 60}}],
@@ -180,7 +181,7 @@ create_mem_wrapping_table(Name) ->
 -spec create_mem_wrapping_table_2(Name :: string()) -> ok.
 create_mem_wrapping_table_2(Name) ->
     Keys = ["ts", "imsi"],
-    Options = [{type, ets_leveldb},
+    Options = [{type, mem_leveldb},
 	       {data_model,binary},
 	       {mem_wrapper, {2, 3}},
 	       {wrapped, {16, 60}}],

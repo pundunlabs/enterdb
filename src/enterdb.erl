@@ -34,7 +34,7 @@
 	 read_range/3,
 	 read_range_n/3,
 	 delete_table/1,
-	 write_to_disk/3,
+	 write_to_disk/4,
 	 table_info/1,
 	 table_info/2,
 	 first/1,
@@ -44,12 +44,12 @@
 	 prev/1
 	 ]).
 
--export([do_write/3,
-	 do_update/3,
-	 do_read/2,
-	 do_write_to_disk/3,
-	 do_read_from_disk/2,
-	 do_delete/2]).
+-export([do_write/4,
+	 do_update/4,
+	 do_read/3,
+	 do_write_to_disk/4,
+	 do_read_from_disk/3,
+	 do_delete/3]).
 
 -export([load_test/0,
 	 write_loop/1]).
@@ -140,18 +140,18 @@ read(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #enterdb_table{distributed = Dist} ->
 	    DB_HashKey = enterdb_lib:make_key(TD, Key),
-	    read_(Tab, DB_HashKey, Dist);
+	    read_(Tab, Key, DB_HashKey, Dist);
 	{error, _} = R ->
 	    R
     end.
 
-read_(Tab, {ok, DBKey, HashKey}, true) ->
+read_(Tab, Key, {ok, DBKey, HashKey}, true) ->
     {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
-    ?dyno:call(Ring, {?MODULE, do_read, [Shard, DBKey]}, read);
-read_(Tab, {ok, DBKey, HashKey}, false) ->
+    ?dyno:call(Ring, {?MODULE, do_read, [Shard, Key, DBKey]}, read);
+read_(Tab, Key, {ok, DBKey, HashKey}, false) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
-    do_read(Shard, DBKey);
-read_(_Tab, {error, _} = E, _) ->
+    do_read(Shard, Key, DBKey);
+read_(_Tab, {error, _} = E, _, _) ->
     E.
 
 -spec read_from_disk(Name :: string(),
@@ -161,45 +161,56 @@ read_from_disk(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #enterdb_table{} ->
 	    DB_HashKey = enterdb_lib:make_key(TD, Key),
-	    read_from_disk_(Tab, DB_HashKey);
+	    read_from_disk_(Tab, Key, DB_HashKey);
 	{error, _} = R ->
 	    R
     end.
 
 %% Key ok according to keydef
-read_from_disk_(Tab, {ok, DBKey, HashKey}) ->
+read_from_disk_(Tab, Key, {ok, DBKey, HashKey}) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
-    do_read_from_disk(Shard, DBKey);
+    do_read_from_disk(Shard, Key, DBKey);
 %% Key not ok
-read_from_disk_(_Tab, {error, _} = E) ->
+read_from_disk_(_Tab, _Key, {error, _} = E) ->
     E.
 
-do_read(Shard, DBKey) ->
+do_read(Shard, Key, DBKey) ->
     TD = enterdb_lib:get_shard_def(Shard),
-    enterdb_lib:make_app_value(TD, do_read(TD, Shard, DBKey)).
+    enterdb_lib:make_app_value(TD, do_read(TD, Shard, Key, DBKey)).
 
-do_read_from_disk(Shard, DBKey) ->
+do_read_from_disk(Shard, Key, DBKey) ->
     TD = enterdb_lib:get_shard_def(Shard),
-    enterdb_lib:make_app_value(TD, do_read_from_disk(TD, Shard, DBKey)).
+    enterdb_lib:make_app_value(TD, do_read_from_disk(TD, Shard, Key, DBKey)).
 
 %% internal read based on table / shard type
-do_read(_TD = #enterdb_stab{type = leveldb}, ShardTab, Key) ->
-    enterdb_ldb_worker:read(ShardTab, Key);
-do_read(_TD = #enterdb_stab{type = leveldb_wrapped}, ShardTab, Key) ->
-    enterdb_ldb_wrp:read(ShardTab, Key);
-do_read(_TD = #enterdb_stab{type = Type}, _ShardTab, _Key) ->
+do_read(_TD = #enterdb_stab{type = leveldb}, ShardTab, _Key, DBKey) ->
+    enterdb_ldb_worker:read(ShardTab, DBKey);
+do_read(_TD = #enterdb_stab{type = leveldb_wrapped}, ShardTab, _Key, DBKey) ->
+    enterdb_ldb_wrp:read(ShardTab, DBKey);
+do_read(_TD = #enterdb_stab{type = leveldb_tda,
+			    tda = Tda}, ShardTab, Key, DBKey) ->
+    enterdb_ldb_tda:read(ShardTab, Tda, Key, DBKey);
+do_read(_TD = #enterdb_stab{type = Type}, _ShardTab, _Key, _DBKey) ->
     {error, {"read_not_supported", Type}};
-do_read({error, R}, _, _) ->
+do_read({error, R}, _, _, _) ->
     {error, R}.
 
-do_read_from_disk(TD = #enterdb_stab{type = Type}, ShardTab, Key) when
-						    Type =:= ets_leveldb;
-						    Type =:= ets_leveldb_wrapped ->
-    enterdb_ldb_worker:read(TD, ShardTab, Key);
+do_read_from_disk(TD = #enterdb_stab{type = Type}, ShardTab, _Key, DBKey)
+    when Type =:= mem_leveldb ->
+    enterdb_ldb_worker:read(TD, ShardTab, DBKey);
+
+do_read_from_disk(TD = #enterdb_stab{type = Type}, ShardTab, _Key, DBKey)
+    when Type =:= mem_leveldb_wrapped ->
+    enterdb_ldb_wrp:read(TD, ShardTab, DBKey);
+
+do_read_from_disk(#enterdb_stab{type = mem_leveldb_tda,
+				tda = Tda},
+		  ShardTab, Key, DBKey) ->
+    enterdb_ldb_tda:read(ShardTab, Tda, Key, DBKey);
 
 %% Use ordinary read for table type
-do_read_from_disk(TD, ShardTab, Key) ->
-    do_read(TD, ShardTab, Key).
+do_read_from_disk(TD, ShardTab, Key, DBKey) ->
+    do_read(TD, ShardTab, Key, DBKey).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -213,82 +224,88 @@ write(Tab, Key, Columns) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #enterdb_table{distributed = Dist} ->
 	    DB_HashKeyAndCols = enterdb_lib:make_key_columns(TD, Key, Columns),
-	    write_(Tab, DB_HashKeyAndCols, Dist);
+	    write_(Tab, Key, DB_HashKeyAndCols, Dist);
 	{error, _} = R ->
 	    R
     end.
 
 -spec write_(Tab :: string(),
+	     Key :: key(),
 	     DB_Key_Columns :: {ok, DBKey :: binary(),
 				HashKey :: binary(),
 				DBColumns :: binary()} |
 			       {error, Error :: term()},
 	     Dist :: true | false) ->
     ok | {error, Reason :: term()}.
-write_(Tab, {ok, DBKey, HashKey, DBColumns}, true) ->
+write_(Tab, Key, {ok, DBKey, HashKey, DBColumns}, true) ->
     {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
-    ?dyno:call(Ring, {?MODULE, do_write, [Shard, DBKey, DBColumns]}, write);
-write_(Tab, {ok, DBKey, HashKey, DBColumns}, false) ->
+    ?dyno:call(Ring, {?MODULE, do_write, [Shard,Key,DBKey,DBColumns]}, write);
+write_(Tab, Key, {ok, DBKey, HashKey, DBColumns}, false) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
-    do_write(Shard, DBKey, DBColumns);
-write_(_Tab, {error, _} = E, _) ->
+    do_write(Shard, Key, DBKey, DBColumns);
+write_(_Tab, {error, _} = E, _, _) ->
     E.
 
 -spec write_to_disk(Name :: string(),
 		    Key :: key(),
-		    Columns :: [column()]) -> ok | {error, Reason :: term()}.
-write_to_disk(Tab, Key, Columns) ->
+		    DBKey :: binary(),
+		    DBColumns :: binary()) -> ok | {error, Reason :: term()}.
+write_to_disk(Tab, Key, DBKey, DBColumns) ->
     case gb_hash:get_local_node(Tab, Key) of
 	{ok, Shard} ->
-	    do_write_to_disk(Shard, Key, Columns);
+	    do_write_to_disk(Shard, Key, DBKey, DBColumns);
 	_ ->
 	    {error, "no_table"}
     end.
 
-do_write_to_disk(Shard, DBKey, DBColumns) ->
+do_write_to_disk(Shard, Key, DBKey, DBColumns) ->
     TD = enterdb_lib:get_shard_def(Shard),
-    do_write_to_disk(TD, Shard, DBKey, DBColumns).
+    do_write_to_disk(TD, Shard, Key, DBKey, DBColumns).
 
-do_write(Shard, DBKey, DBColumns) ->
+do_write(Shard, Key, DBKey, DBColumns) ->
     TD = enterdb_lib:get_shard_def(Shard),
-    do_write(TD, Shard, DBKey, DBColumns).
+    do_write(TD, Shard, Key, DBKey, DBColumns).
 
-do_write(_TD = #enterdb_stab{type = Type}, ShardTab, Key, Columns)
-when Type =:= ets_leveldb_wrapped ->
+do_write(_TD = #enterdb_stab{type = Type}, ShardTab, Key, DBKey, DBColumns)
+when Type =:= mem_leveldb_wrapped ->
     case find_timestamp_in_key(Key) of
 	undefined ->
 	    undefined;
 	{ok, Ts} ->
-	    case enterdb_mem_wrp:write(ShardTab, Ts, Key, Columns) of
+	    case enterdb_mem_wrp:write(ShardTab, Ts, DBKey, DBColumns) of
 		{error, _} = _E ->
 		    %% Write to disk
-		    enterdb_ldb_wrp:write(Ts, ShardTab, Key, Columns);
+		    enterdb_ldb_wrp:write(Ts, ShardTab, DBKey, DBColumns);
 		Res ->
 		    Res
 	    end
     end;
-do_write(_TD = #enterdb_stab{type = leveldb_wrapped,
-			     wrapper = Wrapper},
-	 ShardTab, Key, Columns) ->
-    enterdb_ldb_wrp:write(ShardTab, Wrapper, Key, Columns);
-do_write(_TD = #enterdb_stab{type = leveldb}, ShardTab, Key, Columns) ->
-    enterdb_ldb_worker:write(ShardTab, Key, Columns);
-do_write(_TD = #enterdb_stab{type = ets_leveldb}, _Tab, _Key, _Columns) ->
+do_write(#enterdb_stab{type = leveldb_wrapped,
+		       wrapper = Wrapper},
+	 ShardTab, _Key, DBKey, DBColumns) ->
+    enterdb_ldb_wrp:write(ShardTab, Wrapper, DBKey, DBColumns);
+do_write(#enterdb_stab{type = leveldb_tda,
+		       tda = Tda},
+	 ShardTab, Key, DBKey, DBColumns) ->
+    enterdb_ldb_tda:write(ShardTab, Tda, Key, DBKey, DBColumns);
+do_write(#enterdb_stab{type = leveldb}, ShardTab, _Key, DBKey, DBColumns) ->
+    enterdb_ldb_worker:write(ShardTab, DBKey, DBColumns);
+do_write(#enterdb_stab{type = mem_leveldb}, _Tab, _Key, _DBKey, _DBColumns) ->
     ok;
-do_write({error, R}, _, _Key, _Columns) ->
+do_write({error, R}, _, _Key, _DBKey, _DBColumns) ->
     {error, R};
-do_write(TD, Tab, Key, _Columns) ->
+do_write(TD, Tab, Key, _DBKey, _DBColumns) ->
     ?debug("could not write ~p", [{TD, Tab, Key}]),
-    {error, {bad_tab, {Tab,TD}}}.
+    {error, {bad_tab, {Tab, TD}}}.
 
 do_write_to_disk(#enterdb_stab{type = Type,
 			       wrapper = Wrapper},
-		 ShardTab, Key, Columns)
-    when Type =:= ets_leveldb_wrapped ->
-    enterdb_ldb_wrp:write(ShardTab, Wrapper, Key, Columns);
+		 ShardTab, _Key, DBKey, DBColumns)
+    when Type =:= mem_leveldb_wrapped ->
+    enterdb_ldb_wrp:write(ShardTab, Wrapper, DBKey, DBColumns);
 
-do_write_to_disk(TD, ShardTab, Key, Columns) ->
-    do_write(TD, ShardTab, Key, Columns).
+do_write_to_disk(TD, ShardTab, Key, DBKey, DBColumns) ->
+    do_write(TD, ShardTab, Key, DBKey, DBColumns).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -315,61 +332,58 @@ update(Tab, Key, Op) ->
 	    {error, can_not_update_kv};
 	TD = #enterdb_table{distributed = Dist} ->
 	    DB_HashKey = enterdb_lib:make_key(TD, Key),
-	    update_(Tab, DB_HashKey, Op, Dist);
+	    update_(Tab, Key, DB_HashKey, Op, Dist);
 	{error, _} = R ->
 	    R
     end.
 
 -spec update_(Tab :: string(),
-	      DB_Key :: {ok, DBKey :: binary(),
-			     HashKey :: binary()} |
-			{error, Error :: term()},
+	      Key :: key(),
+	      DB_HashKey :: {ok, DBKey :: binary(),
+				 HashKey :: binary()} |
+			    {error, Error :: term()},
 	      Op :: update_op(),
 	      Dist :: true | false) ->
     ok | {error, Reason :: term()}.
-update_(Tab, {ok, DBKey, HashKey}, Op, true) ->
+update_(Tab, Key, {ok, DBKey, HashKey}, Op, true) ->
     {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
-    ?dyno:call(Ring, {?MODULE, do_update, [Shard, DBKey, Op]}, write);
-update_(Tab, {ok, DBKey, HashKey}, Op, false) ->
+    ?dyno:call(Ring, {?MODULE, do_update, [Shard, Key, DBKey, Op]}, write);
+update_(Tab, Key, {ok, DBKey, HashKey}, Op, false) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
-    do_update(Shard, DBKey, Op);
-update_(_Tab, {error, _} = E, _, _) ->
+    do_update(Shard, Key, DBKey, Op);
+update_(_Tab, _, {error, _} = E, _, _) ->
     E.
 
-do_update(Shard, DBKey, Op) ->
+do_update(Shard, Key, DBKey, Op) ->
     TD = enterdb_lib:get_shard_def(Shard),
-    enterdb_lib:make_app_value(TD, do_update(TD, Shard, DBKey, Op)).
+    enterdb_lib:make_app_value(TD, do_update(TD, Shard, Key, DBKey, Op)).
 
-do_update(_TD = #enterdb_stab{type = Type}, ShardTab, Key, Op)
-when Type =:= ets_leveldb_wrapped ->
+do_update(_TD = #enterdb_stab{type = Type}, Shard, Key, DBKey, Op)
+when Type =:= mem_leveldb_wrapped ->
     case find_timestamp_in_key(Key) of
 	undefined ->
 	    undefined;
 	{ok, Ts} ->
-	    case enterdb_mem_wrp:update(ShardTab, Ts, Key, Op) of
+	    case enterdb_mem_wrp:update(Shard, Ts, DBKey, Op) of
 		{error, _} = _E ->
 		    %% Write to disk
-		    enterdb_ldb_wrp:update(Ts, ShardTab, Key, Op);
+		    enterdb_ldb_wrp:update(Ts, Shard, DBKey, Op);
 		Res ->
 		    Res
 	    end
     end;
-do_update(_TD = #enterdb_stab{column_mapper = Mapper,
-			      type = leveldb_wrapped,
-			      data_model = DataModel,
-			      distributed = Dist},
-	  ShardTab, Key, Op) ->
-    enterdb_ldb_wrp:update(ShardTab, Key, Op, DataModel, Mapper, Dist);
-do_update(_TD = #enterdb_stab{column_mapper = Mapper,
-			      type = leveldb,
-			      data_model = DataModel,
-			      distributed = Dist}, ShardTab, Key, Op) ->
-    enterdb_ldb_worker:update(ShardTab, Key, Op, DataModel, Mapper, Dist);
-do_update(_TD = #enterdb_stab{type = ets_leveldb}, _Tab, _Key, _Op) ->
+do_update(TD = #enterdb_stab{type = leveldb_wrapped}, Shard, _Key, DBKey, Op) ->
+    enterdb_ldb_wrp:update(TD, Shard, DBKey, Op);
+do_update(TD = #enterdb_stab{type = leveldb_tda},
+	  ShardTab, Key, DBKey, Op) ->
+    enterdb_ldb_tda:update(TD, ShardTab, Key, DBKey, Op);
+do_update(TD = #enterdb_stab{type = leveldb}, Shard, _Key, DBKey, Op) ->
+    enterdb_ldb_worker:update(TD, Shard, DBKey, Op);
+do_update(_TD = #enterdb_stab{type = mem_leveldb}, _Tab, _Key, _DBKey, _Op) ->
     ok;
-do_update({error, R}, _, _Key, _Op) ->
+do_update({error, R}, _, _Key, _DBKey, _Op) ->
     {error, R};
-do_update(TD, Tab, Key, _Op) ->
+do_update(TD, Tab, Key, _DBKey, _Op) ->
     ?debug("could not update ~p", [{TD, Tab, Key}]),
     {error, {bad_tab, {Tab,TD}}}.
 
@@ -385,32 +399,35 @@ delete(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #enterdb_table{distributed = Dist} ->
 	    DB_HashKey = enterdb_lib:make_key(TD, Key),
-	    delete_(Tab, DB_HashKey, Dist);
+	    delete_(Tab, Key, DB_HashKey, Dist);
 	{error, _} = R ->
 	    R
     end.
 
-delete_(Tab, {ok, DBKey, HashKey}, true) ->
+delete_(Tab, Key, {ok, DBKey, HashKey}, true) ->
     {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
-    ?dyno:call(Ring, {?MODULE, do_delete, [Shard, DBKey]}, write);
-delete_(Tab, {ok, DBKey, HashKey}, false) ->
+    ?dyno:call(Ring, {?MODULE, do_delete, [Shard, Key, DBKey]}, write);
+delete_(Tab, Key, {ok, DBKey, HashKey}, false) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
-    do_delete(Shard, DBKey);
-delete_(_Tab, {error, _} = E, _) ->
+    do_delete(Shard, Key, DBKey);
+delete_(_Tab, _Key, {error, _} = E, _) ->
     E.
 
-do_delete(Shard, DBKey) ->
+do_delete(Shard, Key, DBKey) ->
     TD = enterdb_lib:get_shard_def(Shard),
-    do_delete(TD, Shard, DBKey).
+    do_delete(TD, Shard, Key, DBKey).
 
 %% internal read based on table / shard type
-do_delete(_TD = #enterdb_stab{type = leveldb}, ShardTab, Key) ->
-    enterdb_ldb_worker:delete(ShardTab, Key);
-do_delete(_TD = #enterdb_stab{type = leveldb_wrapped}, ShardTab, Key) ->
-    enterdb_ldb_wrp:delete(ShardTab, Key);
-do_delete(_TD = #enterdb_stab{type = Type}, _ShardTab, _Key) ->
+do_delete(_TD = #enterdb_stab{type = leveldb}, ShardTab, _Key, DBKey) ->
+    enterdb_ldb_worker:delete(ShardTab, DBKey);
+do_delete(_TD = #enterdb_stab{type = leveldb_wrapped}, ShardTab, _Key, DBKey) ->
+    enterdb_ldb_wrp:delete(ShardTab, DBKey);
+do_delete(_TD = #enterdb_stab{type = leveldb_tda,
+			      tda = Tda}, ShardTab, Key, DBKey) ->
+    enterdb_ldb_tda:delete(ShardTab, Tda, Key, DBKey);
+do_delete(_TD = #enterdb_stab{type = Type}, _ShardTab, _Key, _DBKey) ->
     {error, {delete_not_supported, Type}};
-do_delete({error, R}, _, _) ->
+do_delete({error, R}, _, _, _) ->
     {error, R}.
 
 %%--------------------------------------------------------------------
@@ -436,10 +453,10 @@ read_range(Name, {StartKey, StopKey}, Chunk) ->
 read_range(_, Range, _) ->
     {error, {badarg, Range}}.
 
--spec read_range_(Name :: string(),
-		   DBStartKey :: {ok, binary(), binary()},
-		   DBStopKey :: {ok, binary(), binary()},
-		   Chunk :: pos_integer()) ->
+-spec read_range_(Tab :: #enterdb_table{},
+		  DBStartKey :: {ok, binary(), binary()},
+		  DBStopKey :: {ok, binary(), binary()},
+		  Chunk :: pos_integer()) ->
     {ok, [kvp()], Cont :: complete | key()} |
     {error, Reason :: term()}.
 read_range_(Tab, {ok, DBStartK, _}, {ok, DBStopK, _}, Chunk) ->
