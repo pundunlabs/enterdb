@@ -1197,7 +1197,7 @@ make_db_key([Field | RestD], RestH, Key, DBKeyList, HashKeyList) ->
     end;
 make_db_key([], _, _, DBKeyList, HashKeyList) ->
     TupleD = list_to_tuple(lists:reverse(DBKeyList)),
-    {ok, term_to_binary(TupleD), term_to_binary(HashKeyList)}.
+    {ok, sext:encode(TupleD), sext:encode(HashKeyList)}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1318,7 +1318,7 @@ map_columns(Mapper, Distributed, [], Acc) ->
 		   DbKey :: binary()) ->
     AppKey :: key().
 make_app_key(KeyDef, DbKey)->
-    lists:zip(KeyDef, tuple_to_list(binary_to_term(DbKey))).
+    lists:zip(KeyDef, tuple_to_list(sext:decode(DbKey))).
 
 %%--------------------------------------------------------------------
 %% @doc
