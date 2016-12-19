@@ -263,7 +263,7 @@ update_bucket_list(Shard, Buckets) ->
     Fun =
 	fun() ->
 	    [S = #enterdb_stab{map=Map}] = mnesia:read(enterdb_stab, Shard),
-	    NewMap = Map#{buckets:=Buckets},
+	    NewMap = Map#{buckets=>Buckets},
 	    mnesia:write(S#enterdb_stab{map = NewMap})
 	end,
     case enterdb_db:transaction(Fun) of

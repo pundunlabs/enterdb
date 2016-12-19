@@ -88,7 +88,9 @@ read_(Shard, #{num_of_buckets := S,
     N = get_nanoseconds(P, Ts) div get_nanoseconds(TM),
     BucketId = N rem S,
     Tid = get_tid(Shard),
-    enterdb_ldb_worker:read(get_bucket(Tid, BucketId), DBKey).
+    enterdb_ldb_worker:read(get_bucket(Tid, BucketId), DBKey);
+read_(_, _, Ts, _) when not is_integer(Ts) ->
+    {error, "timestamp_is_not_integer"}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -105,14 +107,16 @@ write(Shard, Tda = #{ts_field := KF}, Key, DBKey, DBColumns) ->
     write_(Shard, Tda, find_timestamp_in_key(KF, Key), DBKey, DBColumns).
 
 write_(Shard, #{num_of_buckets := S,
-	       time_margin := {_, _} = TM,
-	       precision := P}, Ts, DBKey, DBColumns) when is_integer(Ts) ->
+	        time_margin := {_, _} = TM,
+	        precision := P}, Ts, DBKey, DBColumns) when is_integer(Ts) ->
     N = get_nanoseconds(P, Ts) div get_nanoseconds(TM),
     BucketId = N rem S,
     Tid = get_tid(Shard),
     {Old, Bucket} = get_bucket_n(Tid, BucketId),
     ok = wrap(Shard, N, Old, BucketId),
-    enterdb_ldb_worker:write(Bucket, DBKey, DBColumns).
+    enterdb_ldb_worker:write(Bucket, DBKey, DBColumns);
+write_(_, _, Ts, _, _) when not is_integer(Ts) ->
+    {error, "timestamp_is_not_integer"}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -145,7 +149,9 @@ update_(#{shard := Shard,
     Tid = get_tid(Shard),
     {Old, Bucket}  = get_bucket_n(Tid, BucketId),
     ok = wrap(Shard, N, Old, BucketId),
-    enterdb_ldb_worker:update(Bucket, DBKey, Op, DataModel, Mapper, Dist).
+    enterdb_ldb_worker:update(Bucket, DBKey, Op, DataModel, Mapper, Dist);
+update_(_, Ts, _, _) when not is_integer(Ts) ->
+    {error, "timestamp_is_not_integer"}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -167,7 +173,9 @@ delete_(Shard, #{num_of_buckets := S,
     BucketId = N rem S,
     Tid = get_tid(Shard),
     Bucket  = get_bucket(Tid, BucketId),
-    enterdb_ldb_worker:delete(Bucket, DBKey).
+    enterdb_ldb_worker:delete(Bucket, DBKey);
+delete_(_, _, Ts, _) when not is_integer(Ts) ->
+    {error, "timestamp_is_not_integer"}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -219,7 +227,7 @@ close_shard(Shard) ->
 -spec delete_shard(Args :: [term()]) -> ok | {error, Reason :: term()}.
 delete_shard(Args) ->
     ESTAB = proplists:get_value(tab_rec, Args),
-    BucketList = get_bucket_list(get_tid(ESTAB#enterdb_stab.shard)),
+    BucketList = get_bucket_list(get_tid(maps:get(shard, ESTAB))),
     delete_shard(Args, BucketList).
 
 -spec delete_shard(Args :: [term()],

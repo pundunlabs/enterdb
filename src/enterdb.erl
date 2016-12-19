@@ -158,7 +158,7 @@ read_(Tab, Key, {ok, DBKey, HashKey}, true) ->
 read_(Tab, Key, {ok, DBKey, HashKey}, false) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
     do_read(Shard, Key, DBKey);
-read_(_Tab, {error, _} = E, _, _) ->
+read_(_Tab, _, {error, _} = E, _) ->
     E.
 
 -spec read_from_disk(Name :: string(),
@@ -250,7 +250,7 @@ write_(Tab, Key, {ok, DBKey, HashKey, DBColumns}, true) ->
 write_(Tab, Key, {ok, DBKey, HashKey, DBColumns}, false) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
     do_write(Shard, Key, DBKey, DBColumns);
-write_(_Tab, {error, _} = E, _, _) ->
+write_(_Tab, _, {error, _} = E, _) ->
     E.
 
 -spec write_to_disk(Name :: string(),
@@ -362,7 +362,10 @@ do_update(Shard, Key, DBKey, Op) ->
     TD = enterdb_lib:get_shard_def(Shard),
     enterdb_lib:make_app_value(TD, do_update(TD, Shard, Key, DBKey, Op)).
 
-do_update(_TD = #{type := Type}, Shard, Key, DBKey, Op)
+do_update(#{type := Type,
+	    data_model := DataModel,
+	    column_mapper := Mapper,
+	    distributed := Dist}, Shard, Key, DBKey, Op)
 when Type =:= mem_leveldb_wrapped ->
     case find_timestamp_in_key(Key) of
 	undefined ->
@@ -371,18 +374,24 @@ when Type =:= mem_leveldb_wrapped ->
 	    case enterdb_mem_wrp:update(Shard, Ts, DBKey, Op) of
 		{error, _} = _E ->
 		    %% Write to disk
-		    enterdb_ldb_wrp:update(Ts, Shard, DBKey, Op);
+		    enterdb_ldb_wrp:update(Shard, DBKey, Op,
+					   DataModel, Mapper, Dist);
 		Res ->
 		    Res
 	    end
     end;
-do_update(TD = #{type := leveldb_wrapped}, Shard, _Key, DBKey, Op) ->
-    enterdb_ldb_wrp:update(TD, Shard, DBKey, Op);
-do_update(TD = #{type := leveldb_tda},
-	  ShardTab, Key, DBKey, Op) ->
-    enterdb_ldb_tda:update(TD, ShardTab, Key, DBKey, Op);
-do_update(TD = #{type := leveldb}, Shard, _Key, DBKey, Op) ->
-    enterdb_ldb_worker:update(TD, Shard, DBKey, Op);
+do_update(#{type := leveldb_wrapped,
+	    data_model := DataModel,
+	    column_mapper := Mapper,
+	    distributed := Dist}, Shard, _Key, DBKey, Op) ->
+    enterdb_ldb_wrp:update(Shard, DBKey, Op, DataModel, Mapper, Dist);
+do_update(TD = #{type := leveldb_tda}, _, Key, DBKey, Op) ->
+    enterdb_ldb_tda:update(TD, Key, DBKey, Op);
+do_update(#{type := leveldb,
+	    data_model := DataModel,
+	    column_mapper := Mapper,
+	    distributed := Dist}, Shard, _Key, DBKey, Op) ->
+    enterdb_ldb_worker:update(Shard, DBKey, Op, DataModel, Mapper, Dist);
 do_update(_TD = #{type := mem_leveldb}, _Tab, _Key, _DBKey, _Op) ->
     ok;
 do_update({error, R}, _, _Key, _DBKey, _Op) ->
