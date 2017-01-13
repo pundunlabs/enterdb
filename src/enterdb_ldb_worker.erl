@@ -202,7 +202,7 @@ read_range_n_binary(Shard, StartKey, N) ->
 -spec recreate_shard(Shard :: string()) -> ok.
 recreate_shard(Shard) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, recreate_shard).
+    gen_server:cast(ServerRef, recreate_shard).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -348,34 +348,6 @@ handle_call({read_range_n, StartKey, N, _Type}, _From, State) when N >= 0 ->
 	   readoptions = ReadOptions} = State,
     Reply = leveldb:read_range_n(DB, ReadOptions, StartKey, N),
     {reply, Reply, State};
-handle_call(recreate_shard, _From, State = #state{db_ref = DB,
-						  options = Options,
-						  name = Name,
-						  path = Path,
-						  subdir = Subdir,
-						  options_pl = OptionsPL}) ->
-    ?debug("Recreating shard: ~p", [Name]),
-    ok = delete_enterdb_ldb_resource(Name),
-    ok = leveldb:close_db(DB),
-    FullPath = filename:join([Path, Subdir, Name]),
-    ok = leveldb:destroy_db(FullPath, Options), 
-    
-    %% Create new options. If table was re-opened, we cannot
-    %% use the options including {create_if_missing, false}
-    %% and {error_if_exists, false}
-    
-    IntOptionsPL = lists:keyreplace(error_if_exists, 1, OptionsPL,
-				    {error_if_exists, true}),
-    NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
-				    {create_if_missing, true}),
-    OptionsRec = build_leveldb_options(NewOptionsPL),
-    {ok, NewOptions} = leveldb:options(OptionsRec),
-    {ok, NewDB} = leveldb:open_db(NewOptions, FullPath),
-    ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Name,
-							  resource = NewDB}),
-    {reply, ok, State#state{db_ref = NewDB,
-			    options = NewOptions,
-			    options_pl = NewOptionsPL}};
 handle_call({approximate_sizes, Ranges}, _From, #state{db_ref = DB} = State) ->
     R = leveldb:approximate_sizes(DB, Ranges),
     {reply, R, State};
@@ -406,6 +378,34 @@ handle_call(Req, From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_cast(recreate_shard, State = #state{db_ref = DB,
+					   options = Options,
+					   name = Name,
+					   path = Path,
+					   subdir = Subdir,
+					   options_pl = OptionsPL}) ->
+    ?debug("Recreating shard: ~p", [Name]),
+    ok = delete_enterdb_ldb_resource(Name),
+    ok = leveldb:close_db(DB),
+    FullPath = filename:join([Path, Subdir, Name]),
+    ok = leveldb:destroy_db(FullPath, Options),
+
+    %% Create new options. If table was re-opened, we cannot
+    %% use the options including {create_if_missing, false}
+    %% and {error_if_exists, false}
+
+    IntOptionsPL = lists:keyreplace(error_if_exists, 1, OptionsPL,
+				    {error_if_exists, true}),
+    NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
+				    {create_if_missing, true}),
+    OptionsRec = build_leveldb_options(NewOptionsPL),
+    {ok, NewOptions} = leveldb:options(OptionsRec),
+    {ok, NewDB} = leveldb:open_db(NewOptions, FullPath),
+    ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Name,
+							  resource = NewDB}),
+    {noreply, State#state{db_ref = NewDB,
+			  options = NewOptions,
+			  options_pl = NewOptionsPL}};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
