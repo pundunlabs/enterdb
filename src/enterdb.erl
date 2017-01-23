@@ -85,6 +85,7 @@ create_table(Name, KeyDef, Options)->
 					       {options, Options}]) of
 	{ok, EnterdbTab} ->
 	    %% Specific table options
+	    Type = maps:get(type, EnterdbTab, leveldb),
 	    HashExclude = maps:get(hash_exclude, EnterdbTab, []),
 	    Ts = maps:get(time_series, EnterdbTab, false),
 	    HashKey = enterdb_lib:get_hash_key_def(KeyDef, HashExclude, Ts),
@@ -95,7 +96,8 @@ create_table(Name, KeyDef, Options)->
 	    DefaultNOS = enterdb_lib:get_num_of_local_shards(),
 	    NumberOfShards = maps:get(num_of_shards, EnterdbTab, DefaultNOS),
 	    Comparator = maps:get(comparator, EnterdbTab, descending),
-	    NewTab = EnterdbTab#{comparator => Comparator,
+	    NewTab = EnterdbTab#{type => Type,
+				 comparator => Comparator,
 				 distributed => Dist,
 				 data_model => DataModel,
 				 hash_key => HashKey,
