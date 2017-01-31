@@ -317,10 +317,10 @@ do_write_to_disk(TD, ShardTab, Key, DBKey, DBColumns) ->
 %% @doc
 %% Updates Key according to operation definition Op.
 %% field_name() :: string().
-%% treshold() :: pos_integer().
+%% threshold() :: pos_integer().
 %% setvalue() :: pos_integer().
 %% update_instruction() :: increment |
-%%			   {increment, treshold(), setvalue()} |
+%%			   {increment, threshold(), setvalue()} |
 %%			   overwrite.
 %% data() :: pos_integer() | term().
 %% default() :: pos_integer() | term().
