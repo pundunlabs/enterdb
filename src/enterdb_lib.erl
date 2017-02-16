@@ -609,23 +609,32 @@ open_shard(Name) ->
     end.
 
 %% Open existing shard locally
-do_open_shard(#{type := leveldb} = EDBT) ->
+do_open_shard(#{shard := Shard} = EDBT) ->
+    case enterdb_ns:get(Shard) of
+	{error,no_ns_entry} ->
+	    do_open_shard_(EDBT);
+	_Pid ->
+	    ?debug("Shard: ~p is already open, ~p.",[Shard, _Pid])
+    end.
+
+%% Open existing shard locally
+do_open_shard_(#{type := leveldb} = EDBT) ->
     open_leveldb_shard(EDBT);
-do_open_shard(#{type := leveldb_wrapped} = EDBT) ->
+do_open_shard_(#{type := leveldb_wrapped} = EDBT) ->
     open_leveldb_wrp_shard(EDBT);
-do_open_shard(#{type := leveldb_tda} = EDBT) ->
+do_open_shard_(#{type := leveldb_tda} = EDBT) ->
     open_leveldb_tda_shard(EDBT);
-do_open_shard(#{type := mem_leveldb} = EDBT) ->
+do_open_shard_(#{type := mem_leveldb} = EDBT) ->
     %% TODO: init LRU-Cache here as well
     open_leveldb_shard(EDBT);
-do_open_shard(Else)->
+do_open_shard_(Else)->
     ?debug("enterdb:close_table: {type, ~p} not supported", [Else]),
     {error, "type_not_supported"}.
 
 -spec close_shard(Shard :: shard_name()) ->
     ok | {error, Reason :: term()}.
 close_shard(Shard) ->
-    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_stab, Shard) end) of
+    case enterdb_db:transaction(fun()-> mnesia:read(enterdb_stab, Shard) end) of
         {atomic, []} ->
             {error, "no_table"};
         {atomic, [#enterdb_stab{map = Map}]} ->
@@ -636,13 +645,23 @@ close_shard(Shard) ->
 
 -spec do_close_shard(ESTAB :: #{}) ->
     ok.
-do_close_shard(#{shard := Shard, type := leveldb})->
-    supervisor:terminate_child(enterdb_ldb_sup, enterdb_ns:get(Shard));
-do_close_shard(#{shard := Shard, type := leveldb_wrapped})->
-    enterdb_ldb_wrp:close_shard(Shard);
-do_close_shard(#{shard := Shard, type := leveldb_tda})->
-    enterdb_ldb_tda:close_shard(Shard);
-do_close_shard(Else)->
+do_close_shard(#{shard := Shard} = ESTAB)->
+    do_close_shard(ESTAB, enterdb_ns:get(Shard)).
+
+-spec do_close_shard(ESTAB :: #{},
+		     Pid :: pid | {error, no_ns_entry}) ->
+    ok.
+do_close_shard(#{shard := Shard}, {error,no_ns_entry})->
+    ?debug("Shard ~p, is already closed.",[Shard]);
+do_close_shard(#{type := leveldb}, Pid)->
+    supervisor:terminate_child(enterdb_ldb_sup, Pid);
+do_close_shard(#{shard := Shard, type := leveldb_wrapped}, Pid)->
+    enterdb_ldb_wrp:close_shard(Shard),
+    supervisor:terminate_child(enterdb_wrp_sup, Pid);
+do_close_shard(#{shard := Shard, type := leveldb_tda}, Pid)->
+    enterdb_ldb_tda:close_shard(Shard),
+    supervisor:terminate_child(enterdb_tda_sup, Pid);
+do_close_shard(Else, _)->
     ?debug("enterdb:close_table: {type, ~p} not supported", [Else]),
     {error, "type_not_supported"}.
 
@@ -736,8 +755,9 @@ write_enterdb_table(#{name := Name} = Map) ->
 open_table(Name, true) ->
     %% Open shards on nodes
     MFA = {?MODULE, do_open_table, [Name]},
-    RMFA = {?MODULE, do_close_table, [Name]},
-    ?dyno:topo_call(MFA, [{timeout, 10000}, {revert, RMFA}]);
+    %%RMFA = {?MODULE, do_close_table, [Name]},
+    %%?dyno:topo_call(MFA, [{timeout, 60000}, {revert, RMFA}]);
+    ?dyno:topo_call(MFA, [{timeout, 60000}]);
 open_table(Name, false) ->
     do_open_table(Name).
     
@@ -786,8 +806,9 @@ open_shards([Shard | Rest]) ->
 close_table(Name, true) ->
     %% Open shards on nodes
     MFA = {?MODULE, do_close_table, [Name]},
-    RMFA = {?MODULE, do_open_table, [Name]},
-    ?dyno:topo_call(MFA, [{timeout, 10000}, {revert, RMFA}]);
+    %%RMFA = {?MODULE, do_open_table, [Name]},
+    %%?dyno:topo_call(MFA, [{timeout, 10000}, {revert, RMFA}]);
+    ?dyno:topo_call(MFA, [{timeout, 10000}]);
 close_table(Name, false) ->
     do_close_table(Name).
 
@@ -869,8 +890,10 @@ delete_shards([]) ->
 
 delete_shard(Shard) ->
     SD = get_shard_def(Shard),
+    ?debug("Deleting ~p, SD: ~p",[Shard, SD]),
+    mnesia:dirty_delete(enterdb_stab, Shard),
     delete_shard_help(SD),
-    mnesia:dirty_delete(enterdb_stab, Shard).
+    do_close_shard(SD).
 
 %% add delete per type
 delete_shard_help(ESTAB = #{type := leveldb}) ->
@@ -886,7 +909,7 @@ delete_shard_help({error, Reason}) ->
     {error, Reason}.
 
 cleanup_table(Name) ->
-    case enterdb_lib:get_tab_def(Name) of
+    case get_tab_def(Name) of
 	{error,"no_table"} ->
 	    ok;
 	#{name := Name,

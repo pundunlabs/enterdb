@@ -181,14 +181,12 @@ close_shard(Shard) ->
 %%--------------------------------------------------------------------
 -spec delete_shard(Args :: [term()]) -> ok | {error, Reason :: term()}.
 delete_shard(Args) ->
-    Shard = proplists:get_value(name, Args),
-    Tid = get_tid(Shard),
-    cancel_timer(Tid),
     ESTAB = proplists:get_value(tab_rec, Args),
     Buckets = maps:get(buckets, ESTAB),
     [ begin
-	  NewArgs = lists:keyreplace(name, 1, Args, {name, Bucket}),
-	  ok = enterdb_ldb_worker:delete_db(NewArgs)
+	NewArgs = lists:keyreplace(name, 1, Args, {name, Bucket}),
+	ok = enterdb_ldb_worker:delete_db(NewArgs),
+	supervisor:terminate_child(enterdb_ldb_sup, enterdb_ns:get(Bucket))
       end || Bucket <- Buckets],
     ok.
 
@@ -278,7 +276,9 @@ handle_call(wrap, _From, State = #s{tid=Tid, shard=Shard}) ->
     WrappedBuckets = [LastBucket | lists:droplast(Buckets)],
     reset_timer(Tid, Shard),
     true = register_buckets(Tid, Shard, WrappedBuckets),
-    {reply, ok, State}.
+    {reply, ok, State};
+handle_call({get_iterator, _Caller}, _From, State) ->
+    {reply, {error, "not_supported"}, State}.
 
 %%--------------------------------------------------------------------
 %% @private

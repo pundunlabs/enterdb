@@ -440,7 +440,7 @@ handle_info(_Info, State) ->
 %%--------------------------------------------------------------------
 terminate(_Reason, _State = #state{db_ref = undefined}) ->
     ok;
-terminate(_Reason, _State = #state{db_ref = DB,  name = Name,
+terminate(_Reason, _State = #state{name = Name,
 				   it_mon = MonMap}) ->
     ?debug("Terminating ldb worker for shard: ~p", [Name]),
     maps:fold(fun(Mref, Pid, _Acc) ->
@@ -448,8 +448,7 @@ terminate(_Reason, _State = #state{db_ref = DB,  name = Name,
 		Res = (catch gen_server:stop(Pid)),
 		?debug("Stop iterator: ~p", [Res])
 	      end, ok, MonMap),
-    ok = delete_enterdb_ldb_resource(Name),
-    ok = leveldb:close_db(DB).
+    ensure_closed(Name).
 
 %%--------------------------------------------------------------------
 %% @private

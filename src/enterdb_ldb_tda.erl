@@ -227,19 +227,20 @@ close_shard(Shard) ->
 -spec delete_shard(Args :: [term()]) -> ok | {error, Reason :: term()}.
 delete_shard(Args) ->
     ESTAB = proplists:get_value(tab_rec, Args),
-    BucketList = get_bucket_list(get_tid(maps:get(shard, ESTAB))),
-    delete_shard(Args, BucketList).
+    Buckets = maps:get(buckets, ESTAB),
+    delete_shard(Args, Buckets).
 
 -spec delete_shard(Args :: [term()],
-		   BucketList :: [string()] | undefined) ->
+		   Buckets :: [string()] | undefined) ->
     ok | {error, Reason :: term()}.
 delete_shard(_Args, undefined) ->
     {error, "buckets_not_found"};
-delete_shard(Args, BucketList) ->
+delete_shard(Args, Buckets) ->
     [begin
-	  NewArgs = lists:keyreplace(name, 1, Args, {name, Bucket}),
-	  ok = enterdb_ldb_worker:delete_db(NewArgs)
-     end || Bucket <- BucketList],
+	NewArgs = lists:keyreplace(name, 1, Args, {name, Bucket}),
+	ok = enterdb_ldb_worker:delete_db(NewArgs),
+	supervisor:terminate_child(enterdb_ldb_sup, enterdb_ns:get(Bucket))
+     end || Bucket <- Buckets],
     ok.
 
 -spec wrap(Shard :: string(),
@@ -289,8 +290,9 @@ init([Start, #{shard := Shard, buckets := Buckets} = ESTAB]) ->
     {ok, #s{tid = Tid}};
 init([Start, #{shard := Shard, tda := #{num_of_buckets := N}} = ESTAB]) ->
     ?info("Creating EnterDB LevelDB TDA Server for Shard ~p",[Shard]),
-    List = [lists:concat([Shard, "_", Index]) || Index <- lists:seq(0, N-1)],
-    init([Start, ESTAB#{buckets => List}]).
+    Buckets = [lists:concat([Shard, "_", Index]) || Index <- lists:seq(0, N-1)],
+    ok = enterdb_lib:update_bucket_list(Shard, Buckets),
+    init([Start, ESTAB#{buckets => Buckets}]).
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -317,7 +319,9 @@ handle_call({wrap, N, BucketId}, _From, State) ->
 	    ?debug("Not Wrapping tda ~p: ~p -> ~p", [BucketId, O, N]),
 	    ok
     end,
-    {reply, ok, State}.
+    {reply, ok, State};
+handle_call({get_iterator, _Caller}, _From, State) ->
+    {reply, {error, "not_supported"}, State}.
 
 %%--------------------------------------------------------------------
 %% @private
