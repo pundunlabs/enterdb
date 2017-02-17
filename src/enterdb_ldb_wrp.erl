@@ -38,7 +38,7 @@
 	 delete_shard/1]).
 
 %% Exports for self spawned process
--export([size_wrap/3,
+-export([size_wrap/2,
 	 time_wrap/1]).
 
 %% gen_server callbacks
@@ -49,14 +49,13 @@
          terminate/2,
          code_change/3]).
 
--record(entry, {key, value}).
-
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
 
 -define(COUNTER_TRESHOLD, 10000).
 
--record(s, {tid, shard}).
+-record(s, {shard}).
+-record(pts, {buckets, counter, reference}).
 
 %%%===================================================================
 %%% API functions
@@ -80,8 +79,14 @@ start_link(Args) ->
 	   Key :: binary()) ->
     {ok, Value :: term()} | {error, Reason :: term()}.
 read(Shard, Key) ->
-    Buckets = get_buckets(get_tid(Shard)),
-    read_from_buckets(Buckets, Key).
+    Pid = enterdb_ns:get(Shard),
+    read_(Pid, Key).
+
+read_(Pid, Key) when is_pid(Pid) ->
+    Buckets = get_buckets(Pid),
+    read_from_buckets(Buckets, Key);
+read_(_, _) ->
+    {error, "table_closed"}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -94,13 +99,17 @@ read(Shard, Key) ->
             Columns :: binary()) ->
     ok | {error, Reason :: term()}.
 write(Shard, W, Key, Columns) ->
-    UpdateOp = {#entry.value, 1, ?COUNTER_TRESHOLD, 0},
-    Tid = get_tid(Shard),
-    Count =  ets:update_counter(Tid, '$counter', UpdateOp),
+    Pid = enterdb_ns:get(Shard),
+    write_(Pid, W, Key, Columns).
+
+write_(Pid, W, Key, Columns) when is_pid(Pid) ->
+    Count = enterdb_pts:update_counter(Pid, #pts.counter, 1, ?COUNTER_TRESHOLD, 0),
     SizeMargin = maps:get(size_margin, W, undefined),
-    check_counter_wrap(Count, Tid, Shard, SizeMargin),
-    [Bucket|_]  = get_buckets(Tid),
-    enterdb_ldb_worker:write(Bucket, Key, Columns).
+    check_counter_wrap(Count, Pid, SizeMargin),
+    [Bucket|_]  = get_buckets(Pid),
+    enterdb_ldb_worker:write(Bucket, Key, Columns);
+write_(_, _, _, _) ->
+    {error, "table_closed"}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -115,8 +124,14 @@ write(Shard, W, Key, Columns) ->
 	     Dist :: boolean()) ->
     ok | {error, Reason :: term()}.
 update(Shard, Key, Op, DataModel, Mapper, Dist) ->
-    Buckets  = get_buckets(get_tid(Shard)),
-    update_on_buckets(Buckets, Key, Op, DataModel, Mapper, Dist).
+    Pid = enterdb_ns:get(Shard),
+    update_(Pid, Key, Op, DataModel, Mapper, Dist).
+
+update_(Pid, Key, Op, DataModel, Mapper, Dist) when is_pid(Pid) ->
+    Buckets  = get_buckets(Pid),
+    update_on_buckets(Buckets, Key, Op, DataModel, Mapper, Dist);
+update_(_, _, _, _, _, _) ->
+    {error, "table_closed"}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -127,8 +142,14 @@ update(Shard, Key, Op, DataModel, Mapper, Dist) ->
 	     Key :: binary()) ->
     ok | {error, Reason :: term()}.
 delete(Shard, Key) ->
-    Buckets = get_buckets(get_tid(Shard)),
-    delete_from_buckets(Buckets, Key).
+    Pid = enterdb_ns:get(Shard),
+    delete_(Pid, Key).
+
+delete_(Pid, Key) when is_pid(Pid) ->
+    Buckets = get_buckets(Pid),
+    delete_from_buckets(Buckets, Key);
+delete_(_,_) ->
+    {error, "table_closed"}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -142,8 +163,14 @@ delete(Shard, Key) ->
 			Dir :: 0 | 1) ->
     {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
 read_range_binary(Shard, Range, Chunk, Dir) ->
-    Buckets = get_buckets(get_tid(Shard)),
-    read_range_from_buckets(Buckets, Range, Chunk, Dir).
+    Pid = enterdb_ns:get(Shard),
+    read_range_binary_(Pid, Range, Chunk, Dir).
+
+read_range_binary_(Pid, Range, Chunk, Dir) when is_pid(Pid) ->
+    Buckets = get_buckets(Pid),
+    read_range_from_buckets(Buckets, Range, Chunk, Dir);
+read_range_binary_(_, _, _, _) ->
+    {error, "table_closed"}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -157,26 +184,32 @@ read_range_binary(Shard, Range, Chunk, Dir) ->
 			  Dir :: 0 | 1) ->
     {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
 read_range_n_binary(Shard, StartKey, N, Dir) ->
-    Buckets = get_buckets(get_tid(Shard)),
-    read_range_n_from_buckets(Buckets, StartKey, N, Dir).
+    Pid = enterdb_ns:get(Shard),
+    read_range_n_binary_(Pid, StartKey, N, Dir).
+
+read_range_n_binary_(Pid, StartKey, N, Dir) when is_pid(Pid) ->
+    Buckets = get_buckets(Pid),
+    read_range_n_from_buckets(Buckets, StartKey, N, Dir);
+read_range_n_binary_(_, _, _, _) ->
+    {error, "table_closed"}.
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Close leveldb workers and clear helper ets tables.
+%% Close leveldb worker processes.
 %% @end
 %%--------------------------------------------------------------------
 -spec close_shard(Shard :: shard_name()) -> ok | {error, Reason :: term()}.
 close_shard(Shard) ->
-    Tid = get_tid(Shard),
-    cancel_timer(Tid),
-    Buckets = get_buckets(Tid),
+    Pid = enterdb_ns:get(Shard),
+    cancel_timer(Pid),
+    Buckets = get_buckets(Pid),
     Res = [supervisor:terminate_child(enterdb_ldb_sup, enterdb_ns:get(B)) ||
 	    B <- Buckets],
     enterdb_lib:check_error_response(lists:usort(Res)).
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Delete leveldb buckets and clear helper ets tables.
+%% Delete leveldb buckets.
 %% @end
 %%--------------------------------------------------------------------
 -spec delete_shard(Args :: [term()]) -> ok | {error, Reason :: term()}.
@@ -190,32 +223,23 @@ delete_shard(Args) ->
       end || Bucket <- Buckets],
     ok.
 
--spec size_wrap(Tid :: term(),
-		Shard :: shard_name(),
+-spec size_wrap(Pid :: pid(),
 		SizeMargin :: size_margin()) ->
     ok.
-size_wrap(Tid, Shard, SizeMargin) ->
-    [Bucket|_]  = get_buckets(Tid),
+size_wrap(Pid, SizeMargin) ->
+    [Bucket|_]  = get_buckets(Pid),
     {ok, Size} =  enterdb_ldb_worker:approximate_size(Bucket),
     case size_exceeded(Size, SizeMargin) of
 	true ->
-	    Pid = enterdb_ns:get(Shard),
 	    gen_server:call(Pid, wrap);
 	false ->
 	    ok
     end.
 
--spec time_wrap(Shard :: shard_name()) ->
+-spec time_wrap(Pid :: pid()) ->
     ok.
-time_wrap(Shard) ->
-    Pid = enterdb_ns:get(Shard),
+time_wrap(Pid) ->
     ok = gen_server:call(Pid, wrap).
-
--spec get_tid(Shard :: string()) ->
-    Tid :: term().
-get_tid(Shard) ->
-    Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, get_tid).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -236,18 +260,19 @@ init([Start, #{shard := Shard,
 	       wrapper := Wrapper,
 	       buckets := Buckets} = ESTAB]) ->
     ?info("Starting EnterDB LevelDB WRP Server for Shard ~p",[Shard]),
-    Options = [public,{read_concurrency, true},{keypos, #entry.key}],
-    Tid = ets:new(bucket, Options),
-    enterdb_ns:register_pid(self(), Shard),
-    register_buckets(Tid, Shard, Buckets),
+    Pid = self(),
+    enterdb_ns:register_pid(Pid, Shard),
+    register_buckets(Shard, Buckets),
     ChildArgs = enterdb_lib:get_ldb_worker_args(Start, ESTAB),
     [{ok, _} = supervisor:start_child(enterdb_ldb_sup,
 	[lists:keyreplace(name, 1, ChildArgs, {name, Bucket})]) ||
 	Bucket <- Buckets],
-    ets:insert(Tid, #entry{key='$counter', value=0}),
     TimeMargin = maps:get(time_margin, Wrapper, undefined),
-    register_timeout(Tid, Shard, TimeMargin),
-    {ok, #s{tid=Tid, shard=Shard}};
+    Reference = register_timeout(Pid, TimeMargin),
+    ok = enterdb_pts:new(Pid, #pts{buckets = Buckets,
+				   counter = 0,
+				   reference = Reference}),
+    {ok, #s{shard=Shard}};
 init([Start, #{shard := Shard,
 	       wrapper := #{num_of_buckets := N}} = ESTAB]) ->
     ?info("Creating EnterDB LevelDB WRP Server for Shard ~p",[Shard]),
@@ -267,15 +292,17 @@ init([Start, #{shard := Shard,
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call(get_tid, _From, State) ->
-    {reply, State#s.tid, State};
-handle_call(wrap, _From, State = #s{tid=Tid, shard=Shard}) ->
-    Buckets = get_buckets(Tid),
+handle_call(wrap, _From, State = #s{shard=Shard}) ->
+    Pid = self(),
+    Buckets = get_buckets(Pid),
     LastBucket = lists:last(Buckets),
     ok = enterdb_ldb_worker:recreate_shard(LastBucket),
     WrappedBuckets = [LastBucket | lists:droplast(Buckets)],
-    reset_timer(Tid, Shard),
-    true = register_buckets(Tid, Shard, WrappedBuckets),
+    Reference = reset_timer(Pid),
+    register_buckets(Shard, WrappedBuckets),
+    enterdb_pts:overwrite(Pid, #pts{buckets = WrappedBuckets,
+				      counter = 0,
+				      reference = Reference}),
     {reply, ok, State};
 handle_call({get_iterator, _Caller}, _From, State) ->
     {reply, {error, "not_supported"}, State}.
@@ -335,63 +362,48 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
--spec register_buckets(Tid :: term(),
-		       Shard :: string(),
+-spec register_buckets(Shard :: string(),
 		       Buckets :: [shard_name()]) ->
-    true.
-register_buckets(Tid, Shard, Buckets) ->
-    ok = enterdb_lib:update_bucket_list(Shard, Buckets),
-    ets:insert(Tid, #entry{key='$buckets', value=Buckets}).
-
--spec get_buckets(Tid :: term()) ->
     ok.
-get_buckets(Tid) ->
-    case ets:lookup(Tid, '$buckets') of
-	[#entry{value=Value}] ->
-	    Value;
-	_ ->
-	    {error, no_entry}
-    end.
+register_buckets(Shard, Buckets) ->
+    ok = enterdb_lib:update_bucket_list(Shard, Buckets).
 
--spec register_timeout(Tid :: term(),
-		       Shard :: string(),
+-spec get_buckets(Pid :: pid()) ->
+    ok.
+get_buckets(Pid) ->
+    enterdb_pts:lookup(Pid, #pts.buckets).
+
+-spec register_timeout(Pid :: term(),
 		       TimeMargin :: time_margin()) -> ok.
-register_timeout(_, _, undefined) ->
-    ok;
-register_timeout(Tid, Shard, TimeMargin) ->
+register_timeout(_, undefined) ->
+    undefined;
+register_timeout(Pid, TimeMargin) ->
     Time = calc_milliseconds(TimeMargin),
-    {ok, Tref} = timer:apply_after(Time, ?MODULE, time_wrap, [Shard]),
-    true = register_timer_ref(Tid, #{tref=>Tref, time_margin=>TimeMargin}),
-    ok.
+    {ok, Tref} = timer:apply_after(Time, ?MODULE, time_wrap, [Pid]),
+    #{tref => Tref, time_margin => TimeMargin}.
 
--spec register_timer_ref(Tid :: term(), Map :: map()) ->
-    true.
-register_timer_ref(Tid, Map) ->
-    ets:insert(Tid, #entry{key='$reference', value=Map}).
-
--spec reset_timer(Tid :: term(), Shard :: string()) ->
+-spec reset_timer(Pid :: pid()) ->
     ok.
-reset_timer(Tid, Shard) ->
-    case ets:lookup(Tid, '$reference') of
-	[] ->
-	    ok;
-	[#entry{value=Map}] ->
+reset_timer(Pid) ->
+    case enterdb_pts:lookup(Pid, #pts.reference) of
+	undefined ->
+	    undefined;
+	Map ->
 	    Tref = maps:get(tref, Map),
 	    timer:cancel(Tref),
 	    TimeMargin = maps:get(time_margin, Map),
-	    register_timeout(Tid, Shard, TimeMargin)
+	    register_timeout(Pid, TimeMargin)
     end.
 
--spec cancel_timer(Tid :: term()) ->
+-spec cancel_timer(Pid :: pid()) ->
     ok.
-cancel_timer(Tid) ->
-    case ets:lookup(Tid, '$reference') of
-	[] ->
+cancel_timer(Pid) ->
+    case enterdb_pts:lookup(Pid, #pts.reference) of
+	undefined ->
 	    ok;
-	[#entry{value=Map}] ->
+	Map ->
 	    Tref = maps:get(tref, Map),
-	    timer:cancel(Tref),
-	    ets:delete(Tid, '$reference')
+	    timer:cancel(Tref)
     end.
 
 -spec calc_milliseconds(TimeMargin :: time_margin()) ->
@@ -404,17 +416,16 @@ calc_milliseconds({hours, Hours}) ->
     Hours * 3600000.
 
 -spec check_counter_wrap(Count :: integer(),
-			 Tid :: term(),
-			 Shard :: shard_name(),
+			 Pid :: pid(),
 			 SizeMargin :: size_margin()) ->
     ok.
-check_counter_wrap(_, _, _, undefined) ->
+check_counter_wrap(_, _, undefined) ->
     ok;
-check_counter_wrap(Count, _, _, _) when Count < ?COUNTER_TRESHOLD ->
+check_counter_wrap(Count, _, _) when Count < ?COUNTER_TRESHOLD ->
     ok;
-check_counter_wrap(Count, Tid, Shard, SizeMargin)
+check_counter_wrap(Count, Pid, SizeMargin)
     when Count == ?COUNTER_TRESHOLD ->
-    erlang:spawn(?MODULE, size_wrap, [Tid, Shard, SizeMargin]).
+    erlang:spawn(?MODULE, size_wrap, [Pid, SizeMargin]).
 
 -spec size_exceeded(Size :: integer(),
 		    SizeMargin :: size_margin()) ->

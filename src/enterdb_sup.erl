@@ -90,8 +90,10 @@ init([]) ->
 			permanent, 20000, worker, [enterdb_ns]},
     EdbRS	    = {enterdb_rs, {enterdb_rs, start_link, []},
 			permanent, 20000, worker, [enterdb_rs]},
+    EdbPTS	    = {enterdb_pts, {enterdb_pts, start_link, []},
+			permanent, 20000, worker, [enterdb_pts]},
 
-    {ok, {SupFlags, [EdbNS, EdbRS, EdbLitSup,
+    {ok, {SupFlags, [EdbNS, EdbRS, EdbPTS, EdbLitSup,
 		     EdbLdbWrpSup, EdbLdbTdaSup, EdbLdbSup,
 		     EdbMemMgrServer]}}.
 

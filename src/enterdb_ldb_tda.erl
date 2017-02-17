@@ -45,8 +45,7 @@
          terminate/2,
          code_change/3]).
 
--record(entry, {key, value}).
--record(s, {tid}).
+-record(s, {}).
 
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
@@ -75,20 +74,22 @@ start_link(Args) ->
 	   DBKey :: binary()) ->
     {ok, Value :: term()} | {error, Reason :: term()}.
 read(Shard, Tda = #{ts_field := KF}, Key, DBKey) ->
-    read_(Shard, Tda, find_timestamp_in_key(KF, Key), DBKey).
+    Pid = enterdb_ns:get(Shard),
+    read_(Pid, Tda, find_timestamp_in_key(KF, Key), DBKey).
 
--spec read_(Shard :: string(),
+-spec read_(Pid :: pid(),
 	    Tda :: tda(),
 	    Ts :: undefined | integer(),
 	    DBKey :: binary()) ->
     {ok, Value :: term()} | {error, Reason :: term()}.
-read_(Shard, #{num_of_buckets := S,
-	       time_margin := {_, _} = TM,
-	       precision := P}, Ts, DBKey) when is_integer(Ts) -> 
+read_(Pid, #{num_of_buckets := S,
+	     time_margin := {_, _} = TM,
+	     precision := P}, Ts, DBKey) when is_pid(Pid), is_integer(Ts) ->
     N = get_nanoseconds(P, Ts) div get_nanoseconds(TM),
     BucketId = N rem S,
-    Tid = get_tid(Shard),
-    enterdb_ldb_worker:read(get_bucket(Tid, BucketId), DBKey);
+    enterdb_ldb_worker:read(get_bucket(Pid, BucketId), DBKey);
+read_({error, no_ns_entry}, _, _, _)  ->
+    {error, "table_closed"};
 read_(_, _, Ts, _) when not is_integer(Ts) ->
     {error, "timestamp_is_not_integer"}.
 
@@ -104,17 +105,20 @@ read_(_, _, Ts, _) when not is_integer(Ts) ->
             DBColumns :: binary()) ->
     ok | {error, Reason :: term()}.
 write(Shard, Tda = #{ts_field := KF}, Key, DBKey, DBColumns) ->
-    write_(Shard, Tda, find_timestamp_in_key(KF, Key), DBKey, DBColumns).
+    Pid = enterdb_ns:get(Shard),
+    write_(Pid, Tda, find_timestamp_in_key(KF, Key), DBKey, DBColumns).
 
-write_(Shard, #{num_of_buckets := S,
-	        time_margin := {_, _} = TM,
-	        precision := P}, Ts, DBKey, DBColumns) when is_integer(Ts) ->
+write_(Pid, #{num_of_buckets := S,
+	      time_margin := {_, _} = TM,
+	      precision := P}, Ts, DBKey, DBColumns) when is_pid(Pid),
+							  is_integer(Ts) ->
     N = get_nanoseconds(P, Ts) div get_nanoseconds(TM),
     BucketId = N rem S,
-    Tid = get_tid(Shard),
-    {Old, Bucket} = get_bucket_n(Tid, BucketId),
-    ok = wrap(Shard, N, Old, BucketId),
+    {Old, Bucket} = get_bucket_n(Pid, BucketId),
+    ok = wrap(Pid, N, Old, BucketId),
     enterdb_ldb_worker:write(Bucket, DBKey, DBColumns);
+write_({error, no_ns_entry}, _, _, _, _) ->
+    {error, "table_closed"};
 write_(_, _, Ts, _, _) when not is_integer(Ts) ->
     {error, "timestamp_is_not_integer"}.
 
@@ -128,29 +132,32 @@ write_(_, _, Ts, _, _) when not is_integer(Ts) ->
              DBKey :: binary(),
              Op :: update_op()) ->
     ok | {error, Reason :: term()}.
-update(TD = #{tda :=  #{ts_field := KF}}, Key, DBKey, Op) ->
-    update_(TD, find_timestamp_in_key(KF, Key), DBKey, Op).
+update(TD = #{shard :=Shard,
+	      tda :=  #{ts_field := KF}}, Key, DBKey, Op) ->
+    Pid = enterdb_ns:get(Shard),
+    update_(Pid, TD, find_timestamp_in_key(KF, Key), DBKey, Op).
 
--spec update_(#{},
+-spec update_(Pid :: pid(),
+	      #{},
 	      Ts :: integer(),
 	      DBKey :: binary(),
 	      Op :: update_op()) ->
     ok | {error, Reason :: term()}.
-update_(#{shard := Shard,
-	  tda := #{num_of_buckets := S,
-		  time_margin := {_, _} = TM,
-		  precision := P},
-	  data_model := DataModel,
-	  column_mapper := Mapper,
-	  distributed := Dist},
-       Ts, DBKey, Op) when is_integer(Ts) ->
+update_(Pid, #{tda := #{num_of_buckets := S,
+			time_margin := {_, _} = TM,
+			precision := P},
+	       data_model := DataModel,
+	       column_mapper := Mapper,
+	       distributed := Dist},
+	Ts, DBKey, Op) when is_pid(Pid), is_integer(Ts) ->
     N = get_nanoseconds(P, Ts) div get_nanoseconds(TM),
     BucketId = N rem S,
-    Tid = get_tid(Shard),
-    {Old, Bucket}  = get_bucket_n(Tid, BucketId),
-    ok = wrap(Shard, N, Old, BucketId),
+    {Old, Bucket}  = get_bucket_n(Pid, BucketId),
+    ok = wrap(Pid, N, Old, BucketId),
     enterdb_ldb_worker:update(Bucket, DBKey, Op, DataModel, Mapper, Dist);
-update_(_, Ts, _, _) when not is_integer(Ts) ->
+update_({error, no_ns_entry}, _, _, _, _)  ->
+    {error, "table_closed"};
+update_(_, _, Ts, _, _) when not is_integer(Ts) ->
     {error, "timestamp_is_not_integer"}.
 
 %%--------------------------------------------------------------------
@@ -164,16 +171,18 @@ update_(_, Ts, _, _) when not is_integer(Ts) ->
 	     DBKey :: binary()) ->
     ok | {error, Reason :: term()}.
 delete(Shard, Tda = #{ts_field := KF}, Key, DBKey) ->
-    delete_(Shard, Tda, find_timestamp_in_key(KF, Key), DBKey).
+    Pid = enterdb_ns:get(Shard),
+    delete_(Pid, Tda, find_timestamp_in_key(KF, Key), DBKey).
 
-delete_(Shard, #{num_of_buckets := S,
-		 time_margin := {_, _} = TM,
-		 precision := P}, Ts, DBKey) when is_integer(Ts) ->
+delete_(Pid, #{num_of_buckets := S,
+	       time_margin := {_, _} = TM,
+	       precision := P}, Ts, DBKey) when is_pid(Pid), is_integer(Ts) ->
     N = get_nanoseconds(P, Ts) div get_nanoseconds(TM),
     BucketId = N rem S,
-    Tid = get_tid(Shard),
-    Bucket  = get_bucket(Tid, BucketId),
+    Bucket  = get_bucket(Pid, BucketId),
     enterdb_ldb_worker:delete(Bucket, DBKey);
+delete_({error, no_ns_entry}, _, Ts, _) when not is_integer(Ts) ->
+    {error, "table_closed"};
 delete_(_, _, Ts, _) when not is_integer(Ts) ->
     {error, "timestamp_is_not_integer"}.
 
@@ -189,8 +198,14 @@ delete_(_, _, Ts, _) when not is_integer(Ts) ->
 			Dir :: 0 | 1) ->
     {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
 read_range_binary(Shard, Range, Chunk, Dir) ->
-    Buckets = get_bucket_list(get_tid(Shard)),
-    read_range_from_buckets(Buckets, Range, Chunk, Dir).
+    Pid = enterdb_ns:get(Shard),
+    read_range_binary_(Pid, Range, Chunk, Dir).
+
+read_range_binary_(Pid, Range, Chunk, Dir) when is_pid(Pid) ->
+    Buckets = get_bucket_list(Pid),
+    read_range_from_buckets(Buckets, Range, Chunk, Dir);
+read_range_binary_({error, no_ns_entry}, _, _, _) ->
+    {error, "table_closed"}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -204,24 +219,30 @@ read_range_binary(Shard, Range, Chunk, Dir) ->
 			  Dir :: 0 | 1) ->
     {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
 read_range_n_binary(Shard, StartKey, N, Dir) ->
-    Buckets = get_bucket_list(get_tid(Shard)),
-    read_range_n_from_buckets(Buckets, StartKey, N, Dir).
+    Pid = enterdb_ns:get(Shard),
+    read_range_n_binary_(Pid, StartKey, N, Dir).
+
+read_range_n_binary_(Pid, StartKey, N, Dir) when is_pid(Pid) ->
+    Buckets = get_bucket_list(Pid),
+    read_range_n_from_buckets(Buckets, StartKey, N, Dir);
+read_range_n_binary_({error, no_ns_entry}, _,_,_) ->
+    {error, "table_closed"}.
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Close leveldb workers and clear helper ets tables.
+%% Close leveldb workers.
 %% @end
 %%--------------------------------------------------------------------
 -spec close_shard(Shard :: shard_name()) -> ok | {error, Reason :: term()}.
 close_shard(Shard) ->
-    BucketList = get_bucket_list(get_tid(Shard)),
+    BucketList = get_bucket_list(enterdb_ns:get(Shard)),
     Res = [supervisor:terminate_child(enterdb_ldb_sup, enterdb_ns:get(B)) ||
 	    B <- BucketList],
     enterdb_lib:check_error_response(lists:usort(Res)).
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Delete leveldb buckets and clear helper ets tables.
+%% Delete leveldb buckets.
 %% @end
 %%--------------------------------------------------------------------
 -spec delete_shard(Args :: [term()]) -> ok | {error, Reason :: term()}.
@@ -243,7 +264,7 @@ delete_shard(Args, Buckets) ->
      end || Bucket <- Buckets],
     ok.
 
--spec wrap(Shard :: string(),
+-spec wrap(Pid :: pid(),
 	   N :: pos_integer(),
 	   Old :: pos_integer(),
 	   BucketId :: integer()) ->
@@ -252,15 +273,8 @@ wrap(_, N, N, _) ->
     ok;
 wrap(_, N, Old, _) when Old > N ->
     ok;
-wrap(Shard, N, _, BucketId) ->
-    Pid = enterdb_ns:get(Shard),
+wrap(Pid, N, _, BucketId) ->
     gen_server:call(Pid, {wrap, N, BucketId}).
-
--spec get_tid(Shard :: string()) ->
-    Tid :: term().
-get_tid(Shard) ->
-    Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, get_tid).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -279,15 +293,17 @@ get_tid(Shard) ->
 %%--------------------------------------------------------------------
 init([Start, #{shard := Shard, buckets := Buckets} = ESTAB]) ->
     ?info("Starting EnterDB LevelDB TDA Server for Shard ~p",[Shard]),
-    Options = [public,{read_concurrency, true},{keypos, #entry.key}],
-    Tid = ets:new(bucket, Options),
-    enterdb_ns:register_pid(self(), Shard),
-    register_bucket_list(Tid, Buckets),
+    Pid = self(),
+    enterdb_ns:register_pid(Pid, Shard),
     ChildArgs = enterdb_lib:get_ldb_worker_args(Start, ESTAB),
     [{ok, _} = supervisor:start_child(enterdb_ldb_sup,
 	[lists:keyreplace(name, 1, ChildArgs, {name, Bucket})]) ||
 	Bucket <- Buckets],
-    {ok, #s{tid = Tid}};
+    BucketList = register_bucket_list(Pid, Buckets),
+    InitList = [{1, pts} | BucketList],
+    Tuple = erlang:make_tuple(length(InitList), undefined, InitList),
+    ok = enterdb_pts:new(self(), Tuple),
+    {ok, #s{}};
 init([Start, #{shard := Shard, tda := #{num_of_buckets := N}} = ESTAB]) ->
     ?info("Creating EnterDB LevelDB TDA Server for Shard ~p",[Shard]),
     Buckets = [lists:concat([Shard, "_", Index]) || Index <- lists:seq(0, N-1)],
@@ -307,14 +323,13 @@ init([Start, #{shard := Shard, tda := #{num_of_buckets := N}} = ESTAB]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call(get_tid, _From, State) ->
-    {reply, State#s.tid, State};
 handle_call({wrap, N, BucketId}, _From, State) ->
-    case get_bucket_n(State#s.tid, BucketId) of
+    Pid = self(),
+    case get_bucket_n(Pid, BucketId) of
 	{O, Bucket} when O < N ->
 	    ?debug("Wrapping tda ~p: ~p -> ~p", [BucketId, O, N]),
 	    ok = enterdb_ldb_worker:recreate_shard(Bucket),
-	    true = register_bucket(State#s.tid, BucketId, N, Bucket);
+	    true = register_bucket(Pid, BucketId, N, Bucket);
 	{O, _} ->
 	    ?debug("Not Wrapping tda ~p: ~p -> ~p", [BucketId, O, N]),
 	    ok
@@ -378,50 +393,44 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
--spec register_bucket(Tid :: pid(),
+-spec register_bucket(Pid :: pid(),
 		      BucketId :: integer(),
 		      N :: pos_integer(),
 		      Bucket :: string()) ->
     true.
-register_bucket(Tid, BucketId, N, Bucket) ->
-    ets:insert(Tid, #entry{key=BucketId, value={N, Bucket}}).
+register_bucket(Pid, BucketId, N, Bucket) ->
+    enterdb_pts:insert(Pid, BucketId + 2, {N, Bucket}).
 
--spec register_bucket_list(Tid :: pid(),
+-spec register_bucket_list(Pid :: pid(),
 			   BucketList :: [shard_name()]) ->
-    true.
-register_bucket_list(Tid, BucketList) ->
-    register_bucket_list(Tid, BucketList, 0).
+    BucketList :: [{0, string()}].
+register_bucket_list(Pid, BucketList) ->
+    register_bucket_list(Pid, BucketList, 2, []).
 
-register_bucket_list(Tid, [Bucket|Rest], BucketId) ->
-    ets:insert(Tid, #entry{key=BucketId, value={0, Bucket}}),
-    register_bucket_list(Tid, Rest, BucketId+1);
-register_bucket_list(_Tid, [], _) ->
-    true.
+register_bucket_list(Pid, [Bucket|Rest], Pos, Acc) ->
+    register_bucket_list(Pid, Rest, Pos + 1, [{Pos, {0, Bucket}} | Acc]);
+register_bucket_list(_Pid, [], _, Acc) ->
+    lists:reverse(Acc).
 
--spec get_bucket_list(Tid :: pid()) ->
+-spec get_bucket_list(Pid :: pid()) ->
     [Bucket :: string()].
-get_bucket_list(Tid) ->
-    ets:foldl(fun(#entry{value = {_,B}}, Acc) -> [B | Acc] end, [], Tid).
+get_bucket_list(Pid) ->
+    enterdb_pts:foldl(fun({_, B}, Acc) -> [B | Acc] end, [], Pid).
 
--spec get_bucket(Tid :: pid(), BucketId :: integer()) ->
+-spec get_bucket(Pid :: pid(), BucketId :: integer()) ->
     Bucket :: string().
-get_bucket(Tid, BucketId) ->
-    case ets:lookup(Tid, BucketId) of
-	[#entry{value={_, Bucket}}] ->
+get_bucket(Pid, BucketId) ->
+    case enterdb_pts:lookup(Pid, BucketId + 2) of
+	{_, Bucket} ->
 	    Bucket;
 	_ ->
 	    {error, no_entry}
     end.
 
--spec get_bucket_n(Tid :: pid(), BucketId :: integer()) ->
+-spec get_bucket_n(Pid :: pid(), BucketId :: integer()) ->
     {N :: undefined | pos_integer(), Bucket :: string()}.
-get_bucket_n(Tid, BucketId) ->
-    case ets:lookup(Tid, BucketId) of
-	[#entry{value=Value}] ->
-	    Value;
-	_ ->
-	    {error, no_entry}
-    end.
+get_bucket_n(Pid, BucketId) ->
+    enterdb_pts:lookup(Pid, BucketId + 2).
 
 -spec read_range_from_buckets(Buckets :: [shard_name()],
 			      {StartKey :: binary(), StopKey :: binary()},
