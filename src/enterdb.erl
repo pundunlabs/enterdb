@@ -542,7 +542,9 @@ table_info(Name) ->
 	    Dist = maps:get(distributed, Map),
 	    Shards = maps:get(shards, Map),
 	    SizePL = get_size_param([size], Type, Shards, Dist),
-	    Info = SizePL ++ maps:to_list(Map),
+	    ColumnsMapper = maps:get(column_mapper, Map),
+	    ColumnsPL = get_columns_param([columns], ColumnsMapper),
+	    Info = SizePL ++ ColumnsPL ++ maps:to_list(Map),
 	    {ok, lists:keysort(1, Info)};
 	[] ->
 	    {error, "no_table"}
@@ -563,7 +565,9 @@ table_info(Name, Parameters) ->
 	    Dist = maps:get(distributed, Map),
 	    Shards = maps:get(shards, Map),
 	    SizePL = get_size_param(Parameters, Type, Shards, Dist),
-	    List = SizePL ++ maps:to_list(Map),
+	    ColumnsMapper = maps:get(column_mapper, Map),
+	    ColumnsPL = get_columns_param(Parameters, ColumnsMapper),
+	    List = SizePL ++ ColumnsPL ++ maps:to_list(Map),
 	    Info = [ proplists:lookup(P, List) || P <- Parameters],
 	    {ok, lists:keysort(1, Info)};
 	[] ->
@@ -583,6 +587,20 @@ get_size_param(Parameters, Type, Shards, Dist) ->
 	    []
     end.
 
+get_columns_param(Parameters, ColumnsMapper) ->
+    case lists:member(columns, Parameters) of
+	true ->
+	    case ColumnsMapper:entries() of
+		Map ->
+		    List = maps:to_list(Map),
+		    Fun = fun(E) -> is_list(element(1,E)) end,
+		    Filtered = lists:filter(Fun, List),
+		    Sorted = lists:keysort(2, Filtered),
+		    [{columns, [C || {C, _} <- Sorted]}]
+	    end;
+	false ->
+	    []
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
