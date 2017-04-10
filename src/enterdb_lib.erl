@@ -302,8 +302,9 @@ verify_table_options([{type, Type}|Rest])
          %Type =:= mem_leveldb;
 	 Type =:= leveldb_wrapped;
 	 %Type =:= mem_levedb_wrapped;
-	 Type =:= leveldb_tda
-	 %Type =:= mem_leveldb_tda
+	 Type =:= leveldb_tda;
+	 %Type =:= mem_leveldb_tda;
+	 Type =:= rocksdb
     ->
 	verify_table_options(Rest);
 
@@ -589,7 +590,11 @@ do_create_shard_type(#{type := mem_leveldb} = ESTAB) ->
 
 do_create_shard_type(#{type := mem_leveldb_wrapped} = ESTAB)->
     %% TODO: init wrapping LRU-Cache here as well
-    create_leveldb_shard(ESTAB).
+    create_leveldb_shard(ESTAB);
+
+do_create_shard_type(#{type := rocksdb} = ESTAB) ->
+    create_rocksdb_shard(ESTAB).
+
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -627,6 +632,8 @@ do_open_shard_(#{type := leveldb_tda} = EDBT) ->
 do_open_shard_(#{type := mem_leveldb} = EDBT) ->
     %% TODO: init LRU-Cache here as well
     open_leveldb_shard(EDBT);
+do_open_shard_(#{type := rocksdb} = EDBT) ->
+    open_rocksdb_shard(EDBT);
 do_open_shard_(Else)->
     ?debug("enterdb:close_table: {type, ~p} not supported", [Else]),
     {error, "type_not_supported"}.
@@ -661,24 +668,42 @@ do_close_shard(#{shard := Shard, type := leveldb_wrapped}, Pid)->
 do_close_shard(#{shard := Shard, type := leveldb_tda}, Pid)->
     enterdb_ldb_tda:close_shard(Shard),
     supervisor:terminate_child(enterdb_tda_sup, Pid);
+do_close_shard(#{type := rocksdb}, Pid)->
+    supervisor:terminate_child(enterdb_rdb_sup, Pid);
 do_close_shard(Else, _)->
     ?debug("enterdb:close_table: {type, ~p} not supported", [Else]),
     {error, "type_not_supported"}.
 
 %% create leveldb shard
-%% TODO: move out to levedb specific lib.
+%% TODO: move out to leveldb specific lib.
 -spec create_leveldb_shard(ESTAB :: #{}) -> ok.
 create_leveldb_shard(ESTAB) ->
     ChildArgs = get_ldb_worker_args(create, ESTAB),
     {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
     ok.
 
+%% create rocksdb shard
+%% TODO: move out to rocksdb specific lib.
+-spec create_rocksdb_shard(ESTAB :: #{}) -> ok.
+create_rocksdb_shard(ESTAB) ->
+    ChildArgs = get_rdb_worker_args(create, ESTAB),
+    {ok, _Pid} = supervisor:start_child(enterdb_rdb_sup, [ChildArgs]),
+    ok.
+
 %% open leveldb shard
-%% TODO: move out to levedb specific lib.
+%% TODO: move out to leveldb specific lib.
 -spec open_leveldb_shard(ESTAB :: #{}) -> ok.
 open_leveldb_shard(ESTAB) ->
     ChildArgs = get_ldb_worker_args(open, ESTAB),
     {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
+    ok.
+
+%% open rocksdb shard
+%% TODO: move out to rocksdb specific lib.
+-spec open_rocksdb_shard(ESTAB :: #{}) -> ok.
+open_rocksdb_shard(ESTAB) ->
+    ChildArgs = get_rdb_worker_args(open, ESTAB),
+    {ok, _Pid} = supervisor:start_child(enterdb_rdb_sup, [ChildArgs]),
     ok.
 
 -spec create_leveldb_wrp_shard(ESTAB :: #{}) ->
@@ -905,6 +930,9 @@ delete_shard_help(ESTAB = #{type := leveldb_wrapped}) ->
 delete_shard_help(ESTAB = #{type := leveldb_tda}) ->
     Args = get_ldb_worker_args(delete, ESTAB),
     enterdb_ldb_tda:delete_shard(Args);
+delete_shard_help(ESTAB = #{type := rocksdb}) ->
+    Args = get_rdb_worker_args(delete, ESTAB),
+    enterdb_rdb_worker:delete_db(Args);
 delete_shard_help({error, Reason}) ->
     {error, Reason}.
 
@@ -946,7 +974,8 @@ read_range_on_shards({ok, Shards},
 	    mem_leveldb -> {enterdb_ldb_worker, []};
 	    leveldb_wrapped -> {enterdb_ldb_wrp, [Dir]};
 	    leveldb_tda -> {enterdb_ldb_tda, [Dir]};
-	    mem_leveldb_wrapped -> {enterdb_ldb_worker, []}
+	    mem_leveldb_wrapped -> {enterdb_ldb_worker, []};
+	    rocksdb -> {enterdb_rdb_worker, []}
 	end,
     BaseArgs = [RangeDB, Chunk | TrailingArgs],
     Req = {CallbackMod, read_range_binary, BaseArgs},
@@ -1041,7 +1070,8 @@ read_range_n_on_shards({ok, Shards},
 	    mem_leveldb -> {enterdb_ldb_worker, []};
 	    leveldb_wrapped -> {enterdb_ldb_wrp, [Dir]};
 	    leveldb_tda -> {enterdb_ldb_tda, [Dir]};
-	    mem_leveldb_wrapped -> {enterdb_ldb_worker, []}
+	    mem_leveldb_wrapped -> {enterdb_ldb_worker, []};
+	    rocksdb -> {enterdb_rdb_worker, []}
 	end,
     %%To be more efficient we can read less number of records from each shard.
     %%NofShards = length(Shards),
@@ -1071,6 +1101,16 @@ approximate_size(leveldb, Shards, true) ->
     sum_up_sizes(Sizes, 0);
 approximate_size(leveldb, Shards, false) ->
     Req = {enterdb_ldb_worker, approximate_size, []},
+    Sizes = pmap(Req, Shards),
+    ?debug("Sizes of all shards: ~p", [Sizes]),
+    sum_up_sizes(Sizes, 0);
+approximate_size(rocksdb, Shards, true) ->
+    Req = {enterdb_rdb_worker, approximate_size, []},
+    Sizes = ?dyno:map_shards_seq(Req, Shards),
+    ?debug("Sizes of all shards: ~p", [Sizes]),
+    sum_up_sizes(Sizes, 0);
+approximate_size(rocksdb, Shards, false) ->
+    Req = {enterdb_rdb_worker, approximate_size, []},
     Sizes = pmap(Req, Shards),
     ?debug("Sizes of all shards: ~p", [Sizes]),
     sum_up_sizes(Sizes, 0);
@@ -1613,4 +1653,23 @@ get_ldb_worker_args(Start, Smap = #{shard := Shard,
 ldb_open_options(create) ->
     [{create_if_missing, true}, {error_if_exists, true}];
 ldb_open_options(Start) when Start == open; Start == delete ->
+    [{create_if_missing, false}, {error_if_exists, false}].
+
+-spec get_rdb_worker_args(Start :: create | open | delete,
+			  Smap :: #{}) ->
+    [term()].
+get_rdb_worker_args(Start, Smap = #{shard := Shard,
+				    name := Name,
+				    comparator := Comparator,
+				    db_path := Path}) ->
+    Options = [{comparator, Comparator} | rdb_open_options(Start)],
+    [{name, Shard}, {db_path, Path}, {subdir, Name}, {options, Options},
+     {tab_rec, Smap}].
+
+-spec rdb_open_options(Start :: create | open | delete) ->
+    [{create_if_missing, boolean()} |
+     {error_if_exists, boolean()}].
+rdb_open_options(create) ->
+    [{create_if_missing, true}, {error_if_exists, true}];
+rdb_open_options(Start) when Start == open; Start == delete ->
     [{create_if_missing, false}, {error_if_exists, false}].
