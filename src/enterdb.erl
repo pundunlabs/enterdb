@@ -198,6 +198,8 @@ do_read(_TD = #{type := leveldb_wrapped}, ShardTab, _Key, DBKey) ->
 do_read(_TD = #{type := leveldb_tda,
 		tda := Tda}, ShardTab, Key, DBKey) ->
     enterdb_ldb_tda:read(ShardTab, Tda, Key, DBKey);
+do_read(_TD = #{type := rocksdb}, ShardTab, _Key, DBKey) ->
+    enterdb_rdb_worker:read(ShardTab, DBKey);
 do_read(_TD = #{type := Type}, _ShardTab, _Key, _DBKey) ->
     {error, {"read_not_supported", Type}};
 do_read({error, R}, _, _, _) ->
@@ -298,6 +300,8 @@ do_write(#{type := leveldb}, ShardTab, _Key, DBKey, DBColumns) ->
     enterdb_ldb_worker:write(ShardTab, DBKey, DBColumns);
 do_write(#{type := mem_leveldb}, _Tab, _Key, _DBKey, _DBColumns) ->
     ok;
+do_write(#{type := rocksdb}, ShardTab, _Key, DBKey, DBColumns) ->
+    enterdb_rdb_worker:write(ShardTab, DBKey, DBColumns);
 do_write({error, R}, _, _Key, _DBKey, _DBColumns) ->
     {error, R};
 do_write(TD, Tab, Key, _DBKey, _DBColumns) ->
@@ -395,6 +399,11 @@ do_update(#{type := leveldb,
     enterdb_ldb_worker:update(Shard, DBKey, Op, DataModel, Mapper, Dist);
 do_update(_TD = #{type := mem_leveldb}, _Tab, _Key, _DBKey, _Op) ->
     ok;
+do_update(#{type := rocksdb,
+	    data_model := DataModel,
+	    column_mapper := Mapper,
+	    distributed := Dist}, Shard, _Key, DBKey, Op) ->
+    enterdb_rdb_worker:update(Shard, DBKey, Op, DataModel, Mapper, Dist);
 do_update({error, R}, _, _Key, _DBKey, _Op) ->
     {error, R};
 do_update(TD, Tab, Key, _DBKey, _Op) ->
@@ -438,6 +447,8 @@ do_delete(_TD = #{type := leveldb_wrapped}, ShardTab, _Key, DBKey) ->
     enterdb_ldb_wrp:delete(ShardTab, DBKey);
 do_delete(_TD = #{type := leveldb_tda, tda := Tda}, ShardTab, Key, DBKey) ->
     enterdb_ldb_tda:delete(ShardTab, Tda, Key, DBKey);
+do_delete(_TD = #{type := rocksdb}, ShardTab, _Key, DBKey) ->
+    enterdb_rdb_worker:delete(ShardTab, DBKey);
 do_delete(_TD = #{type := Type}, _ShardTab, _Key, _DBKey) ->
     {error, {delete_not_supported, Type}};
 do_delete({error, R}, _, _, _) ->
