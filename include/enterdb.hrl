@@ -47,7 +47,8 @@
 		leveldb_wrapped |
 		mem_leveldb_wrapped |
 		leveldb_tda |
-		mem_leveldb_tda.
+		mem_leveldb_tda |
+		rocksdb.
 
 -type data_model() :: kv | array | map.
 

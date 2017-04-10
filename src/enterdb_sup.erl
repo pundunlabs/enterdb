@@ -74,6 +74,9 @@ init([]) ->
 
     EdbMemMgrServer = {enterdb_mem_wrp_mgr, {enterdb_mem_wrp_mgr, start_link, []},
 			permanent, 2000, worker, [enterdb_mem_wrp_mgr]},
+    EdbRdbSup	    = {enterdb_rdb_sup,
+			{enterdb_simple_sup, start_link,[rocksdb]},
+			permanent, infinity, supervisor,[enterdb_simple_sup]},
     EdbLdbSup	    = {enterdb_ldb_sup,
 			{enterdb_simple_sup, start_link,[leveldb]},
 			permanent, infinity, supervisor,[enterdb_simple_sup]},
@@ -94,7 +97,7 @@ init([]) ->
 			permanent, 20000, worker, [enterdb_pts]},
 
     {ok, {SupFlags, [EdbNS, EdbRS, EdbPTS, EdbLitSup,
-		     EdbLdbWrpSup, EdbLdbTdaSup, EdbLdbSup,
+		     EdbLdbWrpSup, EdbLdbTdaSup, EdbRdbSup, EdbLdbSup,
 		     EdbMemMgrServer]}}.
 
 %%%===================================================================

@@ -4,6 +4,9 @@
 -export([start_link/1]).
 -export([init/1]).
 
+start_link(rocksdb) ->
+    supervisor:start_link({local, enterdb_rdb_sup},
+                          ?MODULE, [rocksdb]);
 start_link(leveldb) ->
     supervisor:start_link({local, enterdb_ldb_sup},
                           ?MODULE, [leveldb]);
@@ -21,6 +24,10 @@ start_link(Type) ->
                            [Type]),
     {error, "not_supported"}.
 
+init([rocksdb]) ->
+    {ok, {{simple_one_for_one, 10, 5},
+          [{enterdb_rdb_worker, {enterdb_rdb_worker, start_link, []},
+            transient, 2000, worker, [enterdb_rdb_worker]}]}};
 init([leveldb]) ->
     {ok, {{simple_one_for_one, 10, 5},
           [{enterdb_ldb_worker, {enterdb_ldb_worker, start_link, []},
