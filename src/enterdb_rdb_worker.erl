@@ -143,8 +143,7 @@ delete_db(Args) ->
     ok = ensure_closed(Name),
 
     OptionsPL = proplists:get_value(options, Args),
-    OptionsRec = build_rocksdb_options(OptionsPL),
-    {ok, Options} = rocksdb:options(OptionsRec),
+    {ok, Options} = rocksdb:options(OptionsPL),
 
     FullPath = filename:join([Path, Subdir, Name]),
     rocksdb:destroy_db(FullPath, Options).
@@ -257,9 +256,7 @@ init(Args) ->
  
     OptionsPL = proplists:get_value(options, Args),
     
-    OptionsRec = build_rocksdb_options(OptionsPL),
-
-    case rocksdb:options(OptionsRec) of
+    case rocksdb:options(OptionsPL) of
         {ok, Options} ->
             FullPath = filename:join([Path, Subdir, Name]),
             ok = filelib:ensure_dir(FullPath),
@@ -269,9 +266,10 @@ init(Args) ->
                 {ok, DB} ->
 		    ELR = #enterdb_ldb_resource{name = Name, resource = DB},
                     ok = write_enterdb_ldb_resource(ELR),
-		    ReadOptionsRec = build_rocksdb_readoptions([]),
+		    %%ReadOptionsRec = build_readoptions([{tailing,true}]),
+		    ReadOptionsRec = build_readoptions([]),
                     {ok, ReadOptions} = rocksdb:readoptions(ReadOptionsRec),
-                    WriteOptionsRec = build_rocksdb_writeoptions([]),
+                    WriteOptionsRec = build_writeoptions([{sync,true}]),
                     {ok, WriteOptions} = rocksdb:writeoptions(WriteOptionsRec),
                     process_flag(trap_exit, true),
 		    {ok, #state{db_ref = DB,
@@ -398,8 +396,7 @@ handle_cast(recreate_shard, State = #state{db_ref = DB,
 				    {error_if_exists, true}),
     NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
 				    {create_if_missing, true}),
-    OptionsRec = build_rocksdb_options(NewOptionsPL),
-    {ok, NewOptions} = rocksdb:options(OptionsRec),
+    {ok, NewOptions} = rocksdb:options(NewOptionsPL),
     {ok, NewDB} = rocksdb:open_db(NewOptions, FullPath),
     ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Name,
 							  resource = NewDB}),
@@ -484,33 +481,23 @@ do_get_iterator(DB, ReadOptions) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Build a #rocksdb_options{} record with provided proplist.
-%% @end
-%%--------------------------------------------------------------------
--spec build_rocksdb_options(OptionsPL :: [{atom(), term()}]) ->
-    ok | {error, Reason :: term()}.
-build_rocksdb_options(OptionsPL) ->
-    rocksdb_lib:build_rocksdb_options(OptionsPL).
-
-%%--------------------------------------------------------------------
-%% @doc
 %% Build a #rocksdb_readoptions{} record with provided proplist.
 %% @end
 %%--------------------------------------------------------------------
--spec build_rocksdb_readoptions(OptionsPL :: [{atom(), term()}]) ->
+-spec build_readoptions(OptionsPL :: [{atom(), term()}]) ->
     ok | {error, Reason :: term()}.
-build_rocksdb_readoptions(OptionsPL) ->
-    rocksdb_lib:build_rocksdb_readoptions(OptionsPL).
+build_readoptions(OptionsPL) ->
+    rocksdb_lib:build_readoptions(OptionsPL).
 
 %%--------------------------------------------------------------------
 %% @doc
 %% Build a #rocksdb_writeoptions{} record with provided proplist.
 %% @end
 %%--------------------------------------------------------------------
--spec build_rocksdb_writeoptions(OptionsPL :: [{atom(), term()}]) ->
+-spec build_writeoptions(OptionsPL :: [{atom(), term()}]) ->
     ok | {error, Reason::term()}.
-build_rocksdb_writeoptions(OptionsPL) ->
-    rocksdb_lib:build_rocksdb_writeoptions(OptionsPL).
+build_writeoptions(OptionsPL) ->
+    rocksdb_lib:build_writeoptions(OptionsPL).
 
 %%--------------------------------------------------------------------
 %% @doc

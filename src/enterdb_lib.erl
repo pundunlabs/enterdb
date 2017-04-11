@@ -1681,6 +1681,6 @@ get_rdb_worker_args(Start, Smap = #{shard := Shard,
     [{create_if_missing, boolean()} |
      {error_if_exists, boolean()}].
 rdb_open_options(create) ->
-    [{create_if_missing, true}, {error_if_exists, true}];
+    [{"create_if_missing", "true"}, {"error_if_exists", "true"}];
 rdb_open_options(Start) when Start == open; Start == delete ->
-    [{create_if_missing, false}, {error_if_exists, false}].
+    [{"create_if_missing", "false"}, {"error_if_exists", "false"}].
