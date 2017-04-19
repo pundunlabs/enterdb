@@ -1259,7 +1259,7 @@ serialize_columns(Mapper, Distributed, Columns, Ref, Acc) ->
 add_columns(_Mapper, _Distributed, [], _Ref, []) ->
     {};
 add_columns(_Mapper, _Distributed, [], _Ref, [{Arity,_}|_] = Acc) ->
-    erlang:make_tuple(Arity, undefined, Acc);
+    erlang:make_tuple(Arity, 'NULL', Acc);
 add_columns(Mapper, Distributed, Columns, Ref, Acc) ->
     AddKeys = [Field || {Field, _} <- Columns],
     case Distributed of
@@ -1366,6 +1366,8 @@ format_app_value(map, Mapper, Columns) ->
 			     Ref :: integer(),
 			     Acc :: [{string(), term()}]) ->
     Columns :: [{string(), term()}].
+converse_array_columns(Mapper, ['NULL' | Rest], Ref, Acc) ->
+    converse_array_columns(Mapper, Rest, Ref+1, Acc);
 converse_array_columns(Mapper, [Value | Rest], Ref, Acc) ->
     Field = Mapper:lookup(Ref),
     converse_array_columns(Mapper, Rest, Ref+1, [{Field, Value} | Acc]);
