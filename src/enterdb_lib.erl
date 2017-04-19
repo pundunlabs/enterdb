@@ -913,8 +913,8 @@ cleanup_table(Name) ->
 	{error,"no_table"} ->
 	    ok;
 	#{name := Name,
-	  path := Path,
 	  column_mapper := ColumnMapper} ->
+	    Path = get_db_path(),
 	    FullPath = filename:join([Path, Name]),
 	    file:del_dir(FullPath),
 	    gb_reg:purge(ColumnMapper),
