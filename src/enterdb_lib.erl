@@ -1466,6 +1466,15 @@ apply_update_op([{Field, Inst, Data} | Rest], Columns) ->
 	Value ->
 	    UpdatedColumns = apply_instruction(Inst, Data, Value),
 	    apply_update_op(Rest, UpdatedColumns)
+    end;
+apply_update_op([{Field, Data} | Rest], Columns) ->
+    case lists:keytake(Field, 1, Columns) of
+	false ->
+	    UpdatedColumns = apply_instruction(overwrite, Data, {a, {Field, a}, Columns}),
+	    apply_update_op(Rest, UpdatedColumns);
+	Value ->
+	    UpdatedColumns = apply_instruction(overwrite, Data, Value),
+	    apply_update_op(Rest, UpdatedColumns)
     end.
 
 apply_instruction(increment, I, {_, {F, V}, R}) when is_integer(I) ->
