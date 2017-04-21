@@ -103,7 +103,7 @@ create_table(Name, KeyDef, Options)->
 				 hash_key => HashKey,
 				 hashing_method => HashingMethod,
 				 num_of_shards => NumberOfShards,
-				 path => enterdb_lib:get_db_path(),
+				 path => enterdb_lib:get_path(db_path),
 				 replication_factor => RF},
 	    enterdb_lib:create_table(NewTab);
 	{error, Reason} ->

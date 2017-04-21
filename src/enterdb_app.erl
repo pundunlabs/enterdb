@@ -12,10 +12,7 @@
 %% ===================================================================
 
 start(_StartType, _StartArgs) ->
-    DB_PATH = enterdb_lib:get_db_path(),
-    ok = filelib:ensure_dir(DB_PATH),
-    ?debug("DB_PATH: ~p", [DB_PATH]),
-
+    ok = ensure_directories(),
     case mnesia:wait_for_tables([enterdb_table, enterdb_stab], 20000) of
         {timeout, RemainingTabs} ->
 	    {error, {not_exists, RemainingTabs}};
@@ -47,3 +44,9 @@ open_all_tables() ->
 	{error, Reason} ->
 	    {error, Reason}
     end.
+
+-spec ensure_directories() ->
+    ok.
+ensure_directories() ->
+    [ ok = filelib:ensure_dir(enterdb_lib:get_path(P)) || P <- [db_path, wal_path, backup_path, checkpoint_path]],
+    ok.

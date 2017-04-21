@@ -44,6 +44,13 @@
 	 approximate_size/1,
 	 get_iterator/2]).
 
+%% OAM callbacks
+-export([backup_db/2,
+	 get_backup_info/1,
+	 restore_db/1,
+	 restore_db/2,
+	 create_checkpoint/1]).
+
 -define(SERVER, ?MODULE).
 
 -include("enterdb.hrl").
@@ -53,9 +60,11 @@
                 options,
 		readoptions,
                 writeoptions,
-                name,
-		path,
-		subdir,
+                shard,
+		db_path,
+		wal_path,
+		backup_path,
+		checkpoint_path,
 		ttl,
 		options_pl,
 		it_mon}).
@@ -138,15 +147,15 @@ delete(Shard, Key) ->
 -spec delete_db(Args :: [term()]) ->
     ok | {error, Reason :: term()}.
 delete_db(Args) ->
-    Name = proplists:get_value(name, Args),
-    Subdir = proplists:get_value(subdir, Args),
-    Path = proplists:get_value(db_path, Args),
-    ok = ensure_closed(Name),
+    Shard = maps:get(shard, Args),
+    Subdir = maps:get(name, Args),
+    Path = maps:get(db_path, Args),
+    ok = ensure_closed(Shard),
 
-    OptionsPL = proplists:get_value(options, Args),
+    OptionsPL = maps:get(options, Args),
     {ok, Options} = rocksdb:options(OptionsPL),
 
-    FullPath = filename:join([Path, Subdir, Name]),
+    FullPath = filename:join([Path, Subdir, Shard]),
     rocksdb:destroy_db(FullPath, Options).
 
 %%--------------------------------------------------------------------
@@ -238,35 +247,86 @@ get_iterator(Caller, Shard) ->
     gen_server:call(Pid, {get_iterator, Caller}).
 
 %%--------------------------------------------------------------------
+%% @doc
+%% Create a backup for the shard.
+%% @end
+%%--------------------------------------------------------------------
+-spec backup_db(Shard :: string(), Timeout :: pos_integer()) ->
+    ok | {error, Reason :: term()}.
+backup_db(Shard, Timeout) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, backup_db, Timeout).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Retrieve previously taken backups' information..
+%% @end
+%%--------------------------------------------------------------------
+-spec get_backup_info(Shard :: string()) ->
+    {ok, map()} | {error, Reason :: term()}.
+get_backup_info(Shard) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, get_backup_info).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Restore shard from latest backup.
+%% @end
+%%--------------------------------------------------------------------
+-spec restore_db(Shard :: string()) ->
+    ok | {error, Reason :: term()}.
+restore_db(Shard) ->
+    restore_db(Shard, 0).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Restore shard from given backup id.
+%% @end
+%%--------------------------------------------------------------------
+-spec restore_db(Shard :: string(), BackupId :: integer()) ->
+    ok | {error, Reason :: term()}.
+restore_db(Shard, BackupId) when is_integer(BackupId) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, {restore_db, BackupId}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Create a backup for the shard.
+%% @end
+%%--------------------------------------------------------------------
+-spec create_checkpoint(Shard :: string()) ->
+    ok | {error, Reason :: term()}.
+create_checkpoint(Shard) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, create_checkpoint).
+
+%%--------------------------------------------------------------------
 %% @private
 %% @doc
 %% Initializes the server
-%%
-%% @spec init(Args) -> {ok, State} |
-%%                     {ok, State, Timeout} |
-%%                     ignore |
-%%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
+-spec init(Args :: map()) ->
+    {ok, State :: #state{}} |
+    {ok, State :: #state{}, Timeout :: pos_integer() | infinity} |
+    ignore |
+    {stop, Reason :: term()}.
 init(Args) ->
-    Name = proplists:get_value(name, Args),
-    enterdb_ns:register_pid(self(), Name),
-    Subdir = proplists:get_value(subdir, Args),
-    Path = proplists:get_value(db_path, Args),
-    ok = ensure_closed(Name),
- 
-    OptionsPL = proplists:get_value(options, Args),
-    
+    Shard = maps:get(shard, Args),
+    enterdb_ns:register_pid(self(), Shard),
+    Subdir = maps:get(name, Args),
+    ok = ensure_closed(Shard),
+    OptionsPL = maps:get(options, Args),
     case rocksdb:options(OptionsPL) of
         {ok, Options} ->
-            FullPath = filename:join([Path, Subdir, Name]),
-            ok = filelib:ensure_dir(FullPath),
-	    TTL = proplists:get_value(ttl, Args),
-	    case open_db(Options, FullPath, TTL) of
+            [DbPath, WalPath, BackupPath, CheckpointPath] =
+		ensure_directories(Args, Subdir, Shard),
+	    TTL = maps:get(ttl, Args, undefined),
+	    case open_db(Options, DbPath, TTL) of
                 {error, Reason} ->
                     {stop, {error, Reason}};
                 {ok, DB} ->
-		    ELR = #enterdb_ldb_resource{name = Name, resource = DB},
+		    ELR = #enterdb_ldb_resource{name = Shard, resource = DB},
                     ok = write_enterdb_ldb_resource(ELR),
 		    %%ReadOptionsRec = build_readoptions([{tailing,true}]),
 		    ReadOptionsRec = build_readoptions([]),
@@ -278,9 +338,11 @@ init(Args) ->
                                 options = Options,
 				readoptions = ReadOptions,
                                 writeoptions = WriteOptions,
-                                name = Name,
-                                path = Path,
-				subdir = Subdir,
+                                shard = Shard,
+                                db_path = DbPath,
+                                wal_path = WalPath,
+                                backup_path = BackupPath,
+                                checkpoint_path = CheckpointPath,
 				ttl = TTL,
 				options_pl = OptionsPL,
 				it_mon = maps:new()}}
@@ -365,6 +427,44 @@ handle_call({get_iterator, Caller}, _From, State) ->
     MonMap = State#state.it_mon,
     NewMonMap = maps:put(Mref, Caller, MonMap),
     {reply, R, State#state{it_mon = NewMonMap}};
+handle_call(backup_db, From,
+            State = #state{db_ref = DB,
+                           backup_path = BackupPath}) ->
+    spawn(fun() ->
+	    Reply = rocksdb:backup_db(DB, BackupPath),
+	    gen_server:reply(From, Reply)
+	  end ),
+    {noreply, State};
+handle_call(get_backup_info, From,
+            State = #state{backup_path = BackupPath}) ->
+    spawn(fun() ->
+	    Reply =
+		case rocksdb:get_backup_info(BackupPath) of
+		    {ok, List} when is_list(List) ->
+			{ok, build_backup_info(List)};
+		    Else -> Else
+		end,
+	    gen_server:reply(From, Reply)
+	  end ),
+    {noreply, State};
+handle_call({restore_db, BackupId}, _From,
+            State = #state{db_path = DbPath,
+			   wal_path = WalPath,
+			   backup_path = BackupPath}) ->
+    Reply =
+	case BackupId of
+	    0 -> rocksdb:restore_db(BackupPath, DbPath, WalPath);
+	    _ -> rocksdb:restore_db(BackupPath, DbPath, WalPath, BackupId)
+	end,
+    {reply, Reply, State};
+handle_call(create_checkpoint, From,
+            State = #state{db_ref = DB,
+                           checkpoint_path = CheckpointPath}) ->
+    spawn(fun() ->
+	    Reply = rocksdb:create_checkpoint(DB, CheckpointPath),
+	    gen_server:reply(From, Reply)
+	  end ),
+    {noreply, State};
 handle_call(Req, From, State) ->
     R = ?warning("unkown request:~p, from: ~p, state: ~p", [Req, From, State]),
     {reply, R, State}.
@@ -379,18 +479,16 @@ handle_call(Req, From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_cast(recreate_shard, State = #state{db_ref = DB,
+handle_cast(recreate_shard, State = #state{shard = Shard,
+					   db_ref = DB,
 					   options = Options,
-					   name = Name,
-					   path = Path,
-					   subdir = Subdir,
+					   db_path = DbPath,
 					   ttl = TTL,
 					   options_pl = OptionsPL}) ->
-    ?debug("Recreating shard: ~p", [Name]),
-    ok = delete_enterdb_ldb_resource(Name),
+    ?debug("Recreating shard: ~p", [Shard]),
+    ok = delete_enterdb_ldb_resource(Shard),
     ok = rocksdb:close_db(DB),
-    FullPath = filename:join([Path, Subdir, Name]),
-    ok = rocksdb:destroy_db(FullPath, Options),
+    ok = rocksdb:destroy_db(DbPath, Options),
 
     %% Create new options. If table was re-opened, we cannot
     %% use the options including {create_if_missing, false}
@@ -401,8 +499,8 @@ handle_cast(recreate_shard, State = #state{db_ref = DB,
     NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
 				    {create_if_missing, true}),
     {ok, NewOptions} = rocksdb:options(NewOptionsPL),
-    {ok, NewDB} = open_db(NewOptions, FullPath, TTL),
-    ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Name,
+    {ok, NewDB} = open_db(NewOptions, DbPath, TTL),
+    ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Shard,
 							  resource = NewDB}),
     {noreply, State#state{db_ref = NewDB,
 			  options = NewOptions,
@@ -441,15 +539,15 @@ handle_info(_Info, State) ->
 %%--------------------------------------------------------------------
 terminate(_Reason, _State = #state{db_ref = undefined}) ->
     ok;
-terminate(_Reason, _State = #state{name = Name,
+terminate(_Reason, _State = #state{shard = Shard,
 				   it_mon = MonMap}) ->
-    ?debug("Terminating ldb worker for shard: ~p", [Name]),
+    ?debug("Terminating ldb worker for shard: ~p", [Shard]),
     maps:fold(fun(Mref, Pid, _Acc) ->
 		erlang:demonitor(Mref, [flush]),
 		Res = (catch gen_server:stop(Pid)),
 		?debug("Stop iterator: ~p", [Res])
 	      end, ok, MonMap),
-    ensure_closed(Name).
+    ensure_closed(Shard).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -465,11 +563,26 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-open_db(Options, FullPath, undefined) ->
-    rocksdb:open_db(Options, FullPath);
-open_db(Options, FullPath, TTL) ->
-    ?debug("Open rocksdb with TTL set to ~p",[TTL]),
-    rocksdb:open_db_with_ttl(Options, FullPath, TTL).
+-spec ensure_directories(Args :: map(),
+			 Subdir :: string(),
+			 Shard :: string()) ->
+    term().
+ensure_directories(Args, Subdir, Shard) ->
+    [ begin
+	Dir = maps:get(P, Args),
+	Path = filename:join([Dir, Subdir, Shard]),
+	filelib:ensure_dir(Path),
+	Path
+      end || P <- [db_path, wal_path, backup_path, checkpoint_path]].
+
+-spec open_db(Options :: term(),
+	      DbPath :: string(),
+	      TTL :: undefined | pos_integer()) ->
+    {ok, DB :: term()} | {error, Reason :: term()}.
+open_db(Options, DbPath, undefined) ->
+    rocksdb:open_db(Options, DbPath);
+open_db(Options, DbPath, TTL) ->
+    rocksdb:open_db_with_ttl(Options, DbPath, TTL).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -513,14 +626,15 @@ build_writeoptions(OptionsPL) ->
 %% Ensure the rocksdb db is closed and there is no resource left
 %% @end
 %%--------------------------------------------------------------------
--spec ensure_closed(Name :: atom()) -> ok | {error, Reason :: term()}.
-ensure_closed(Name) ->
-    case read_enterdb_ldb_resource(Name) of
+-spec ensure_closed(Shard :: string()) ->
+    ok | {error, Reason :: term()}.
+ensure_closed(Shard) ->
+    case read_enterdb_ldb_resource(Shard) of
 	undefined ->
 	    ok;
 	{ok, DB} ->
-	    ?debug("Old DB resource found for shard: ~p, closing and deleting..", [Name]),
-	    ok = delete_enterdb_ldb_resource(Name),
+	    ?debug("Old DB resource found for shard: ~p, closing and deleting..", [Shard]),
+	    ok = delete_enterdb_ldb_resource(Shard),
 	    ok = rocksdb:close_db(DB);
 	{error, Reason} ->
 	    {error, Reason}
@@ -547,10 +661,10 @@ write_enterdb_ldb_resource(EnterdbLdbResource) ->
 %% Read the #enterdb_ldb_resource entry in mnesia ram_copy
 %% @end
 %%--------------------------------------------------------------------
--spec read_enterdb_ldb_resource(Name :: atom()) ->
+-spec read_enterdb_ldb_resource(Shard :: string()) ->
     {ok, Resource :: binary} | {error, Reason :: term()}.
-read_enterdb_ldb_resource(Name) ->
-    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_ldb_resource, Name) end) of
+read_enterdb_ldb_resource(Shard) ->
+    case enterdb_db:transaction(fun() -> mnesia:read(enterdb_ldb_resource, Shard) end) of
         {atomic, []} ->
 	    undefined;
 	{atomic, [#enterdb_ldb_resource{resource = Resource}]} ->
@@ -564,10 +678,10 @@ read_enterdb_ldb_resource(Name) ->
 %% Delete the #enterdb_ldb_resource entry in mnesia ram_copy
 %% @end
 %%--------------------------------------------------------------------
--spec delete_enterdb_ldb_resource(Name :: atom()) ->
+-spec delete_enterdb_ldb_resource(Shard :: string()) ->
     ok | {error, Reason :: term()}.
-delete_enterdb_ldb_resource(Name) ->
-    case enterdb_db:transaction(fun() -> mnesia:delete(enterdb_ldb_resource, Name, write) end) of
+delete_enterdb_ldb_resource(Shard) ->
+    case enterdb_db:transaction(fun() -> mnesia:delete(enterdb_ldb_resource, Shard, write) end) of
         {atomic, ok} ->
             ok;
         {aborted, Reason} ->
@@ -580,3 +694,16 @@ make_empty_entry(array) ->
     <<131,104,0>>;
 make_empty_entry(kv)->
     <<>>.
+
+build_backup_info(List) ->
+    build_backup_info(List, []).
+
+build_backup_info([], Acc) ->
+    lists:reverse(Acc);
+build_backup_info([{Id, Ts, Size, NumFiles, Metadata} | Rest], Acc) ->
+    Map = maps:from_list([{backup_id, Id},
+			  {timestamp, Ts},
+			  {size, Size},
+			  {number_of_files, NumFiles},
+			  {application_metadata, Metadata}]),
+    build_backup_info(Rest, [Map | Acc]).
