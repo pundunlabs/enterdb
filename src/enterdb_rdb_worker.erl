@@ -461,6 +461,7 @@ handle_call(create_checkpoint, From,
             State = #state{db_ref = DB,
                            checkpoint_path = CheckpointPath}) ->
     spawn(fun() ->
+	    del_dir(CheckpointPath),
 	    Reply = rocksdb:create_checkpoint(DB, CheckpointPath),
 	    gen_server:reply(From, Reply)
 	  end ),
@@ -707,3 +708,15 @@ build_backup_info([{Id, Ts, Size, NumFiles, Metadata} | Rest], Acc) ->
 			  {number_of_files, NumFiles},
 			  {application_metadata, Metadata}]),
     build_backup_info(Rest, [Map | Acc]).
+
+del_dir(Dir) ->
+    case file:list_dir_all(Dir) of
+	{ok, Filenames} -> del_dir(Dir, Filenames);
+	E -> E
+    end.
+
+del_dir(Dir, []) ->
+    file:del_dir(Dir);
+del_dir(Dir, [File | Rest]) ->
+    file:delete(filename:join([Dir, File])),
+    del_dir(Dir, Rest).
