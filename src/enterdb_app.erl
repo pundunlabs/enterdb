@@ -48,5 +48,6 @@ open_all_tables() ->
 -spec ensure_directories() ->
     ok.
 ensure_directories() ->
-    [ ok = filelib:ensure_dir(enterdb_lib:get_path(P)) || P <- [db_path, wal_path, backup_path, checkpoint_path]],
+    List = [ enterdb_lib:get_path(D) || D <- [db_path, wal_path, backup_path, checkpoint_path]],
+    [ ok = filelib:ensure_dir(P) || P <- List, P =/= undefined],
     ok.
