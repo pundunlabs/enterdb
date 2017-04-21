@@ -36,7 +36,7 @@
          code_change/3]).
 
 %% Inter-Node API
--export([init_iterator/2,
+-export([init_iterator/3,
 	 first/1,
 	 last/1,
 	 seek/2,
@@ -46,7 +46,8 @@
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
 
--record(state, {it,
+-record(state, {mod,
+		it,
 		mref,
 		caller}).
 
@@ -70,10 +71,10 @@ start(Args) ->
 %% server loop and retrun server pid.
 %% @end
 %%--------------------------------------------------------------------
--spec init_iterator(Shard :: string(), Caller :: pid()) ->
+-spec init_iterator(Shard :: string(), Caller :: pid(), Mod :: atom()) ->
     Pid :: pid().
-init_iterator(Shard, Caller) ->
-    case ?MODULE:start([Shard, Caller]) of
+init_iterator(Shard, Caller, Mod) ->
+    case ?MODULE:start([Shard, Caller, Mod]) of
         {ok, Pid} ->
 	    {ok, Pid};
         {error, Reason} ->
@@ -145,13 +146,14 @@ prev(Pid) ->
 %%                     {stop, Reason}
 %% @end
 %%--------------------------------------------------------------------
-init([Shard, Caller]) ->
+init([Shard, Caller, Mod]) ->
     ?debug("Init iterator from shard: ~p",[Shard]),
     process_flag(trap_exit, true),
     Mref = erlang:monitor(process, Caller),
     case enterdb_ldb_worker:get_iterator(self(), Shard) of
 	{ok, It} ->
-	    {ok, #state{it = It,
+	    {ok, #state{mod = Mod,
+			it = It,
 			mref = Mref,
 			caller = Caller}};
 	Else ->
@@ -172,20 +174,20 @@ init([Shard, Caller]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call(first, _From, State) ->
-    Reply = leveldb:first(State#state.it),
+handle_call(first, _From, State = #state{mod = Mod, it = It}) ->
+    Reply = Mod:first(It),
     {reply, Reply, State};
-handle_call(last, _From, State) ->
-    Reply = leveldb:last(State#state.it),
+handle_call(last, _From, State = #state{mod = Mod, it = It}) ->
+    Reply = Mod:last(It),
     {reply, Reply, State};
-handle_call({seek, Key}, _From, State) ->
-    Reply = leveldb:seek(State#state.it, Key),
+handle_call({seek, Key}, _From, State = #state{mod = Mod, it = It}) ->
+    Reply = Mod:seek(It, Key),
     {reply, Reply, State};
-handle_call(next, _From, State) ->
-    Reply = leveldb:next(State#state.it),
+handle_call(next, _From, State = #state{mod = Mod, it = It}) ->
+    Reply = Mod:next(It),
     {reply, Reply, State};
-handle_call(prev, _From, State) ->
-    Reply = leveldb:prev(State#state.it),
+handle_call(prev, _From, State = #state{mod = Mod, it = It}) ->
+    Reply = Mod:prev(It),
     {reply, Reply, State};
 handle_call(_Request, _From, State) ->
     ?debug("Unhandled call request: ~p",[_Request]),
