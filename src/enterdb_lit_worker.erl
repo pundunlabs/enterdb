@@ -44,6 +44,7 @@
 -include_lib("gb_log/include/gb_log.hrl").
 
 -record(state, {name,
+		utils_mod,
 		data_model,
 		key,
 		column_mapper,
@@ -170,8 +171,10 @@ seek_({error, Reason}, _) ->
 -spec next(Ref :: binary()) ->
     {ok, kvp()} | {error, Reason :: term()}.
 next(Ref) ->
-    Pid = enterdb_rs:get(Ref),
-    gen_server:call(Pid, next).
+    case enterdb_rs:get(Ref) of
+	{error, not_found} -> {error, invalid};
+	Pid -> gen_server:call(Pid, next)
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -181,8 +184,10 @@ next(Ref) ->
 -spec prev(Ref :: binary()) ->
     {ok, kvp()} | {error, Reason :: term()}.
 prev(Ref) ->
-    Pid = enterdb_rs:get(Ref),
-    gen_server:call(Pid, prev).
+    case enterdb_rs:get(Ref) of
+	{error, not_found} -> {error, invalid};
+	Pid -> gen_server:call(Pid, prev)
+    end.
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -201,6 +206,7 @@ prev(Ref) ->
 %%--------------------------------------------------------------------
 init(Args) ->
     Name = proplists:get_value(name, Args),
+    Type = proplists:get_value(type, Args),
     DataModel = proplists:get_value(data_model, Args),
     Key = proplists:get_value(key, Args),
     Mapper = proplists:get_value(column_mapper, Args),
@@ -212,10 +218,12 @@ init(Args) ->
 	Dist ->
 	    {ok, Shards} = gb_hash:get_nodes(Name),
 	    process_flag(trap_exit, true),
-	    InitResult = init_iterators(Shards, Dist),
+	    {CbMod, UtilsMod} = get_callback_modules(Type),
+	    InitResult = init_iterators(Shards, Dist, CbMod),
 	    {ok, Iterators, Monitors} = monitor_iterators(InitResult),
 	    ?debug("Started Iterators: ~p", [Iterators]),
 	    State = #state{name = Name,
+			   utils_mod = UtilsMod,
 			   data_model = DataModel,
 			   key = Key,
 			   column_mapper = Mapper,
@@ -241,28 +249,31 @@ init(Args) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call(first, _From, State = #state{iterators = Iterators,
+handle_call(first, _From, State = #state{utils_mod = UtilsMod,
+					 iterators = Iterators,
 					 data_model = DataModel,
 					 key = Key,
 					 column_mapper = Mapper,
 					 dir = Dir}) ->
     KVL_Map = iterate(Iterators, first),
     ?debug("KVL_Map: ~p", [KVL_Map]),
-    FirstBin = apply_first(Dir, KVL_Map),
+    FirstBin = apply_first(UtilsMod, Dir, KVL_Map),
     CurrentKey = get_current_key(FirstBin),
     First = make_app_kvp(FirstBin, DataModel, Key, Mapper),
     {reply, First, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
-handle_call(last, _From, State = #state{iterators = Iterators,
+handle_call(last, _From, State = #state{utils_mod = UtilsMod,
+					iterators = Iterators,
 					data_model = DataModel,
 					key = Key,
 					column_mapper = Mapper,
 					dir = Dir}) ->
     KVL_Map = iterate(Iterators, last),
-    LastBin = apply_last(Dir, KVL_Map),
+    LastBin = apply_last(UtilsMod, Dir, KVL_Map),
     CurrentKey = get_current_key(LastBin),
     Last = make_app_kvp(LastBin, DataModel, Key, Mapper),
     {reply, Last, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
-handle_call({seek, SKey}, _From, State = #state{iterators = Iterators,
+handle_call({seek, SKey}, _From, State = #state{utils_mod = UtilsMod,
+						iterators = Iterators,
 						data_model = DataModel,
 						key = KeyDef,
 						column_mapper = Mapper,
@@ -270,14 +281,15 @@ handle_call({seek, SKey}, _From, State = #state{iterators = Iterators,
     case make_db_key(KeyDef, SKey) of
 	{ok, DBKey} ->
 	    KVL_Map = iterate(Iterators, {seek, DBKey}),
-	    FirstBin = apply_first(Dir, KVL_Map),
+	    FirstBin = apply_first(UtilsMod, Dir, KVL_Map),
 	    CurrentKey = get_current_key(FirstBin),
 	    First = make_app_kvp(FirstBin, DataModel, KeyDef, Mapper),
 	    {reply, First, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
 	{error, Reason} ->
 	    {reply, {error, Reason}, State, 0}
     end;
-handle_call(next, _From, State = #state{iterators = Iterators,
+handle_call(next, _From, State = #state{utils_mod = UtilsMod,
+					iterators = Iterators,
 					last_key = LastKey,
 					data_model = DataModel,
 					key = Key,
@@ -285,17 +297,18 @@ handle_call(next, _From, State = #state{iterators = Iterators,
 					dir = Dir}) ->
     KVL_Map = iterate(Iterators, {seek, LastKey}),
     ?debug("KVL_Map: ~p~nLastKey: ~p", [KVL_Map, LastKey]),
-    NextBin = apply_next(Dir, KVL_Map, LastKey),
+    NextBin = apply_next(UtilsMod, Dir, KVL_Map, LastKey),
     CurrentKey = get_current_key(NextBin),
     Next = make_app_kvp(NextBin, DataModel, Key, Mapper),
     {reply, Next, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
-handle_call(prev, _From, State = #state{iterators = Iterators,
+handle_call(prev, _From, State = #state{utils_mod = UtilsMod,
+					iterators = Iterators,
 					last_key = LastKey,
 					data_model = DataModel,
 					key = Key,
 					column_mapper = Mapper,
 					dir = Dir}) ->
-    PrevBin = apply_prev(Dir, Iterators, LastKey),
+    PrevBin = apply_prev(UtilsMod, Dir, Iterators, LastKey),
     CurrentKey = get_current_key(PrevBin),
     Prev = make_app_kvp(PrevBin, DataModel, Key, Mapper),
     {reply, Prev, State#state{last_key = CurrentKey}, ?ITERATOR_TIMEOUT};
@@ -373,12 +386,12 @@ code_change(_OldVsn, State, _Extra) ->
 -spec get_args(Name :: string()) ->
     {ok, Args :: [{atom(), term()}]}.
 get_args(Name) ->
-    enterdb:table_info(Name,[name, data_model, key, column_mapper, comparator]).
+    enterdb:table_info(Name,[name, type, data_model, key, column_mapper, comparator]).
 
--spec init_iterators(Shards :: shards(), Dist :: boolean()) ->
+-spec init_iterators(Shards :: shards(), Dist :: boolean(), CbMod :: atom()) ->
     [{ok, pid()}] | {error, Reason :: term()}.
-init_iterators(Shards, Dist) ->
-    Req = {enterdb_lit_resource, init_iterator, [self()]},
+init_iterators(Shards, Dist, CbMod) ->
+    Req = {enterdb_lit_resource, init_iterator, [self(), CbMod]},
     enterdb_lib:map_shards(Dist, Req, Shards).
 
 -spec iterate(Iterators :: [it()],
@@ -414,91 +427,100 @@ apply_op(It, {seek, Key}) ->
 	    {invalid, It}
     end.
 
--spec apply_first(Dir :: 0 | 1, KVL_Map :: map()) ->
+-spec apply_first(UtilsMod :: atom(), Dir :: 0 | 1, KVL_Map :: map()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_first(Dir, KVL_Map)->
+apply_first(UtilsMod, Dir, KVL_Map)->
     KVL = maps:keys(KVL_Map),
-    case leveldb_utils:sort_kvl(Dir, KVL) of
+    case UtilsMod:sort_kvl(Dir, KVL) of
 	{ok, []} ->
 	    {error, invalid};
 	{ok, [First | _]} ->
 	    {ok, First};
 	{error, Reason} ->
-	    ?debug("leveldb_utils:sort_kvl(~p, ~p) -> {error, ~p}",
-		[Dir, KVL, Reason]),
+	    ?debug("~p:sort_kvl(~p, ~p) -> {error, ~p}",
+		[UtilsMod, Dir, KVL, Reason]),
 	    {error, invalid}
     end.
 
--spec apply_last(Dir :: 0 | 1, KVL_Map :: map()) ->
+-spec apply_last(UtilsMod :: atom(), Dir :: 0 | 1, KVL_Map :: map()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_last(Dir, KVL_Map)->
+apply_last(UtilsMod, Dir, KVL_Map)->
     KVL = maps:keys(KVL_Map),
-    case leveldb_utils:sort_kvl(opposite(Dir), KVL) of
+    case UtilsMod:sort_kvl(opposite(Dir), KVL) of
 	{ok, []} ->
 	    {error, invalid};
 	{ok, [Last | _]} ->
 	    {ok, Last};
 	{error, Reason} ->
-	    ?debug("leveldb_utils:sort_kvl(~p, ~p) -> {error, ~p}",
-		[opposite(Dir), KVL, Reason]),
+	    ?debug("~p:sort_kvl(~p, ~p) -> {error, ~p}",
+		[UtilsMod, opposite(Dir), KVL, Reason]),
 	    {error, invalid}
     end.
 
--spec apply_next(Dir :: 0 | 1, KVL_Map :: map(), LastKey :: key()) ->
+-spec apply_next(UtilsMod:: atom(),
+		 Dir :: 0 | 1,
+		 KVL_Map :: map(),
+		 LastKey :: key()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_next(Dir, KVL_Map, LastKey)->
+apply_next(UtilsMod, Dir, KVL_Map, LastKey)->
     KVL = maps:keys(KVL_Map),
-    apply_next(Dir, KVL_Map, KVL, LastKey).
+    apply_next(UtilsMod, Dir, KVL_Map, KVL, LastKey).
 
--spec apply_next(Dir :: 0 | 1, KVL_Map :: map(),
+-spec apply_next(UtilsMod :: atom(),
+		 Dir :: 0 | 1, KVL_Map :: map(),
 		 KVL :: [kvp()], LastKey :: key()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_next(_Dir, _KVL_Map, [], _LastKey) ->
+apply_next(_, _Dir, _KVL_Map, [], _LastKey) ->
     {error, invalid};
-apply_next(Dir, KVL_Map, KVL, LastKey) ->
-    case leveldb_utils:sort_kvl(Dir, KVL) of
+apply_next(UtilsMod, Dir, KVL_Map, KVL, LastKey) ->
+    case UtilsMod:sort_kvl(Dir, KVL) of
 	{ok, [Head | Rest]} ->
-	    apply_next(Dir, KVL_Map, Head, Rest, LastKey);
+	    apply_next(UtilsMod, Dir, KVL_Map, Head, Rest, LastKey);
 	{error, Reason} ->
-	    ?debug("leveldb_utils:sort_kvl(~p, ~p) -> {error, ~p}",
-		[Dir, KVL, Reason]),
+	    ?debug("~p:sort_kvl(~p, ~p) -> {error, ~p}",
+		[UtilsMod, Dir, KVL, Reason]),
 	    {error, invalid}
     end.
 
--spec apply_next(Dir :: 0 | 1, KVL_Map :: map(), Head :: kvp(),
+-spec apply_next(UtilsMod :: atom(),
+		 Dir :: 0 | 1,
+		 KVL_Map :: map(),
+		 Head :: kvp(),
 		 Rest :: [kvp()], LastKey :: key()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_next(Dir, KVL_Map, {LastKey, _} = Head, Rest, LastKey) ->
+apply_next(UtilsMod, Dir, KVL_Map, {LastKey, _} = Head, Rest, LastKey) ->
     LastIt = maps:get(Head, KVL_Map),
     case enterdb_lit_resource:next(LastIt) of
 	{ok, KVP} ->
-	    case leveldb_utils:sort_kvl(Dir, [KVP | Rest]) of
+	    case UtilsMod:sort_kvl(Dir, [KVP | Rest]) of
 		{ok, [H|_]} -> {ok, H};
 		{error, _Reason} -> {error, invalid}
 	    end;
 	{error, invalid} ->
 	    kvl_head(Rest)
     end;
-apply_next(_Dir, _KVL_Map, Head, _Rest, _LastKey) ->
+apply_next(_UtilsMod, _Dir, _KVL_Map, Head, _Rest, _LastKey) ->
     {ok, Head}.
 
--spec apply_prev(Dir :: 0 | 1,
+-spec apply_prev(UtilsMod :: atom(),
+		 Dir :: 0 | 1,
 		 Iterators :: [it()],
 		 LastKey :: key()) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_prev(Dir, Iterators, LastKey)->
+apply_prev(UtilsMod, Dir, Iterators, LastKey)->
     Applied = [ apply_op(It, {seek, LastKey}) || It <- Iterators],
     ValidIterators = [ NIt || {ok, _, NIt} <- Applied],
     InvalidIterators = [ NIt || {invalid, NIt} <- Applied],
-    apply_prev_last(Dir, ValidIterators,InvalidIterators).
+    apply_prev_last(UtilsMod, Dir, ValidIterators,InvalidIterators).
 
--spec apply_prev_last(Dir :: 0 | 1,
+-spec apply_prev_last(UtilsMod :: atom(),
+		      Dir :: 0 | 1,
 		      ValidIterators :: [it()],
 		      InvalidIterators :: [it()]) ->
     {ok, KVP :: kvp()} | {error, invalid}.
-apply_prev_last(_Dir, [], _)->
+apply_prev_last(_UtilsMod, _Dir, [], _)->
     {error, invalid};
-apply_prev_last(Dir, ValidIterators, InvalidIterators)->
+apply_prev_last(UtilsMod, Dir, ValidIterators, InvalidIterators)->
     KVL =
 	lists:foldl(fun(It, Acc) ->
 			case enterdb_lit_resource:prev(It) of
@@ -509,7 +531,7 @@ apply_prev_last(Dir, ValidIterators, InvalidIterators)->
 			end	
 		    end, [], ValidIterators),
     LastKVPs = maps:keys(iterate(InvalidIterators, last)),
-    case leveldb_utils:sort_kvl(opposite(Dir), KVL++LastKVPs) of
+    case UtilsMod:sort_kvl(opposite(Dir), KVL++LastKVPs) of
         {ok, [H|_]} -> {ok, H};
 	{ok, []} -> {error, invalid};
 	{error, _Reason} -> {error, invalid}
@@ -565,3 +587,12 @@ monitor_iterators([{ok, Pid} | Rest], AccI, AccM) ->
     monitor_iterators(Rest, [Pid | AccI], maps:put(Mref, Pid, AccM));
 monitor_iterators([], AccI, AccM) ->
     {ok, AccI, AccM}.
+
+get_callback_modules(rocksdb) ->
+    {rocksdb, rocksdb_utils};
+get_callback_modules(leveldb) ->
+    {leveldb, leveldb_utils};
+get_callback_modules(leveldb_wrapped) ->
+    {leveldb, leveldb_utils};
+get_callback_modules(leveldb_tda) ->
+    {leveldb, leveldb_utils}.
