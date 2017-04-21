@@ -281,7 +281,7 @@ when is_list(Clusters) ->
     verify_table_options(Rest);
 
 %% Number of Shards
-verify_table_options([{shards, NumOfShards}|Rest])
+verify_table_options([{num_of_shards, NumOfShards}|Rest])
 when is_integer(NumOfShards), NumOfShards > 0 ->
     verify_table_options(Rest);
 
@@ -299,11 +299,8 @@ when is_integer(RF), RF > 0 ->
 verify_table_options([{type, Type}|Rest])
     when
 	 Type =:= leveldb;
-         %Type =:= mem_leveldb;
 	 Type =:= leveldb_wrapped;
-	 %Type =:= mem_levedb_wrapped;
 	 Type =:= leveldb_tda;
-	 %Type =:= mem_leveldb_tda;
 	 Type =:= rocksdb
     ->
 	verify_table_options(Rest);
@@ -325,6 +322,10 @@ verify_table_options([{tda, Tda} | Rest]) ->
         {error, Reason} ->
 	    {error, Reason}
     end;
+
+%% TTL details for rocksds parts
+verify_table_options([{ttl, TTL} | Rest]) when is_integer(TTL) ->
+    verify_table_options(Rest);
 
 %% Wrapping details for leveldb parts
 verify_table_options([{wrapper, Wrapper} | Rest]) ->
@@ -1104,7 +1105,7 @@ approximate_size(leveldb, Shards, false) ->
     Sizes = pmap(Req, Shards),
     ?debug("Sizes of all shards: ~p", [Sizes]),
     sum_up_sizes(Sizes, 0);
-approximate_size(rocksdb, Shards, true) ->
+approximate_size(rocksdb, Shards, true)  ->
     Req = {enterdb_rdb_worker, approximate_size, []},
     Sizes = ?dyno:map_shards_seq(Req, Shards),
     ?debug("Sizes of all shards: ~p", [Sizes]),
@@ -1673,14 +1674,17 @@ get_rdb_worker_args(Start, Smap = #{shard := Shard,
 				    name := Name,
 				    comparator := Comparator,
 				    db_path := Path}) ->
-    Options = [{comparator, Comparator} | rdb_open_options(Start)],
+    Options = [{"comparator", cmp_str(Comparator)} | rdb_open_options(Start)],
     [{name, Shard}, {db_path, Path}, {subdir, Name}, {options, Options},
+     {ttl, maps:get(ttl, Smap, undefined)},
      {tab_rec, Smap}].
 
 -spec rdb_open_options(Start :: create | open | delete) ->
-    [{create_if_missing, boolean()} |
-     {error_if_exists, boolean()}].
+    [{string(), string()}].
 rdb_open_options(create) ->
     [{"create_if_missing", "true"}, {"error_if_exists", "true"}];
 rdb_open_options(Start) when Start == open; Start == delete ->
     [{"create_if_missing", "false"}, {"error_if_exists", "false"}].
+
+cmp_str(descending) -> "descending";
+cmp_str(ascending) -> "ascending".

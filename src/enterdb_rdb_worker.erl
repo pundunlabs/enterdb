@@ -56,6 +56,7 @@
                 name,
 		path,
 		subdir,
+		ttl,
 		options_pl,
 		it_mon}).
 
@@ -260,7 +261,8 @@ init(Args) ->
         {ok, Options} ->
             FullPath = filename:join([Path, Subdir, Name]),
             ok = filelib:ensure_dir(FullPath),
-	    case rocksdb:open_db(Options, FullPath) of
+	    TTL = proplists:get_value(ttl, Args),
+	    case open_db(Options, FullPath, TTL) of
                 {error, Reason} ->
                     {stop, {error, Reason}};
                 {ok, DB} ->
@@ -269,7 +271,7 @@ init(Args) ->
 		    %%ReadOptionsRec = build_readoptions([{tailing,true}]),
 		    ReadOptionsRec = build_readoptions([]),
                     {ok, ReadOptions} = rocksdb:readoptions(ReadOptionsRec),
-                    WriteOptionsRec = build_writeoptions([{sync,true}]),
+                    WriteOptionsRec = build_writeoptions([]),
                     {ok, WriteOptions} = rocksdb:writeoptions(WriteOptionsRec),
                     process_flag(trap_exit, true),
 		    {ok, #state{db_ref = DB,
@@ -279,6 +281,7 @@ init(Args) ->
                                 name = Name,
                                 path = Path,
 				subdir = Subdir,
+				ttl = TTL,
 				options_pl = OptionsPL,
 				it_mon = maps:new()}}
             end;
@@ -381,6 +384,7 @@ handle_cast(recreate_shard, State = #state{db_ref = DB,
 					   name = Name,
 					   path = Path,
 					   subdir = Subdir,
+					   ttl = TTL,
 					   options_pl = OptionsPL}) ->
     ?debug("Recreating shard: ~p", [Name]),
     ok = delete_enterdb_ldb_resource(Name),
@@ -397,7 +401,7 @@ handle_cast(recreate_shard, State = #state{db_ref = DB,
     NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
 				    {create_if_missing, true}),
     {ok, NewOptions} = rocksdb:options(NewOptionsPL),
-    {ok, NewDB} = rocksdb:open_db(NewOptions, FullPath),
+    {ok, NewDB} = open_db(NewOptions, FullPath, TTL),
     ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Name,
 							  resource = NewDB}),
     {noreply, State#state{db_ref = NewDB,
@@ -461,6 +465,11 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+open_db(Options, FullPath, undefined) ->
+    rocksdb:open_db(Options, FullPath);
+open_db(Options, FullPath, TTL) ->
+    ?debug("Open rocksdb with TTL set to ~p",[TTL]),
+    rocksdb:open_db_with_ttl(Options, FullPath, TTL).
 
 %%--------------------------------------------------------------------
 %% @doc
