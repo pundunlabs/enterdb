@@ -29,7 +29,7 @@ create_tables(Nodes) ->
     [create_table(Nodes, T) || T <- [enterdb_stab,
 				     enterdb_table,
 				     enterdb_ldb_resource,
-				     enterdb_lit_resource]].
+				     enterdb_it_resource]].
 
 %%--------------------------------------------------------------------
 %% @doc

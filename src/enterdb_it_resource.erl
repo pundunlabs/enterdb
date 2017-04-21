@@ -20,7 +20,7 @@
 %%%===================================================================
 
 
--module(enterdb_lit_resource).
+-module(enterdb_it_resource).
 
 -behaviour(gen_server).
 
@@ -219,7 +219,7 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info({'DOWN', Mref, process, Caller, _info},
 	    #state{mref = Mref, caller = Caller} = State) ->
-    ?debug("Received DOWN for enterdb_lit_worker: ~p, stopping..", [Caller]),
+    ?debug("Received DOWN for enterdb_it_worker: ~p, stopping..", [Caller]),
     {stop, normal, State};
 handle_info(timeout, State) ->
     {stop, normal, State};

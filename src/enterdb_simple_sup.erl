@@ -17,7 +17,7 @@ start_link(leveldb_tda) ->
     supervisor:start_link({local, enterdb_tda_sup},
                           ?MODULE, [leveldb_tda]);
 start_link(leveldb_it) ->
-    supervisor:start_link({local, enterdb_lit_sup},
+    supervisor:start_link({local, enterdb_it_sup},
                           ?MODULE, [leveldb_it]);
 start_link(Type) ->
     error_logger:error_msg("Enterdb backend type: ~p not suported yet.~n",
@@ -42,5 +42,5 @@ init([leveldb_tda]) ->
             transient, 2000, worker, [enterdb_ldb_tda]}]}};
 init([leveldb_it]) ->
     {ok, {{simple_one_for_one, 0, 1},
-          [{enterdb_lit_worker, {enterdb_lit_worker, start_link, []},
-            temporary, 2000, worker, [enterdb_lit_worker]}]}}.
+          [{enterdb_it_worker, {enterdb_it_worker, start_link, []},
+            temporary, 2000, worker, [enterdb_it_worker]}]}}.
