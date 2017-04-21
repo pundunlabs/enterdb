@@ -23,7 +23,7 @@
 -module(enterdb_lib).
 
 %% API
--export([get_db_path/0,
+-export([get_path/1,
 	 get_num_of_local_shards/0]).
 
 -export([verify_create_table_args/1,
@@ -80,14 +80,19 @@
 %% Get the database's directory path from configuration.
 %% @end
 %%--------------------------------------------------------------------
--spec get_db_path() -> string().
-get_db_path() ->
-    CONF_PATH = gb_conf:get_param("enterdb.yaml", db_path),
+-spec get_path(Path :: db_path |
+		       backup_path |
+		       wal_path |
+		       checkpoint_path) -> string().
+get_path(Path) ->
+    get_path(Path, undefined).
+
+get_path(Path, Default) ->
+    CONF_PATH = gb_conf:get_param("enterdb.yaml", Path),
     case CONF_PATH of
-	[$/|_] ->
-	    CONF_PATH;
-	_ ->
-	    filename:join(gb_conf_env:proddir(), CONF_PATH)
+	[$/|_] -> CONF_PATH;
+	undefined -> Default;
+	_ -> filename:join(gb_conf_env:proddir(), CONF_PATH)
     end.
 
 %%--------------------------------------------------------------------
@@ -569,8 +574,12 @@ do_create_shards(#{name := Name,
 		      EDBT :: #{}) ->
     ok | {error, Reason :: term()}.
 do_create_shard(Shard, EDBT) ->
-    DB_Path = get_db_path(),
-    ESTAB = EDBT#{shard => Shard, db_path => DB_Path},
+    DbPath = get_path(db_path),
+    WalPath = get_path(wal_path, DbPath),
+    BackupPath = get_path(backup_path, DbPath++"/backups"),
+    CheckpointPath = get_path(checkpoint_path, DbPath++"/snapshots"),
+    ESTAB = EDBT#{shard => Shard, db_path => DbPath, wal_path => WalPath,
+		  backup_path => BackupPath, checkpoint_path => CheckpointPath},
     write_shard_table(ESTAB),
     do_create_shard_type(ESTAB).
 
@@ -1669,15 +1678,10 @@ ldb_open_options(Start) when Start == open; Start == delete ->
 
 -spec get_rdb_worker_args(Start :: create | open | delete,
 			  Smap :: #{}) ->
-    [term()].
-get_rdb_worker_args(Start, Smap = #{shard := Shard,
-				    name := Name,
-				    comparator := Comparator,
-				    db_path := Path}) ->
-    Options = [{"comparator", cmp_str(Comparator)} | rdb_open_options(Start)],
-    [{name, Shard}, {db_path, Path}, {subdir, Name}, {options, Options},
-     {ttl, maps:get(ttl, Smap, undefined)},
-     {tab_rec, Smap}].
+    map().
+get_rdb_worker_args(Start, Smap = #{comparator := Comp}) ->
+    Options = [{"comparator", cmp_str(Comp)} | rdb_open_options(Start)],
+    maps:put(options, Options, Smap).
 
 -spec rdb_open_options(Start :: create | open | delete) ->
     [{string(), string()}].
