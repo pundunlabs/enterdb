@@ -76,6 +76,8 @@
 		 ts_field := string(),
 		 precision := time_unit()}.
 
+-type ttl() :: pos_integer().
+
 %% bucket_span and num_buckets are used by mem_wrapper.
 %% We keep these seperate since the design of disk based wrapping
 %% is changed and diversed.
@@ -94,7 +96,8 @@
 			 {replication_factor, pos_integer()} |
 			 {hash_exclude, [string()]} |
 			 {hashing_method, hashing_method()} |
-			 {tda, tda()}].
+			 {tda, tda()} |
+			 {ttl, ttl()}].
 
 -type timestamp() :: {pos_integer(),  %% mega seconds &
 		      pos_integer(),  %% seconds &
