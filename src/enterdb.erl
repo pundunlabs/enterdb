@@ -621,7 +621,7 @@ get_columns_param(Parameters, ColumnsMapper) ->
     {ok, KVP :: kvp(), Ref :: binary()} |
     {error, Reason :: invalid | term()}.
 first(Name) ->
-    enterdb_lit_worker:first(Name).
+    enterdb_it_worker:first(Name).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -632,7 +632,7 @@ first(Name) ->
     {ok, KVP :: kvp(), Ref :: binary()} |
     {error, Reason :: invalid | term()}.
 last(Name) ->
-    enterdb_lit_worker:last(Name).
+    enterdb_it_worker:last(Name).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -643,7 +643,7 @@ last(Name) ->
     {ok, KVP :: kvp(), Ref :: binary()} |
     {error, Reason :: invalid | term()}.
 seek(Name, Key) ->
-    enterdb_lit_worker:seek(Name, Key).
+    enterdb_it_worker:seek(Name, Key).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -654,7 +654,7 @@ seek(Name, Key) ->
 -spec next(Ref :: binary()) ->
     {ok, KVP :: kvp()} | {error, Reason :: invalid | term()}.
 next(Ref) ->
-    enterdb_lit_worker:next(Ref).
+    enterdb_it_worker:next(Ref).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -665,7 +665,7 @@ next(Ref) ->
 -spec prev(Ref :: binary()) ->
     {ok, KVP :: kvp()} | {error, Reason :: invalid | term()}.
 prev(Ref) ->
-    enterdb_lit_worker:prev(Ref).
+    enterdb_it_worker:prev(Ref).
 
 -spec find_timestamp_in_key(Key :: [{string(), term()}]) ->
     undefined | {ok, Ts :: timestamp()}.

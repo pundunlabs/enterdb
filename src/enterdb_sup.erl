@@ -86,7 +86,7 @@ init([]) ->
     EdbLdbTdaSup    = {enterdb_tda_sup,
 			{enterdb_simple_sup, start_link,[leveldb_tda]},
 			permanent, infinity, supervisor,[enterdb_simple_sup]},
-    EdbLitSup	    = {enterdb_lit_sup,
+    EdbLitSup	    = {enterdb_it_sup,
 			{enterdb_simple_sup, start_link,[leveldb_it]},
 			permanent, infinity, supervisor,[enterdb_simple_sup]},
     EdbNS	    = {enterdb_ns, {enterdb_ns, start_link, []},

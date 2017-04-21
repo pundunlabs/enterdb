@@ -19,7 +19,7 @@
 %% @end
 %%%===================================================================
 
--module(enterdb_lit_worker).
+-module(enterdb_it_worker).
 
 -behaviour(gen_server).
 
@@ -91,7 +91,7 @@ first(Name) ->
 -spec first_(ArgsT :: {ok, [{atom(), term()}]} | {error, Reason :: term()}) ->
     {ok, kvp(), binary()} | {error, Reason :: term()}.
 first_({ok, Args}) ->
-    case supervisor:start_child(enterdb_lit_sup, [Args]) of
+    case supervisor:start_child(enterdb_it_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, first) of
 		{ok, First} ->
@@ -119,7 +119,7 @@ last(Name) ->
 -spec last_(ArgsT :: {ok, [{atom(), term()}]} | {error, Reason :: term()}) ->
     {ok, kvp(), binary()} | {error, Reason :: term()}.
 last_({ok, Args}) ->
-    case supervisor:start_child(enterdb_lit_sup, [Args]) of
+    case supervisor:start_child(enterdb_it_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, last) of
 		{ok, Last} ->
@@ -148,7 +148,7 @@ seek(Name, Key) ->
 	    Key :: key()) ->
     {ok, kvp(), binary()} | {error, Reason :: term()}.
 seek_({ok, Args}, Key) ->
-    case supervisor:start_child(enterdb_lit_sup, [Args]) of
+    case supervisor:start_child(enterdb_it_sup, [Args]) of
         {ok, Pid} ->
 	    case gen_server:call(Pid, {seek, Key}) of
 		{ok, Rec} ->
@@ -391,7 +391,7 @@ get_args(Name) ->
 -spec init_iterators(Shards :: shards(), Dist :: boolean(), CbMod :: atom()) ->
     [{ok, pid()}] | {error, Reason :: term()}.
 init_iterators(Shards, Dist, CbMod) ->
-    Req = {enterdb_lit_resource, init_iterator, [self(), CbMod]},
+    Req = {enterdb_it_resource, init_iterator, [self(), CbMod]},
     enterdb_lib:map_shards(Dist, Req, Shards).
 
 -spec iterate(Iterators :: [it()],
@@ -406,21 +406,21 @@ iterate(Iterators, Op) ->
 	       Op :: first | last | {seek, Key :: key()}) ->
     {KVP :: kvp() | invalid, It :: it()}.
 apply_op(It, first) ->
-    case enterdb_lit_resource:first(It) of
+    case enterdb_it_resource:first(It) of
 	{ok, KVP} ->
 	    {ok, KVP, It};
 	{error, _} ->
 	    {invalid, It}
     end;
 apply_op(It, last) ->
-    case enterdb_lit_resource:last(It) of
+    case enterdb_it_resource:last(It) of
 	{ok, KVP} ->
 	    {ok, KVP, It};
 	{error, _} ->
 	    {invalid, It}
     end;
 apply_op(It, {seek, Key}) ->
-    case enterdb_lit_resource:seek(It, Key) of
+    case enterdb_it_resource:seek(It, Key) of
 	{ok, KVP} ->
 	    {ok, KVP, It};
 	{error, _} ->
@@ -490,7 +490,7 @@ apply_next(UtilsMod, Dir, KVL_Map, KVL, LastKey) ->
     {ok, KVP :: kvp()} | {error, invalid}.
 apply_next(UtilsMod, Dir, KVL_Map, {LastKey, _} = Head, Rest, LastKey) ->
     LastIt = maps:get(Head, KVL_Map),
-    case enterdb_lit_resource:next(LastIt) of
+    case enterdb_it_resource:next(LastIt) of
 	{ok, KVP} ->
 	    case UtilsMod:sort_kvl(Dir, [KVP | Rest]) of
 		{ok, [H|_]} -> {ok, H};
@@ -523,7 +523,7 @@ apply_prev_last(_UtilsMod, _Dir, [], _)->
 apply_prev_last(UtilsMod, Dir, ValidIterators, InvalidIterators)->
     KVL =
 	lists:foldl(fun(It, Acc) ->
-			case enterdb_lit_resource:prev(It) of
+			case enterdb_it_resource:prev(It) of
 			    {ok, KVP} ->
 				[KVP | Acc];
 			    {error, invalid} ->
