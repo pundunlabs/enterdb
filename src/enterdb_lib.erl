@@ -952,7 +952,7 @@ cleanup_table(Name) ->
 	    ok;
 	#{name := Name,
 	  column_mapper := ColumnMapper} ->
-	    Path = get_db_path(),
+	    Path = get_path(db_path),
 	    FullPath = filename:join([Path, Name]),
 	    file:del_dir(FullPath),
 	    gb_reg:purge(ColumnMapper),
