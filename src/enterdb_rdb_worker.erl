@@ -109,7 +109,20 @@ read(Shard, Key) ->
             Columns :: [column()]) -> ok | {error, Reason :: term()}.
 write(Shard, Key, Columns) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {write, Key, Columns}).
+    gen_server:call(ServerRef, {write, Key, Columns, []}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Write Key/Columns to given shard and index given terms.
+%% @end
+%%--------------------------------------------------------------------
+-spec write(Shard :: string(),
+            Key :: key(),
+            Columns :: [column()],
+	    Terms :: [string()]) -> ok | {error, Reason :: term()}.
+write(Shard, Key, Columns, Terms) ->
+    ServerRef = enterdb_ns:get(Shard),
+    gen_server:call(ServerRef, {write, Key, Columns, Terms}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -153,7 +166,8 @@ delete_db(Args) ->
     ok = ensure_closed(Shard),
 
     OptionsPL = maps:get(options, Args),
-    {ok, Options} = rocksdb:options(OptionsPL),
+    IUPid = enterdb_index_update:get_pid(),
+    {ok, Options} = rocksdb:options(OptionsPL, [{"pid", IUPid}]),
 
     FullPath = filename:join([Path, Subdir, Shard]),
     rocksdb:destroy_db(FullPath, Options).
@@ -316,7 +330,8 @@ init(Args) ->
     enterdb_ns:register_pid(self(), Shard),
     Subdir = maps:get(name, Args),
     ok = ensure_closed(Shard),
-    OptionsPL = maps:get(options, Args),
+    IUPid = enterdb_index_update:get_pid(),
+    OptionsPL = maps:get(options, Args, [{"pid", IUPid}]),
     case rocksdb:options(OptionsPL) of
         {ok, Options} ->
             [DbPath, WalPath, BackupPath, CheckpointPath] =
@@ -370,10 +385,11 @@ handle_call({read, DBKey}, _From,
                            readoptions = ReadOptions}) ->
     Reply = rocksdb:get(DB, ReadOptions, DBKey),
     {reply, Reply, State};
-handle_call({write, Key, Columns}, _From, State) ->
+handle_call({write, Key, Columns, Terms}, _From, State) ->
     #state{db_ref = DB,
            writeoptions = WriteOptions} = State,
     Reply = rocksdb:put(DB, WriteOptions, Key, Columns),
+    index_on(DB, WriteOptions, Key, Terms),
     {reply, Reply, State};
 handle_call({update, DBKey, Op, DataModel, Mapper, Dist}, _From, State) ->
     #state{db_ref = DB,
@@ -564,6 +580,17 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+index_on(DB, WriteOptions, Key, [])->
+    ok;
+index_on(DB, WriteOptions, Key, Terms)->
+    spawn(do_index_on(DB, WriteOptions, Key, Terms)).
+
+do_index_on(DB, WriteOptions, Key, [Term | Rest]) ->
+    rocksdb:index_merge(DB, WriteOptions, Key, Term),
+    do_index_on(DB, WriteOptions, Key, Rest);
+do_index_on(DB, WriteOptions, Key, []) ->
+    ok.
+
 -spec ensure_directories(Args :: map(),
 			 Subdir :: string(),
 			 Shard :: string()) ->

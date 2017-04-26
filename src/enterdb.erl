@@ -44,7 +44,7 @@
 	 prev/1
 	 ]).
 
--export([do_write/4,
+-export([do_write/5,
 	 do_update/4,
 	 do_read/3,
 	 do_write_to_disk/4,
@@ -247,12 +247,12 @@ write(Tab, Key, Columns) ->
 			       {error, Error :: term()},
 	     Dist :: true | false) ->
     ok | {error, Reason :: term()}.
-write_(Tab, Key, {ok, DBKey, HashKey, DBColumns}, true) ->
+write_(Tab, Key, {ok, DBKey, HashKey, DBColumns, IndexTerms}, true) ->
     {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
-    ?dyno:call(Ring, {?MODULE, do_write, [Shard,Key,DBKey,DBColumns]}, write);
-write_(Tab, Key, {ok, DBKey, HashKey, DBColumns}, false) ->
+    ?dyno:call(Ring, {?MODULE, do_write, [Shard,Key,DBKey,DBColumns,IndexTerms]}, write);
+write_(Tab, Key, {ok, DBKey, HashKey, DBColumns, IndexTerms}, false) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
-    do_write(Shard, Key, DBKey, DBColumns);
+    do_write(Shard, Key, DBKey, DBColumns, IndexTerms);
 write_(_Tab, _, {error, _} = E, _) ->
     E.
 
@@ -272,11 +272,11 @@ do_write_to_disk(Shard, Key, DBKey, DBColumns) ->
     TD = enterdb_lib:get_shard_def(Shard),
     do_write_to_disk(TD, Shard, Key, DBKey, DBColumns).
 
-do_write(Shard, Key, DBKey, DBColumns) ->
+do_write(Shard, Key, DBKey, DBColumns, IndexTerms) ->
     TD = enterdb_lib:get_shard_def(Shard),
-    do_write(TD, Shard, Key, DBKey, DBColumns).
+    do_write(TD, Shard, Key, DBKey, DBColumns, IndexTerms).
 
-do_write(_TD = #{type := Type}, ShardTab, Key, DBKey, DBColumns)
+do_write(_TD = #{type := Type}, ShardTab, Key, DBKey, DBColumns, _)
 when Type =:= mem_leveldb_wrapped ->
     case find_timestamp_in_key(Key) of
 	undefined ->
@@ -291,20 +291,20 @@ when Type =:= mem_leveldb_wrapped ->
 	    end
     end;
 do_write(#{type := leveldb_wrapped, wrapper := Wrapper},
-	 ShardTab, _Key, DBKey, DBColumns) ->
+	 ShardTab, _Key, DBKey, DBColumns, _) ->
     enterdb_ldb_wrp:write(ShardTab, Wrapper, DBKey, DBColumns);
 do_write(#{type := leveldb_tda, tda := Tda},
-	 ShardTab, Key, DBKey, DBColumns) ->
+	 ShardTab, Key, DBKey, DBColumns, _) ->
     enterdb_ldb_tda:write(ShardTab, Tda, Key, DBKey, DBColumns);
-do_write(#{type := leveldb}, ShardTab, _Key, DBKey, DBColumns) ->
+do_write(#{type := leveldb}, ShardTab, _Key, DBKey, DBColumns, _) ->
     enterdb_ldb_worker:write(ShardTab, DBKey, DBColumns);
-do_write(#{type := mem_leveldb}, _Tab, _Key, _DBKey, _DBColumns) ->
+do_write(#{type := mem_leveldb}, _Tab, _Key, _DBKey, _DBColumns, _) ->
     ok;
-do_write(#{type := rocksdb}, ShardTab, _Key, DBKey, DBColumns) ->
-    enterdb_rdb_worker:write(ShardTab, DBKey, DBColumns);
-do_write({error, R}, _, _Key, _DBKey, _DBColumns) ->
+do_write(#{type := rocksdb}, ShardTab, _Key, DBKey, DBColumns, IndexTerms) ->
+    enterdb_rdb_worker:write(ShardTab, DBKey, DBColumns, IndexTerms);
+do_write({error, R}, _, _Key, _DBKey, _DBColumns, _) ->
     {error, R};
-do_write(TD, Tab, Key, _DBKey, _DBColumns) ->
+do_write(TD, Tab, Key, _DBKey, _DBColumns, _) ->
     ?debug("could not write ~p", [{TD, Tab, Key}]),
     {error, {bad_tab, {Tab, TD}}}.
 

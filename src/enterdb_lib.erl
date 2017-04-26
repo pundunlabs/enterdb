@@ -1159,7 +1159,8 @@ make_key(#{key := KeyDef, hash_key := HashKey}, Key) ->
 -spec make_key_columns(TableDef :: #{},
 		       Key :: [{string(), term()}],
 		       Columns :: term()) ->
-    {ok, DbKey :: binary(), HashKey :: binary(), Columns :: binary()} |
+    {ok, DbKey :: binary(), HashKey :: binary(),
+	 Columns :: binary(), IndexTerms :: [string()]} |
     {error, Reason :: term()}.
 make_key_columns(TD = #{key := KeyDef,
 			hash_key := HashKeyDef}, Key, Columns) ->
@@ -1172,13 +1173,15 @@ make_key_columns(TD = #{key := KeyDef,
 
 make_key_columns_help(#{data_model := DataModel,
 			column_mapper := ColumnMapper,
-			distributed := Dist},
+			distributed := Dist,
+			index_on := IndexOn},
 		      DBKey,
 		      HashKey,
 		      Columns) ->
     case make_db_value(DataModel, ColumnMapper, Dist, Columns) of
 	{ok, DBValue} ->
-	    {ok, DBKey, HashKey, DBValue};
+	    IndexTerms = get_index_terms(ColumnMapper, IndexOn, Columns),
+	    {ok, DBKey, HashKey, DBValue, IndexTerms};
 	{error, E} ->
 	    {error, E}
     end.
@@ -1692,3 +1695,18 @@ rdb_open_options(Start) when Start == open; Start == delete ->
 
 cmp_str(descending) -> "descending";
 cmp_str(ascending) -> "ascending".
+
+get_index_terms(Mapper, IndexOn, Columns) ->
+    get_index_terms(Mapper, IndexOn, Columns, []). 
+
+get_index_terms(Mapper, [Col | Rest], Columns, Acc) ->
+    case lists:keyfind(Col, 1, Columns) of
+	{_, Value} ->
+	    Ref = Mapper:lookup(Col),
+	    Term = lists:concat([Ref,":",Value]),
+	    get_index_terms(Mapper, Rest, Columns, [Term, Acc]);
+	false ->
+	    get_index_terms(Mapper, Rest, Columns, Acc)
+    end;
+get_index_terms(_Mapper, [], _Columns, Acc) ->
+    Acc.

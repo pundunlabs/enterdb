@@ -89,6 +89,9 @@ init([]) ->
     EdbLitSup	    = {enterdb_it_sup,
 			{enterdb_simple_sup, start_link,[leveldb_it]},
 			permanent, infinity, supervisor,[enterdb_simple_sup]},
+    EdbIndexUpdate  = {enterdb_index_update,
+			{enterdb_index_update, start_link, []},
+			permanent, 20000, worker, [enterdb_index_update]},
     EdbNS	    = {enterdb_ns, {enterdb_ns, start_link, []},
 			permanent, 20000, worker, [enterdb_ns]},
     EdbRS	    = {enterdb_rs, {enterdb_rs, start_link, []},
@@ -96,7 +99,7 @@ init([]) ->
     EdbPTS	    = {enterdb_pts, {enterdb_pts, start_link, []},
 			permanent, 20000, worker, [enterdb_pts]},
 
-    {ok, {SupFlags, [EdbNS, EdbRS, EdbPTS, EdbLitSup,
+    {ok, {SupFlags, [EdbIndexUpdate, EdbNS, EdbRS, EdbPTS, EdbLitSup,
 		     EdbLdbWrpSup, EdbLdbTdaSup, EdbRdbSup, EdbLdbSup,
 		     EdbMemMgrServer]}}.
 
