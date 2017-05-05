@@ -29,6 +29,10 @@
 
 -export([get_pid/0]).
 
+-export([index/5,
+	 term_index_update/5,
+	 index_read/2]).
+
 %% gen_server callbacks
 -export([init/1,
          handle_call/3,
@@ -42,6 +46,7 @@
 -define(SERVER, ?MODULE).
 
 -include_lib("gb_log/include/gb_log.hrl").
+-include("enterdb.hrl").
 %%%===================================================================
 %%% API functions
 %%%===================================================================
@@ -60,6 +65,54 @@ start_link() ->
 get_pid() ->
     whereis(?SERVER).
 
+-spec index(DB :: binary(),
+	    WriteOptions :: binary(),
+	    TableId :: integer(),
+	    Key :: binary(),
+	    Terms :: [{integer(), string()}]) ->
+    ok.
+index(DB, WriteOptions, TableId, Key, [{ColId, Term} | Rest]) ->
+    io:format("~p:~p, Args: ~p~n",[?MODULE,?LINE, [DB, WriteOptions, TableId, Key, [{ColId, Term} | Rest]]]),
+    Tid = <<TableId:16>>,
+    Cid = <<ColId:16>>,
+    IndexKey = << Tid/binary, Cid/binary, Key/binary >>,
+    ok = rocksdb:index_merge(DB, WriteOptions, IndexKey, Term),
+    index(DB, WriteOptions, TableId, Key, Rest);
+index(_DB, _WriteOptions, _TableId, _Key, []) ->
+    ok.
+
+-spec term_index_update(Tid :: integer(),
+			Cid :: integer(),
+			Key :: binary(),
+			NewTerm :: string(),
+			OldTerm :: string()) ->
+    ok.
+term_index_update(Tid, Cid, Key, NewTerm, OldTerm) ->
+    AddTermIndexKey = [{"tid", Tid}, {"cid", Cid}, {"term", NewTerm}],
+    RemTermIndexKey = [{"tid", Tid}, {"cid", Cid}, {"term", OldTerm}],
+    #{key := KeyDef, hash_key := HashKey} =
+	enterdb_lib:get_tab_def(?TERM_INDEX_TABLE),
+    {ok, ADBKey, ADBHashKey} = enterdb_lib:make_db_key(KeyDef, HashKey, AddTermIndexKey),
+    {ok, {AShard, ARing}} = gb_hash:get_node(?TERM_INDEX_TABLE, ADBHashKey),
+    {ok, RDBKey, RDBHashKey} = enterdb_lib:make_db_key(KeyDef, HashKey, RemTermIndexKey),
+    {ok, {RShard, RRing}} = gb_hash:get_node(?TERM_INDEX_TABLE, RDBHashKey),
+    ?dyno:call(ARing, {enterdb_rdb_worker, term_index,
+			[AShard, ADBKey, encode_key(43, Key)]}, write),
+    ?dyno:call(RRing, {enterdb_rdb_worker, term_index,
+			[RShard, RDBKey, encode_key(45, Key)]}, write).
+
+-spec index_read(KeyDef :: key(),
+		 Key :: [{Tag :: string(), NewTerm :: integer() | string()}]) ->
+    {ok, [term()]}.
+index_read(KeyDef, Key) ->
+    #{key := TermKeyDef, hash_key := HashKey} =
+	enterdb_lib:get_tab_def(?TERM_INDEX_TABLE),
+    {ok, DBKey, DBHashKey} = enterdb_lib:make_db_key(TermKeyDef, HashKey, Key),
+    {ok, {Shard, Ring}} = gb_hash:get_node(?TERM_INDEX_TABLE, DBHashKey),
+    Res = ?dyno:call(Ring, {enterdb_rdb_worker, read,[Shard, DBKey]}, read),
+    parse_postings(KeyDef, Res).
+
+
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
@@ -76,6 +129,8 @@ get_pid() ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
+    enterdb:create_table(?TERM_INDEX_TABLE,["tid", "cid", "term"],
+			 [{type, rocksdb}, {hash_exclude, ["term"]}]),
     {ok, #state{}}.
 
 %%--------------------------------------------------------------------
@@ -119,9 +174,19 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_info({index_update, _, Term, Term}, State) ->
+    ?debug("~p received same term: ~p", [?SERVER, Term]),
+    io:format("~p:~p, received same term: ~p~n",[?MODULE,?LINE, Term]),
+    {noreply, State};
+handle_info({index_update, << Tid:16, Cid:16, Key/binary >>,
+	     NewTerm, OldTerm}, State) ->
+    ?debug("~p received term change: ~p -> ~p", [?SERVER, OldTerm, NewTerm]),
+    io:format("~p:~p, received term change: ~p -> ~p~n",[?MODULE,?LINE, OldTerm, NewTerm]),
+    spawn(?MODULE, term_index_update, [Tid, Cid, Key, NewTerm, OldTerm]),
+    {noreply, State};
 handle_info(Info, State) ->
-    ?debug("~p received: ~p", [?SERVER, Info]),
-    io:format("~p received: ~p~n", [?SERVER, Info]),
+    ?debug("~p received unhandled info: ~p", [?SERVER, Info]),
+    io:format("~p:~p, received unhandled info: ~p~n",[?MODULE,?LINE, Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -152,3 +217,25 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+encode_key(Op, Key) ->
+    Unsigned = binary:encode_unsigned(size(Key)+1),
+    Length =
+	case 4 - size(Unsigned) of
+	    3 -> << <<0,0,0>>/binary, Unsigned/binary >>;
+	    2 -> << <<0,0>>/binary, Unsigned/binary >>;
+	    1 -> << <<0>>/binary, Unsigned/binary >>;
+	    0 -> Unsigned
+    end,
+    << Length/binary, <<Op>>/binary, Key/binary >>.
+
+parse_postings(KeyDef, {ok, Binary}) ->
+    parse_postings(KeyDef, Binary, []);
+parse_postings(_, Else) ->
+    Else.
+
+parse_postings(KeyDef, << Length:4/big-unsigned-integer-unit:8, Bin/binary>>, Acc) ->
+    Len = (Length-1),
+    << Key:Len/bytes, Rest/binary >> = Bin,
+    parse_postings(KeyDef, Rest, [enterdb_lib:make_app_key(KeyDef, Key) | Acc]);
+parse_postings(_, <<>>, Acc) ->
+    Acc.

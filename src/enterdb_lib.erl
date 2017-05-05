@@ -559,6 +559,7 @@ do_create_shards(#{name := Name,
 		   data_model := DataModel,
 		   shards := Shards} = EDBT) ->
     LocalShards = find_local_shards(Shards),
+    gb_reg:add_keys(?TABLE_LOOKUP, [Name]),
     Mapper = get_column_mapper(Name, DataModel),
     NewEDBT = EDBT#{column_mapper => Mapper},
     write_enterdb_table(NewEDBT),
@@ -1143,7 +1144,7 @@ sum_up_sizes([_ | Rest], Sum) ->
 %% Make key according to KeyDef defined in table configuration.
 %% @end
 %%--------------------------------------------------------------------
--spec make_key(TD :: #enterdb_table{},
+-spec make_key(TD :: #{},
 	       Key :: [{string(), term()}]) ->
     {ok, DbKey :: binary(), HashKey :: binary()} |
     {error, Reason :: term()}.
@@ -1181,6 +1182,7 @@ make_key_columns_help(#{data_model := DataModel,
     case make_db_value(DataModel, ColumnMapper, Dist, Columns) of
 	{ok, DBValue} ->
 	    IndexTerms = get_index_terms(ColumnMapper, IndexOn, Columns),
+	    %%io:format("~p:~p, index_terms ~p~n",[?MODULE,?LINE, IndexTerms]),
 	    {ok, DBKey, HashKey, DBValue, IndexTerms};
 	{error, E} ->
 	    {error, E}
@@ -1689,7 +1691,8 @@ get_rdb_worker_args(Start, Smap = #{comparator := Comp}) ->
 -spec rdb_open_options(Start :: create | open | delete) ->
     [{string(), string()}].
 rdb_open_options(create) ->
-    [{"create_if_missing", "true"}, {"error_if_exists", "true"}];
+    [{"create_if_missing", "true"}, {"error_if_exists", "true"},
+     {"create_missing_column_families", "true"}];
 rdb_open_options(Start) when Start == open; Start == delete ->
     [{"create_if_missing", "false"}, {"error_if_exists", "false"}].
 
@@ -1703,8 +1706,7 @@ get_index_terms(Mapper, [Col | Rest], Columns, Acc) ->
     case lists:keyfind(Col, 1, Columns) of
 	{_, Value} ->
 	    Ref = Mapper:lookup(Col),
-	    Term = lists:concat([Ref,":",Value]),
-	    get_index_terms(Mapper, Rest, Columns, [Term, Acc]);
+	    get_index_terms(Mapper, Rest, Columns, [{Ref, Value} | Acc]);
 	false ->
 	    get_index_terms(Mapper, Rest, Columns, Acc)
     end;

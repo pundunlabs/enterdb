@@ -26,13 +26,13 @@
 
 %% API
 -export([start_link/1]).
-
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
 
 -export([read/2,
          write/3,
+         write/4,
          update/6,
          delete/2,
 	 delete_db/1,
@@ -42,25 +42,30 @@
 	 recreate_shard/1,
 	 approximate_sizes/2,
 	 approximate_size/1,
-	 get_iterator/2]).
+	 get_iterator/2,
+	 term_index/3]).
 
 %% OAM callbacks
 -export([backup_db/2,
 	 get_backup_info/1,
 	 restore_db/1,
 	 restore_db/2,
-	 create_checkpoint/1]).
+	 create_checkpoint/1,
+	 compact_db/1,
+	 compact_index/1]).
 
 -define(SERVER, ?MODULE).
 
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
 
--record(state, {db_ref,
+-record(state, {table_id,
+		db_ref,
                 options,
 		readoptions,
                 writeoptions,
                 shard,
+		column_mapper,
 		db_path,
 		wal_path,
 		backup_path,
@@ -164,11 +169,7 @@ delete_db(Args) ->
     Subdir = maps:get(name, Args),
     Path = maps:get(db_path, Args),
     ok = ensure_closed(Shard),
-
-    OptionsPL = maps:get(options, Args),
-    IUPid = enterdb_index_update:get_pid(),
-    {ok, Options} = rocksdb:options(OptionsPL, [{"pid", IUPid}]),
-
+    {ok, Options, _} = make_options(Args),
     FullPath = filename:join([Path, Subdir, Shard]),
     rocksdb:destroy_db(FullPath, Options).
 
@@ -262,6 +263,19 @@ get_iterator(Caller, Shard) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Index (Reverse index) a term that points to db keys.
+%% @end
+%%--------------------------------------------------------------------
+-spec term_index(Shard :: string(),
+		 Term :: binary(),
+		 Key :: binary()) ->
+    ok | {error, Reason :: term()}.
+term_index(Shard, Term, Key) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, {term_index, Term, Key}).
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Create a backup for the shard.
 %% @end
 %%--------------------------------------------------------------------
@@ -315,6 +329,29 @@ create_checkpoint(Shard) ->
     gen_server:call(Pid, create_checkpoint).
 
 %%--------------------------------------------------------------------
+%% @doc
+%% Run rocksdb compactation manually on the shard.
+%% @end
+%%--------------------------------------------------------------------
+-spec compact_db(Shard :: string()) ->
+    ok | {error, Reason :: term()}.
+compact_db(Shard) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, compact_db).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Run rocksdb compactation manually on the index columns family
+%% of shard.
+%% @end
+%%--------------------------------------------------------------------
+-spec compact_index(Shard :: string()) ->
+    ok | {error, Reason :: term()}.
+compact_index(Shard) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, compact_index).
+
+%%--------------------------------------------------------------------
 %% @private
 %% @doc
 %% Initializes the server
@@ -330,17 +367,18 @@ init(Args) ->
     enterdb_ns:register_pid(self(), Shard),
     Subdir = maps:get(name, Args),
     ok = ensure_closed(Shard),
-    IUPid = enterdb_index_update:get_pid(),
-    OptionsPL = maps:get(options, Args, [{"pid", IUPid}]),
-    case rocksdb:options(OptionsPL) of
-        {ok, Options} ->
+    OptionsPL = maps:get(options, Args),
+    ColumnMapper = maps:get(column_mapper, Args),
+    case make_options(Args) of
+        {ok, Options, ColumnFamiliyOpts} ->
             [DbPath, WalPath, BackupPath, CheckpointPath] =
 		ensure_directories(Args, Subdir, Shard),
 	    TTL = maps:get(ttl, Args, undefined),
-	    case open_db(Options, DbPath, TTL) of
+	    case open_db(Options, DbPath, TTL, ColumnFamiliyOpts) of
                 {error, Reason} ->
                     {stop, {error, Reason}};
                 {ok, DB} ->
+		    io:format("~p:~p,passing  pid ~p~n",[?MODULE,?LINE, ColumnFamiliyOpts]),
 		    ELR = #enterdb_ldb_resource{name = Shard, resource = DB},
                     ok = write_enterdb_ldb_resource(ELR),
 		    %%ReadOptionsRec = build_readoptions([{tailing,true}]),
@@ -349,11 +387,13 @@ init(Args) ->
                     WriteOptionsRec = build_writeoptions([]),
                     {ok, WriteOptions} = rocksdb:writeoptions(WriteOptionsRec),
                     process_flag(trap_exit, true),
-		    {ok, #state{db_ref = DB,
+		    {ok, #state{table_id = ?TABLE_LOOKUP:lookup(Subdir),
+				db_ref = DB,
                                 options = Options,
 				readoptions = ReadOptions,
                                 writeoptions = WriteOptions,
                                 shard = Shard,
+				column_mapper = ColumnMapper,
                                 db_path = DbPath,
                                 wal_path = WalPath,
                                 backup_path = BackupPath,
@@ -386,10 +426,11 @@ handle_call({read, DBKey}, _From,
     Reply = rocksdb:get(DB, ReadOptions, DBKey),
     {reply, Reply, State};
 handle_call({write, Key, Columns, Terms}, _From, State) ->
-    #state{db_ref = DB,
+    #state{table_id = TableId,
+	   db_ref = DB,
            writeoptions = WriteOptions} = State,
     Reply = rocksdb:put(DB, WriteOptions, Key, Columns),
-    index_on(DB, WriteOptions, Key, Terms),
+    index_on(DB, WriteOptions, TableId, Key, Terms),
     {reply, Reply, State};
 handle_call({update, DBKey, Op, DataModel, Mapper, Dist}, _From, State) ->
     #state{db_ref = DB,
@@ -443,6 +484,11 @@ handle_call({get_iterator, Caller}, _From, State) ->
     MonMap = State#state.it_mon,
     NewMonMap = maps:put(Mref, Caller, MonMap),
     {reply, R, State#state{it_mon = NewMonMap}};
+handle_call({term_index, Term, Key}, _From, State) ->
+    #state{db_ref = DB,
+           writeoptions = WriteOptions} = State,
+    Reply = rocksdb:term_index(DB, WriteOptions, Term, Key),
+    {reply, Reply, State};
 handle_call(backup_db, From,
             State = #state{db_ref = DB,
                            backup_path = BackupPath}) ->
@@ -482,6 +528,20 @@ handle_call(create_checkpoint, From,
 	    gen_server:reply(From, Reply)
 	  end ),
     {noreply, State};
+handle_call(compact_db, From,
+            State = #state{db_ref = DB}) ->
+    spawn(fun() ->
+	    Reply = rocksdb:compact_db(DB),
+	    gen_server:reply(From, Reply)
+	  end ),
+    {noreply, State};
+handle_call(compact_index, From,
+            State = #state{db_ref = DB}) ->
+    spawn(fun() ->
+	    Reply = rocksdb:compact_index(DB),
+	    gen_server:reply(From, Reply)
+	  end ),
+    {noreply, State};
 handle_call(Req, From, State) ->
     R = ?warning("unkown request:~p, from: ~p, state: ~p", [Req, From, State]),
     {reply, R, State}.
@@ -515,8 +575,8 @@ handle_cast(recreate_shard, State = #state{shard = Shard,
 				    {error_if_exists, true}),
     NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
 				    {create_if_missing, true}),
-    {ok, NewOptions} = rocksdb:options(NewOptionsPL),
-    {ok, NewDB} = open_db(NewOptions, DbPath, TTL),
+    {ok, NewOptions, ColumnFamiliyOpts} = do_make_options("", NewOptionsPL),
+    {ok, NewDB} = open_db(NewOptions, DbPath, TTL, ColumnFamiliyOpts),
     ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Shard,
 							  resource = NewDB}),
     {noreply, State#state{db_ref = NewDB,
@@ -580,16 +640,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-index_on(DB, WriteOptions, Key, [])->
+index_on(_DB, _WriteOptions, _TableId, _Key, [])->
     ok;
-index_on(DB, WriteOptions, Key, Terms)->
-    spawn(do_index_on(DB, WriteOptions, Key, Terms)).
-
-do_index_on(DB, WriteOptions, Key, [Term | Rest]) ->
-    rocksdb:index_merge(DB, WriteOptions, Key, Term),
-    do_index_on(DB, WriteOptions, Key, Rest);
-do_index_on(DB, WriteOptions, Key, []) ->
-    ok.
+index_on(DB, WriteOptions, TableId, Key, Terms)->
+    spawn(enterdb_index_update, index, [DB, WriteOptions, TableId, Key, Terms]).
 
 -spec ensure_directories(Args :: map(),
 			 Subdir :: string(),
@@ -605,11 +659,12 @@ ensure_directories(Args, Subdir, Shard) ->
 
 -spec open_db(Options :: term(),
 	      DbPath :: string(),
-	      TTL :: undefined | pos_integer()) ->
+	      TTL :: undefined | pos_integer(),
+	      ColumnFamiliyOpts :: [{string(), term()}]) ->
     {ok, DB :: term()} | {error, Reason :: term()}.
-open_db(Options, DbPath, undefined) ->
-    rocksdb:open_db(Options, DbPath);
-open_db(Options, DbPath, TTL) ->
+open_db(Options, DbPath, undefined, ColumnFamiliyOpts) ->
+    rocksdb:open_db(Options, DbPath, ColumnFamiliyOpts);
+open_db(Options, DbPath, TTL, _) ->
     rocksdb:open_db_with_ttl(Options, DbPath, TTL).
 
 %%--------------------------------------------------------------------
@@ -747,3 +802,25 @@ del_dir(Dir, []) ->
 del_dir(Dir, [File | Rest]) ->
     file:delete(filename:join([Dir, File])),
     del_dir(Dir, Rest).
+
+-spec make_options(Args :: [term()]) ->
+    {ok, Options :: binary(), CFOpts :: [term()]} |
+    {error, Reason :: term()}.
+make_options(Args) ->
+    Name = maps:get(name, Args),
+    OptionsPL = maps:get(options, Args),
+    do_make_options(Name, OptionsPL).
+
+do_make_options(?TERM_INDEX_TABLE, OptionsPL)->
+    {ok, Opts, COpts} = do_make_options("", OptionsPL),
+    {ok, Opts, [{"term_index", "true"} | COpts]};
+do_make_options(_, OptionsPL)->
+    PidTuple = {"pid", enterdb_index_update:get_pid()},
+    case lists:keytake("comparator", 1, OptionsPL) of
+	{_, Tuple, NewOptionsPL} ->
+	    {ok, Opts} = rocksdb:options(NewOptionsPL),
+	    {ok, Opts, [Tuple, PidTuple]};
+	false ->
+	    {ok, Opts} = rocksdb:options(OptionsPL),
+	    {ok, Opts, [PidTuple]}
+    end.

@@ -41,7 +41,8 @@
 	 last/1,
 	 seek/2,
 	 next/1,
-	 prev/1
+	 prev/1,
+	 index_read/3
 	 ]).
 
 -export([do_write/5,
@@ -103,7 +104,8 @@ create_table(Name, KeyDef, Options)->
 				 hash_key => HashKey,
 				 hashing_method => HashingMethod,
 				 num_of_shards => NumberOfShards,
-				 replication_factor => RF},
+				 replication_factor => RF,
+				 index_on => ["col1"]},
 	    enterdb_lib:create_table(NewTab);
 	{error, Reason} ->
                 {error, Reason}
@@ -675,3 +677,35 @@ find_timestamp_in_key([{"ts", Ts}|_Rest]) ->
     {ok, Ts};
 find_timestamp_in_key([_|Rest]) ->
     find_timestamp_in_key(Rest).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Read entries through term index per column on Table.
+%% @end
+%%--------------------------------------------------------------------
+-spec index_read(Tab :: string(),
+		 Column :: string(),
+		 Term :: string()) ->
+    {ok, [value()]} | {error, Reason :: term()}.
+index_read(Tab, Column, Term) ->
+    case enterdb_lib:get_tab_def(Tab) of
+	TD = #{column_mapper := Mapper,
+	       key := KeyDef,
+	       distributed := Dist} ->
+	    Tid = ?TABLE_LOOKUP:lookup(Tab),
+	    case Mapper:lookup(Column) of
+		Cid when is_integer(Cid) ->
+		    Key = [{"tid", Tid}, {"cid", Cid}, {"term", Term}],
+		    Postings = enterdb_index_update:index_read(KeyDef, Key),
+		    Results =
+			[begin
+			    DB_HashKey = enterdb_lib:make_key(TD, K),
+			    {K, read_(Tab, K, DB_HashKey, Dist)}
+			 end || K <- Postings],
+		    {ok, [{K, Value } || {K, {ok, Value}} <- Results]};
+		_ ->
+		    {error, column_not_indexed}
+	    end;
+	{error, _} = R ->
+	    R
+    end.
