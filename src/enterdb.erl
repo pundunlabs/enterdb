@@ -28,6 +28,7 @@
 	 close_table/1,
 	 read/2,
          read_from_disk/2,
+	 write/1,
 	 write/3,
          update/3,
 	 delete/2,
@@ -227,6 +228,17 @@ do_read_from_disk(TD, ShardTab, Key, DBKey) ->
 %% Writes Key/Columns to table with name Name
 %% @end
 %%--------------------------------------------------------------------
+-spec write([{Name :: string(), 
+	     Key :: key(),
+	     Columns :: [column()]}]) -> [ok | {error, Reason :: term()}].
+write(L) when is_list(L) ->
+    write(L, []).
+write([{T,K,C} | Ws], Res) ->
+    R = write(T,K,C),
+    write(Ws, [R|Res]);
+write([], Res) ->
+    lists:reverse(Res).
+
 -spec write(Name :: string(),
             Key :: key(),
             Columns :: [column()]) -> ok | {error, Reason :: term()}.
