@@ -1703,12 +1703,12 @@ get_index_terms(Mapper, IndexOn, Columns) ->
     get_index_terms(Mapper, IndexOn, Columns, []). 
 
 get_index_terms(Mapper, [Col | Rest], Columns, Acc) ->
+    Ref = Mapper:lookup(Col),
     case lists:keyfind(Col, 1, Columns) of
 	{_, Value} ->
-	    Ref = Mapper:lookup(Col),
 	    get_index_terms(Mapper, Rest, Columns, [{Ref, Value} | Acc]);
 	false ->
-	    get_index_terms(Mapper, Rest, Columns, Acc)
+	    get_index_terms(Mapper, Rest, Columns, [{Ref, ""} | Acc])
     end;
 get_index_terms(_Mapper, [], _Columns, Acc) ->
     Acc.

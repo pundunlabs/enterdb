@@ -66,6 +66,7 @@
                 writeoptions,
                 shard,
 		column_mapper,
+		empty_index,
 		db_path,
 		wal_path,
 		backup_path,
@@ -369,6 +370,8 @@ init(Args) ->
     ok = ensure_closed(Shard),
     OptionsPL = maps:get(options, Args),
     ColumnMapper = maps:get(column_mapper, Args),
+    IndexOn = maps:get(index_on, Args),
+    EmptyIndex = [{ColumnMapper:lookup(I), ""} || I <- IndexOn],
     case make_options(Args) of
         {ok, Options, ColumnFamiliyOpts} ->
             [DbPath, WalPath, BackupPath, CheckpointPath] =
@@ -394,6 +397,7 @@ init(Args) ->
                                 writeoptions = WriteOptions,
                                 shard = Shard,
 				column_mapper = ColumnMapper,
+				empty_index = EmptyIndex,
                                 db_path = DbPath,
                                 wal_path = WalPath,
                                 backup_path = BackupPath,
@@ -452,10 +456,13 @@ handle_call({update, DBKey, Op, DataModel, Mapper, Dist}, _From, State) ->
 		end,
 	    {reply, Reply, State}
     end;
-handle_call({delete, DBKey}, _From, State) ->
-    #state{db_ref = DB,
-           writeoptions = WriteOptions} = State,
-    Reply = rocksdb:delete(DB, WriteOptions, DBKey),
+handle_call({delete, Key}, _From, State) ->
+    #state{table_id = TableId,
+	   db_ref = DB,
+           writeoptions = WriteOptions,
+	   empty_index = EmptyIndex} = State,
+    Reply = rocksdb:delete(DB, WriteOptions, Key),
+    index_on(DB, WriteOptions, TableId, Key, EmptyIndex),
     {reply, Reply, State};
 handle_call({read_range, Keys, Chunk, _Type}, _From, State) when Chunk > 0 ->
    #state{db_ref = DB,

@@ -44,6 +44,8 @@
 -record(state, {}).
 
 -define(SERVER, ?MODULE).
+-define(ADD, 43).
+-define(REM, 45).
 
 -include_lib("gb_log/include/gb_log.hrl").
 -include("enterdb.hrl").
@@ -88,18 +90,20 @@ index(_DB, _WriteOptions, _TableId, _Key, []) ->
 			OldTerm :: string()) ->
     ok.
 term_index_update(Tid, Cid, Key, NewTerm, OldTerm) ->
-    AddTermIndexKey = [{"tid", Tid}, {"cid", Cid}, {"term", NewTerm}],
-    RemTermIndexKey = [{"tid", Tid}, {"cid", Cid}, {"term", OldTerm}],
-    #{key := KeyDef, hash_key := HashKey} =
-	enterdb_lib:get_tab_def(?TERM_INDEX_TABLE),
-    {ok, ADBKey, ADBHashKey} = enterdb_lib:make_db_key(KeyDef, HashKey, AddTermIndexKey),
-    {ok, {AShard, ARing}} = gb_hash:get_node(?TERM_INDEX_TABLE, ADBHashKey),
-    {ok, RDBKey, RDBHashKey} = enterdb_lib:make_db_key(KeyDef, HashKey, RemTermIndexKey),
-    {ok, {RShard, RRing}} = gb_hash:get_node(?TERM_INDEX_TABLE, RDBHashKey),
-    ?dyno:call(ARing, {enterdb_rdb_worker, term_index,
-			[AShard, ADBKey, encode_key(43, Key)]}, write),
-    ?dyno:call(RRing, {enterdb_rdb_worker, term_index,
-			[RShard, RDBKey, encode_key(45, Key)]}, write).
+    TD = enterdb_lib:get_tab_def(?TERM_INDEX_TABLE),
+    term_index_update(TD, ?ADD, Tid, Cid, Key, NewTerm),
+    term_index_update(TD, ?REM, Tid, Cid, Key, OldTerm).
+
+
+term_index_update(_, _, _, _, _, undefined) ->
+    ok;
+term_index_update(#{key := KeyDef, hash_key := HashKey},
+		  Op, Tid, Cid, Key, Term) ->
+    TermIndexKey = [{"tid", Tid}, {"cid", Cid}, {"term", Term}],
+    {ok, DBKey, DBHashKey} = enterdb_lib:make_db_key(KeyDef, HashKey, TermIndexKey),
+    {ok, {Shard, Ring}} = gb_hash:get_node(?TERM_INDEX_TABLE, DBHashKey),
+    ?dyno:call(Ring, {enterdb_rdb_worker, term_index,
+			[Shard, DBKey, encode_key(Op, Key)]}, write).
 
 -spec index_read(KeyDef :: key(),
 		 Key :: [{Tag :: string(), NewTerm :: integer() | string()}]) ->
@@ -230,8 +234,8 @@ encode_key(Op, Key) ->
 
 parse_postings(KeyDef, {ok, Binary}) ->
     parse_postings(KeyDef, Binary, []);
-parse_postings(_, Else) ->
-    Else.
+parse_postings(_, {error, _Reason}) ->
+    [].
 
 parse_postings(KeyDef, << Length:4/big-unsigned-integer-unit:8, Bin/binary>>, Acc) ->
     Len = (Length-1),
