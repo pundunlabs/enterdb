@@ -42,7 +42,9 @@
 	 seek/2,
 	 next/1,
 	 prev/1,
-	 index_read/3
+	 index_read/3,
+	 add_index/2,
+	 remove_index/2
 	 ]).
 
 -export([do_write/5,
@@ -50,7 +52,8 @@
 	 do_read/3,
 	 do_write_to_disk/4,
 	 do_read_from_disk/3,
-	 do_delete/3]).
+	 do_delete/3,
+	 do_index_read/2]).
 
 -export([load_test/0,
 	 write_loop/1]).
@@ -105,7 +108,7 @@ create_table(Name, KeyDef, Options)->
 				 hashing_method => HashingMethod,
 				 num_of_shards => NumberOfShards,
 				 replication_factor => RF,
-				 index_on => ["col1"]},
+				 index_on => []},
 	    enterdb_lib:create_table(NewTab);
 	{error, Reason} ->
                 {error, Reason}
@@ -243,9 +246,11 @@ write(Tab, Key, Columns) ->
 
 -spec write_(Tab :: string(),
 	     Key :: key(),
-	     DB_Key_Columns :: {ok, DBKey :: binary(),
+	     DB_Key_Columns :: {ok,
+				DBKey :: binary(),
 				HashKey :: binary(),
-				DBColumns :: binary()} |
+				DBColumns :: binary(),
+				IndexTerms :: [{string(), string()}]} |
 			       {error, Error :: term()},
 	     Dist :: true | false) ->
     ok | {error, Reason :: term()}.
@@ -505,22 +510,22 @@ read_range_(_Tab, _, {error, _} = E, _N) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
 read_range_n(Name, StartKey, N) ->
     case enterdb_lib:get_tab_def(Name) of
-	Tab = #{}->
-	    DBKey = enterdb_lib:make_key(Tab, StartKey),
-	    read_range_n_(Tab, DBKey, N);
+	TD = #{}->
+	    DBKey = enterdb_lib:make_key(TD, StartKey),
+	    read_range_n_(TD, DBKey, N);
 	{error, _} = R ->
 	    R
     end.
 
 
--spec read_range_n_(Tab :: #{},
+-spec read_range_n_(TD :: #{},
 		    {ok, DBKey :: binary(), binary()},
 		    N :: pos_integer()) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
-read_range_n_(Tab, {ok, DBKey, _}, N) ->
-    Shards = gb_hash:get_nodes(maps:get(name, Tab)),
-    enterdb_lib:read_range_n_on_shards(Shards, Tab, DBKey, N);
-read_range_n_(_Tab, {error, _} = E, _N) ->
+read_range_n_(TD, {ok, DBKey, _}, N) ->
+    Shards = gb_hash:get_nodes(maps:get(name, TD)),
+    enterdb_lib:read_range_n_on_shards(Shards, TD, DBKey, N);
+read_range_n_(_TD, {error, _} = E, _N) ->
     E.
 
 %%--------------------------------------------------------------------
@@ -686,26 +691,89 @@ find_timestamp_in_key([_|Rest]) ->
 -spec index_read(Tab :: string(),
 		 Column :: string(),
 		 Term :: string()) ->
-    {ok, [value()]} | {error, Reason :: term()}.
+    {ok, [term()]} | {error, Reason :: term()}.
 index_read(Tab, Column, Term) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #{column_mapper := Mapper,
-	       key := KeyDef,
-	       distributed := Dist} ->
-	    Tid = ?TABLE_LOOKUP:lookup(Tab),
+	       nodes := Nodes} ->
 	    case Mapper:lookup(Column) of
 		Cid when is_integer(Cid) ->
-		    Key = [{"tid", Tid}, {"cid", Cid}, {"term", Term}],
-		    Postings = enterdb_index_update:index_read(KeyDef, Key),
-		    Results =
-			[begin
-			    DB_HashKey = enterdb_lib:make_key(TD, K),
-			    {K, read_(Tab, K, DB_HashKey, Dist)}
-			 end || K <- Postings],
-		    {ok, [{K, Value } || {K, {ok, Value}} <- Results]};
+		    Tid = ?TABLE_LOOKUP:lookup(Tab),
+		    IxKey = [{"tid", Tid}, {"cid", Cid}, {"term", Term}],
+		    {ResL, _Bad} = rpc:multicall(Nodes, ?MODULE,
+						 do_index_read, [TD, IxKey]),
+		    {ok, unique_kvl(ResL)};
 		_ ->
 		    {error, column_not_indexed}
 	    end;
 	{error, _} = R ->
 	    R
     end.
+
+do_index_read(#{name := Tab,
+		key := KeyDef,
+		distributed := Dist} = TD, IxKey) ->
+    Postings = enterdb_index_update:index_read(KeyDef, IxKey),
+    Results =
+	[begin
+	    {ok, DBKey, HashKey} = enterdb_lib:make_key(TD, K),
+	    Shard =
+		case Dist of
+		    true ->
+			{ok, {S, _}} = gb_hash:get_node(Tab, HashKey),
+			S;
+		    false ->
+			{ok, S} = gb_hash:get_local_node(Tab, HashKey),
+			S
+		end,
+	    DBValue = enterdb_rdb_worker:read(Shard, DBKey),
+	    {K, enterdb_lib:make_app_value(TD, DBValue)}
+	 end || K <- Postings],
+    [{K, Value} || {K, {ok, Value}} <- Results].
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Add new fields to indexed columns. Field may or may not exists as
+%% a column already.
+%% @end
+%%--------------------------------------------------------------------
+-spec add_index(Tab :: string(),
+	        Fields :: [string()]) ->
+    ok | {error, Reason :: term()}.
+add_index(Tab, Fields) ->
+    update_index(add_index, Tab, Fields).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Remove fields from indexed columns.
+%% @end
+%%--------------------------------------------------------------------
+-spec remove_index(Tab :: string(),
+		   Fields :: [string()]) ->
+    ok | {error, Reason :: term()}.
+remove_index(Tab, Fields) ->
+    update_index(remove_index, Tab, Fields).
+
+-spec update_index(Op :: add_index | remove_index,
+		   Tab :: string(),
+		   Fields :: [string()]) ->
+    ok | {error, Reason :: term()}.
+update_index(Op, Tab, Fields) ->
+    case enterdb_lib:get_tab_def(Tab) of
+	TD = #{type := rocksdb} ->
+	       enterdb_lib:update_table_attr(TD, {Op, Fields});
+	_ ->
+	    {error, "backend_not_supported"}
+    end.
+
+-spec unique_kvl([[{term(),term()}]]) ->
+    [{term(),term()}].
+unique_kvl(Resl) ->
+    unique_kvl(Resl, #{}).
+
+unique_kvl([[{Key, Value} | RestIn] | Rest], Acc) ->
+    unique_kvl([RestIn | Rest], Acc#{Key => Value});
+unique_kvl([[] | Rest], Acc) ->
+    unique_kvl(Rest, Acc);
+unique_kvl([], Acc) ->
+    maps:to_list(Acc).

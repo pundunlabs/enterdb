@@ -60,13 +60,15 @@
 	 reduce_cont/2,
 	 cut_kvl_at/2,
 	 comparator_to_dir/1,
-	 get_ldb_worker_args/2]).
+	 get_ldb_worker_args/2,
+	 update_table_attr/2]).
 
 %% Inter-Node API
 -export([do_create_shards/1,
 	 do_open_table/1,
 	 do_close_table/1,
-	 do_delete_table/1]).
+	 do_delete_table/1,
+	 do_update_table_attr/2]).
 
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
@@ -486,6 +488,32 @@ get_shards(Name, NumOfShards, ReplicationFactor) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Extract per Node view from shard allocation.
+%% @end
+%%--------------------------------------------------------------------
+-spec get_allocated_nodes(Shards :: [{Shard :: string(), Ring :: map()}]) ->
+    {ok, [node()]}.
+get_allocated_nodes(Shards) ->
+    get_allocated_nodes(Shards, []).
+
+get_allocated_nodes([{Shard, Ring} | Rest], Acc) ->
+    Cont = maps:fold(fun (_, NodeList, AccIn) ->
+			lists:append(NodeList, AccIn)
+		     end, Acc, Ring),
+    get_allocated_nodes(Rest, Cont);
+get_allocated_nodes([], Acc) ->
+    {ok, lists:usort(Acc)}.
+
+shard_append_to_nodes(Shard, [Node | Rest], Acc) ->
+    L = maps:get(Node, Acc, []),
+    Cont = maps:put(Node, [Shard | L], Acc),
+    shard_append_to_nodes(Shard, Rest, Cont);
+shard_append_to_nodes(_, [], Acc) ->
+    Acc.
+
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Create and return list of {Shard, Ring} tuples for all shards
 %% only for local node.
 %% @end
@@ -514,7 +542,8 @@ create_table(#{name := Name,
     Strategy = maps:get(hashing_method, EnterdbTable),
     HashOpts = [local, {algorithm, sha256}, {strategy, Strategy}],
     {ok, _Beam} = gb_hash:create_ring(Name, Shards, HashOpts),
-    do_create_shards(EnterdbTable#{shards => Shards});
+    do_create_shards(EnterdbTable#{shards => Shards,
+				   nodes => [node()]});
 
 create_table(#{name := Name} = EnterdbTable)->
     NumOfShards	= maps:get(num_of_shards, EnterdbTable),
@@ -534,7 +563,9 @@ create_table(#{name := Name} = EnterdbTable)->
     CommitID = undefined,
     RMFA = {gb_hash_register, revert, [CommitID]},
     Result = ?dyno:topo_call(MFA, [{timeout, 10000}, {revert, RMFA}]),
-    create_table(Result, EnterdbTable#{shards => AllocatedShards}).
+    {ok, AllocatedNodes} = get_allocated_nodes(AllocatedShards),
+    create_table(Result, EnterdbTable#{shards => AllocatedShards,
+				       nodes => AllocatedNodes}).
 
 -spec create_table(RingResult :: ok | {error, Reason :: term()},
 		   EnterdbTable :: #{}) ->
@@ -1712,3 +1743,66 @@ get_index_terms(Mapper, [Col | Rest], Columns, Acc) ->
     end;
 get_index_terms(_Mapper, [], _Columns, Acc) ->
     Acc.
+
+-spec update_table_attr(TD :: map(),
+			AV :: {Attr :: add_index |
+				       remove_index,
+			       Fields :: [string()]} | term()) ->
+    ok.
+update_table_attr(#{name := Name,
+		    nodes := Nodes,
+		    index_on := IndexOn}, {add_index, Fields}) ->
+    UpdatedIndexOn = add_index(IndexOn, Fields),
+    update_table_attr(Nodes, Name, index_on, UpdatedIndexOn);
+update_table_attr(#{name := Name,
+		    nodes := Nodes,
+		    index_on := IndexOn}, {remove_index, Fields}) ->
+    UpdatedIndexOn = remove_index(IndexOn, Fields),
+    update_table_attr(Nodes, Name, index_on, UpdatedIndexOn);
+update_table_attr(_TD, _) ->
+    ok.
+
+update_table_attr(Nodes, Name, Attr, Val) ->
+    {[ok], BadNodes} = rpc:multicall(Nodes, ?MODULE, do_update_table_attr,
+				     [Name, {Attr, Val}]),
+    ?debug("Bad nodes on update_table_attr: ~p", [BadNodes]),
+    ok.
+
+do_update_table_attr(Name, {Attr, Val}) ->
+    Fun =
+	fun() ->
+	    TD = #{name := Name, shards := Shards} = get_tab_def(Name),
+	    mnesia:write(#enterdb_table{name = Name,
+					map = TD#{Attr => Val}}),
+	    ResL =
+		[begin
+		    case mnesia:read(enterdb_stab, Shard) of
+			[] ->
+			    ok;
+			[S = #enterdb_stab{map = M}] ->
+			    mnesia:write(S#enterdb_stab{map = M#{Attr => Val}})
+		    end
+		 end || {Shard, _} <- Shards],
+	    check_error_response(lists:usort(ResL))
+	 end,
+    case mnesia:transaction(Fun) of
+	{aborted, Reason} ->
+	    {error, Reason};
+	{atomic, ok} ->
+	    ok
+    end.
+
+add_index(List, [Field | Rest]) ->
+    case io_lib:printable_unicode_list(Field) of
+	true ->
+	    add_index([Field | List], Rest);
+	false ->
+	    add_index(List, Rest)
+    end;
+add_index(List, []) ->
+    lists:usort(List).
+
+remove_index(List, [Field | Rest]) ->
+    remove_index(lists:delete(Field, List), Rest);
+remove_index(List, []) ->
+    List.

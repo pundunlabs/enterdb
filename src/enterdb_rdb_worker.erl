@@ -54,6 +54,9 @@
 	 compact_db/1,
 	 compact_index/1]).
 
+%% Internal Use
+-export([update_empty_index/2]).
+
 -define(SERVER, ?MODULE).
 
 -include("enterdb.hrl").
@@ -352,6 +355,13 @@ compact_index(Shard) ->
     Pid = enterdb_ns:get(Shard),
     gen_server:call(Pid, compact_index).
 
+-spec update_empty_index(Shard :: string(),
+			 IndexOn :: [string()]) ->
+    ok.
+update_empty_index(Shard, IndexOn) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, {update_empty_index, IndexOn}).
+
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -371,7 +381,7 @@ init(Args) ->
     OptionsPL = maps:get(options, Args),
     ColumnMapper = maps:get(column_mapper, Args),
     IndexOn = maps:get(index_on, Args),
-    EmptyIndex = [{ColumnMapper:lookup(I), ""} || I <- IndexOn],
+    EmptyIndex = get_empty_index(ColumnMapper, IndexOn),
     case make_options(Args) of
         {ok, Options, ColumnFamiliyOpts} ->
             [DbPath, WalPath, BackupPath, CheckpointPath] =
@@ -549,6 +559,11 @@ handle_call(compact_index, From,
 	    gen_server:reply(From, Reply)
 	  end ),
     {noreply, State};
+handle_call({update_empty_index, IndexOn}, _From,
+	    State = #state{column_mapper = Mapper}) ->
+    EmptyIndex = get_empty_index(Mapper, IndexOn),
+    {reply, ok, State#state{empty_index = EmptyIndex}};
+
 handle_call(Req, From, State) ->
     R = ?warning("unkown request:~p, from: ~p, state: ~p", [Req, From, State]),
     {reply, R, State}.
@@ -831,3 +846,6 @@ do_make_options(_, OptionsPL)->
 	    {ok, Opts} = rocksdb:options(OptionsPL),
 	    {ok, Opts, [PidTuple]}
     end.
+
+get_empty_index(Mapper, IndexOn) ->
+    [{Mapper:lookup(I), ""} || I <- IndexOn].
