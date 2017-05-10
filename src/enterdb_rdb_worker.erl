@@ -391,7 +391,6 @@ init(Args) ->
                 {error, Reason} ->
                     {stop, {error, Reason}};
                 {ok, DB} ->
-		    io:format("~p:~p,passing  pid ~p~n",[?MODULE,?LINE, ColumnFamiliyOpts]),
 		    ELR = #enterdb_ldb_resource{name = Shard, resource = DB},
                     ok = write_enterdb_ldb_resource(ELR),
 		    %%ReadOptionsRec = build_readoptions([{tailing,true}]),

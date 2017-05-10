@@ -99,7 +99,11 @@ term_index_update(Tid, Cid, Key, NewTerm, OldTerm) ->
 
 term_index_update(_, _, _, _, _, undefined) ->
     ok;
-term_index_update(#{key := KeyDef, hash_key := HashKey},
+term_index_update(TD, Op, Tid, Cid, Key, Terms) ->
+    Tokens = string:tokens(Terms, " "),
+    [do_term_index_update(TD, Op, Tid, Cid, Key, T) || T <- Tokens].
+
+do_term_index_update(#{key := KeyDef, hash_key := HashKey},
 		  Op, Tid, Cid, Key, Term) ->
     TermIndexKey = [{"tid", Tid}, {"cid", Cid}, {"term", Term}],
     {ok, DBKey, DBHashKey} = enterdb_lib:make_db_key(KeyDef, HashKey, TermIndexKey),
@@ -184,10 +188,12 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info({index_update, _, Term, Term}, State) ->
     ?debug("~p received same term: ~p", [?SERVER, Term]),
+    %%io:format("~p:~p, received same term: ~p~n", [?MODULE, ?LINE, Term]),
     {noreply, State};
 handle_info({index_update, << Tid:16, Cid:16, Key/binary >>,
 	     NewTerm, OldTerm}, State) ->
     ?debug("~p received term change: ~p -> ~p", [?SERVER, OldTerm, NewTerm]),
+    %%io:format("~p:~p, received term change: ~s -> ~s~n", [?MODULE, ?LINE, OldTerm, NewTerm]),
     spawn(?MODULE, term_index_update, [Tid, Cid, Key, NewTerm, OldTerm]),
     {noreply, State};
 handle_info(Info, State) ->
