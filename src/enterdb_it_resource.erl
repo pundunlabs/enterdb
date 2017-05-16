@@ -147,7 +147,6 @@ prev(Pid) ->
 %% @end
 %%--------------------------------------------------------------------
 init([Shard, Caller, Mod]) ->
-    ?debug("Init iterator from shard: ~p",[Shard]),
     process_flag(trap_exit, true),
     Mref = erlang:monitor(process, Caller),
     case enterdb_ldb_worker:get_iterator(self(), Shard) of
@@ -219,7 +218,6 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info({'DOWN', Mref, process, Caller, _info},
 	    #state{mref = Mref, caller = Caller} = State) ->
-    ?debug("Received DOWN for enterdb_it_worker: ~p, stopping..", [Caller]),
     {stop, normal, State};
 handle_info(timeout, State) ->
     {stop, normal, State};
@@ -238,7 +236,6 @@ handle_info(_Info, State) ->
 %% @end
 %%--------------------------------------------------------------------
 terminate(Reason, _State) ->
-    ?debug("Terminating iterator, Reason: ~p", [Reason]),
     ok.
 
 %%--------------------------------------------------------------------

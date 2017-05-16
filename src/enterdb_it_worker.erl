@@ -222,7 +222,6 @@ init(Args) ->
 	    {CbMod, UtilsMod} = get_callback_modules(Type),
 	    InitResult = init_iterators(Shards, Dist, CbMod),
 	    {ok, Iterators, Monitors} = monitor_iterators(InitResult),
-	    ?debug("Started Iterators: ~p", [Iterators]),
 	    State = #state{name = Name,
 			   utils_mod = UtilsMod,
 			   data_model = DataModel,
@@ -257,7 +256,6 @@ handle_call(first, _From, State = #state{utils_mod = UtilsMod,
 					 column_mapper = Mapper,
 					 dir = Dir}) ->
     KVL_Map = iterate(Iterators, first),
-    ?debug("KVL_Map: ~p", [KVL_Map]),
     FirstBin = apply_first(UtilsMod, Dir, KVL_Map),
     CurrentKey = get_current_key(FirstBin),
     First = make_app_kvp(FirstBin, DataModel, Key, Mapper),
@@ -297,7 +295,6 @@ handle_call(next, _From, State = #state{utils_mod = UtilsMod,
 					column_mapper = Mapper,
 					dir = Dir}) ->
     KVL_Map = iterate(Iterators, {seek, LastKey}),
-    ?debug("KVL_Map: ~p~nLastKey: ~p", [KVL_Map, LastKey]),
     NextBin = apply_next(UtilsMod, Dir, KVL_Map, LastKey),
     CurrentKey = get_current_key(NextBin),
     Next = make_app_kvp(NextBin, DataModel, Key, Mapper),
@@ -327,7 +324,6 @@ handle_call(_Request, _From, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_cast(stop, State) ->
-    ?debug("Received stop msg, stoping ..",[]),
     {stop, normal, State};
 handle_cast(_Msg, State) ->
     {noreply, State, 0}.
@@ -346,7 +342,6 @@ handle_info({'DOWN', Mref, process, It, Inf},
 	    #state{monitors = Monitors} = State) ->
     case maps:get(Mref, Monitors, undefined) of
 	It ->
-	    ?debug("Received DOWN from Iterator ~p: ~p. Stopping..", [It, Inf]),
 	    {stop, normal, State};
 	undefined ->
 	    {noreply, State}
@@ -368,7 +363,6 @@ handle_info(_Info, State) ->
 %% @end
 %%--------------------------------------------------------------------
 terminate(Reason, _State) ->
-    ?debug("Terminating ~p, Reason: ~p", [?MODULE, Reason]),
     ok.
 %%--------------------------------------------------------------------
 %% @private
@@ -400,7 +394,6 @@ init_iterators(Shards, Dist, CbMod) ->
     map().
 iterate(Iterators, Op) ->
     Applied = [ apply_op(It, Op) || It <- Iterators],
-    ?debug("Iterate ~p: ~p",[Op, Applied]),
     maps:from_list([ {KVP, It} || {ok, KVP, It} <- Applied]).
 
 -spec apply_op(It :: it(),
@@ -559,12 +552,10 @@ make_db_key(KeyDef, Key) ->
     enterdb_lib:make_db_key(KeyDef, Key).
 
 make_app_kvp({ok, {BK, BV}}, DataModel, Key, Mapper) ->
-    ?debug("make_app_key(~p,~p,~p,~p)",[{ok, BK, BV}, DataModel, Key, Mapper]),
     {ok,
      {enterdb_lib:make_app_key(Key, BK),
       enterdb_lib:make_app_value(DataModel, Mapper, BV)}};
 make_app_kvp(Else, _, _, _) ->
-    ?debug("make_app_key(~p,....)",[Else]),
     Else.
 
 -spec opposite(Dir :: 0 | 1) ->
