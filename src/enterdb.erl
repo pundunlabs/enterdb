@@ -58,6 +58,8 @@
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
 
+-include("enterdb_internal.hrl").
+
 load_test() ->
     %%enterdb_lib:open_leveldb_db("test_range").
     [spawn(?MODULE, write_loop, [10000000]) || _ <- lists:seq(1,8)].

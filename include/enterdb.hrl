@@ -17,12 +17,6 @@
 %%
 %% Enterdb records and macro definitions.
 %%%===================================================================
-
-
--define(MAX_TABLE_NAME_LENGTH, 64).
--define(ITERATOR_TIMEOUT, 30000).
--define(dyno, gb_dyno_dist).
-
 -type field_name() :: string().
 -type key() :: [{field_name(), term()}].
 -type key_range() :: {key(), key()}.

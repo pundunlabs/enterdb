@@ -70,6 +70,7 @@
 
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
+-include("enterdb_internal.hrl").
 
 %%%===================================================================
 %%% API
