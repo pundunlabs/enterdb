@@ -35,7 +35,6 @@
 	 read_range/3,
 	 read_range_n/3,
 	 delete_table/1,
-	 write_to_disk/4,
 	 table_info/1,
 	 table_info/2,
 	 first/1,
@@ -48,12 +47,16 @@
 -export([do_write/4,
 	 do_update/4,
 	 do_read/3,
-	 do_write_to_disk/4,
 	 do_read_from_disk/3,
 	 do_delete/3]).
 
+-export([do_write_force/4,
+	 do_update_force/4,
+	 do_delete_force/3]).
+
 -export([load_test/0,
-	 write_loop/1]).
+	 write_loop/1,
+	 analyse_write/3]).
 
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
@@ -61,7 +64,6 @@
 -include("enterdb_internal.hrl").
 
 load_test() ->
-    %%enterdb_lib:open_leveldb_db("test_range").
     [spawn(?MODULE, write_loop, [10000000]) || _ <- lists:seq(1,8)].
 
 write_loop(0) ->
@@ -88,7 +90,7 @@ create_table(Name, KeyDef, Options)->
 					       {options, Options}]) of
 	{ok, EnterdbTab} ->
 	    %% Specific table options
-	    Type = maps:get(type, EnterdbTab, leveldb),
+	    Type = maps:get(type, EnterdbTab, rocksdb),
 	    HashExclude = maps:get(hash_exclude, EnterdbTab, []),
 	    Ts = maps:get(time_series, EnterdbTab, false),
 	    HashKey = enterdb_lib:get_hash_key_def(KeyDef, HashExclude, Ts),
@@ -193,6 +195,10 @@ do_read_from_disk(Shard, Key, DBKey) ->
     TD = enterdb_lib:get_shard_def(Shard),
     enterdb_lib:make_app_value(TD, do_read_from_disk(TD, Shard, Key, DBKey)).
 
+do_read(#{ready_status := not_ready}, _, _, _) ->
+    {error, not_ready};
+do_read(#{ready_status := recovering}, _, _, _) ->
+    {error, recovering};
 %% internal read based on table / shard type
 do_read(_TD = #{type := leveldb}, ShardTab, _Key, DBKey) ->
     enterdb_ldb_worker:read(ShardTab, DBKey);
@@ -225,14 +231,21 @@ do_read_from_disk(#{type := mem_leveldb_tda,
 do_read_from_disk(TD, ShardTab, Key, DBKey) ->
     do_read(TD, ShardTab, Key, DBKey).
 
+analyse_write(Tab, K, C) ->
+    eprof:start(),
+    {_,R} = eprof:profile([self()], ?MODULE, write, [Tab,K,C]),
+    eprof:analyze(total),
+    eprof:stop(),
+    R.
+
 %%--------------------------------------------------------------------
 %% @doc
 %% Writes Key/Columns to table with name Name
 %% @end
 %%--------------------------------------------------------------------
 -spec write([{Name :: string(), 
-	     Key :: key(),
-	     Columns :: [column()]}]) -> [ok | {error, Reason :: term()}].
+	      Key :: key(),
+	      Columns :: [column()]}]) -> [ok | {error, Reason :: term()}].
 write(L) when is_list(L) ->
     write(L, []).
 write([{T,K,C} | Ws], Res) ->
@@ -259,76 +272,53 @@ write(Tab, Key, Columns) ->
 				HashKey :: binary(),
 				DBColumns :: binary()} |
 			       {error, Error :: term()},
-	     Dist :: true | false) ->
+	     Dist :: boolean()) ->
     ok | {error, Reason :: term()}.
-write_(Tab, Key, {ok, DBKey, HashKey, DBColumns}, true) ->
-    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
-    ?dyno:call(Ring, {?MODULE, do_write, [Shard,Key,DBKey,DBColumns]}, write);
-write_(Tab, Key, {ok, DBKey, HashKey, DBColumns}, false) ->
+write_(Tab, Key, {ok, DBKey, HashKey, DBColumns}, _Dist = true) ->
+    {ok, {Shard, Nodes}} = gb_hash:get_node(Tab, HashKey),
+    ?dyno:call(Nodes, {?MODULE, do_write, [Shard,Key,DBKey,DBColumns]}, write);
+write_(Tab, Key, {ok, DBKey, HashKey, DBColumns}, _Dist = false) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
     do_write(Shard, Key, DBKey, DBColumns);
 write_(_Tab, _, {error, _} = E, _) ->
     E.
 
--spec write_to_disk(Name :: string(),
-		    Key :: key(),
-		    DBKey :: binary(),
-		    DBColumns :: binary()) -> ok | {error, Reason :: term()}.
-write_to_disk(Tab, Key, DBKey, DBColumns) ->
-    case gb_hash:get_local_node(Tab, Key) of
-	{ok, Shard} ->
-	    do_write_to_disk(Shard, Key, DBKey, DBColumns);
-	_ ->
-	    {error, "no_table"}
-    end.
-
-do_write_to_disk(Shard, Key, DBKey, DBColumns) ->
-    TD = enterdb_lib:get_shard_def(Shard),
-    do_write_to_disk(TD, Shard, Key, DBKey, DBColumns).
-
 do_write(Shard, Key, DBKey, DBColumns) ->
     TD = enterdb_lib:get_shard_def(Shard),
     do_write(TD, Shard, Key, DBKey, DBColumns).
 
-do_write(_TD = #{type := Type}, ShardTab, Key, DBKey, DBColumns)
-when Type =:= mem_leveldb_wrapped ->
-    case find_timestamp_in_key(Key) of
-	undefined ->
-	    undefined;
-	{ok, Ts} ->
-	    case enterdb_mem_wrp:write(ShardTab, Ts, DBKey, DBColumns) of
-		{error, _} = _E ->
-		    %% Write to disk
-		    enterdb_ldb_wrp:write(Ts, ShardTab, DBKey, DBColumns);
-		Res ->
-		    Res
-	    end
-    end;
+do_write_force(Shard, Key, DBKey, DBColumns) ->
+    TD = (enterdb_lib:get_shard_def(Shard))#{ready_status => forced},
+    do_write(TD, Shard, Key, DBKey, DBColumns).
+
+do_write(#{ready_status := not_ready}, _Shard, _Key, _DBKey, _DBColumns) ->
+    {error, not_ready};
+do_write(#{ready_status := recovering}, Shard, Key, DBKey, DBColumns) ->
+    enterdb_shard_recovery:log_event_recover({Shard, node()},
+					     {?MODULE, do_write_force,
+						[Shard, Key, DBKey, DBColumns]}),
+    {error, {processed, recovering}};
+
+%% Type leveldb_wrapped
 do_write(#{type := leveldb_wrapped, wrapper := Wrapper},
 	 ShardTab, _Key, DBKey, DBColumns) ->
     enterdb_ldb_wrp:write(ShardTab, Wrapper, DBKey, DBColumns);
+%% Type leveldb_tda
 do_write(#{type := leveldb_tda, tda := Tda},
 	 ShardTab, Key, DBKey, DBColumns) ->
     enterdb_ldb_tda:write(ShardTab, Tda, Key, DBKey, DBColumns);
+%% Type leveldb
 do_write(#{type := leveldb}, ShardTab, _Key, DBKey, DBColumns) ->
     enterdb_ldb_worker:write(ShardTab, DBKey, DBColumns);
-do_write(#{type := mem_leveldb}, _Tab, _Key, _DBKey, _DBColumns) ->
-    ok;
 do_write(#{type := rocksdb}, ShardTab, _Key, DBKey, DBColumns) ->
     enterdb_rdb_worker:write(ShardTab, DBKey, DBColumns);
 do_write({error, R}, _, _Key, _DBKey, _DBColumns) ->
     {error, R};
+
+%% No match
 do_write(TD, Tab, Key, _DBKey, _DBColumns) ->
     ?debug("could not write ~p", [{TD, Tab, Key}]),
     {error, {bad_tab, {Tab, TD}}}.
-
-do_write_to_disk(#{type := Type, wrapper := Wrapper},
-		 ShardTab, _Key, DBKey, DBColumns)
-    when Type =:= mem_leveldb_wrapped ->
-    enterdb_ldb_wrp:write(ShardTab, Wrapper, DBKey, DBColumns);
-
-do_write_to_disk(TD, ShardTab, Key, DBKey, DBColumns) ->
-    do_write(TD, ShardTab, Key, DBKey, DBColumns).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -381,24 +371,17 @@ do_update(Shard, Key, DBKey, Op) ->
     TD = enterdb_lib:get_shard_def(Shard),
     enterdb_lib:make_app_value(TD, do_update(TD, Shard, Key, DBKey, Op)).
 
-do_update(#{type := Type,
-	    data_model := DataModel,
-	    column_mapper := Mapper,
-	    distributed := Dist}, Shard, Key, DBKey, Op)
-when Type =:= mem_leveldb_wrapped ->
-    case find_timestamp_in_key(Key) of
-	undefined ->
-	    undefined;
-	{ok, Ts} ->
-	    case enterdb_mem_wrp:update(Shard, Ts, DBKey, Op) of
-		{error, _} = _E ->
-		    %% Write to disk
-		    enterdb_ldb_wrp:update(Shard, DBKey, Op,
-					   DataModel, Mapper, Dist);
-		Res ->
-		    Res
-	    end
-    end;
+do_update_force(Shard, Key, DBKey, Op) ->
+    TD = (enterdb_lib:get_shard_def(Shard))#{ready_status => forced},
+    enterdb_lib:make_app_value(TD, do_update(TD, Shard, Key, DBKey, Op)).
+
+do_update(#{ready_status := not_ready}, _, _, _, _) ->
+    {error, not_ready};
+do_update(#{ready_status := recovering}, Shard, Key, DBKey, Op) ->
+    enterdb_shard_recovery:log_event_recover({Shard, node()},
+					     {?MODULE, do_update_force,
+						[Shard, Key, DBKey, Op]}),
+    {error, {processed, recovering}};
 do_update(#{type := leveldb_wrapped,
 	    data_model := DataModel,
 	    column_mapper := Mapper,
@@ -454,6 +437,17 @@ do_delete(Shard, Key, DBKey) ->
     TD = enterdb_lib:get_shard_def(Shard),
     do_delete(TD, Shard, Key, DBKey).
 
+do_delete_force(Shard, Key, DBKey) ->
+    TD = (enterdb_lib:get_shard_def(Shard))#{ready_status => ready},
+    do_delete(TD, Shard, Key, DBKey).
+
+do_delete(#{ready_status := not_ready}, _, _, _) ->
+    {error, not_ready};
+do_delete(#{ready_status := recovering}, Shard, Key, DBKey) ->
+    enterdb_shard_recovery:log_event_recover({Shard, node()},
+					     {?MODULE, do_delete_force,
+						[Shard, Key, DBKey]}),
+    {error, {processed, recovering}};
 %% internal read based on table / shard type
 do_delete(_TD = #{type := leveldb}, ShardTab, _Key, DBKey) ->
     enterdb_ldb_worker:delete(ShardTab, DBKey);
@@ -617,7 +611,7 @@ get_columns_param(Parameters, ColumnsMapper) ->
 	    case ColumnsMapper:entries() of
 		Map ->
 		    List = maps:to_list(Map),
-		    Fun = fun(E) -> is_list(element(1,E)) end,
+		    Fun = fun(E) -> not is_integer(element(1,E)) end,
 		    Filtered = lists:filter(Fun, List),
 		    Sorted = lists:keysort(2, Filtered),
 		    [{columns, [C || {C, _} <- Sorted]}]
@@ -680,12 +674,3 @@ next(Ref) ->
     {ok, KVP :: kvp()} | {error, Reason :: invalid | term()}.
 prev(Ref) ->
     enterdb_it_worker:prev(Ref).
-
--spec find_timestamp_in_key(Key :: [{string(), term()}]) ->
-    undefined | {ok, Ts :: timestamp()}.
-find_timestamp_in_key([])->
-    undefined;
-find_timestamp_in_key([{"ts", Ts}|_Rest]) ->
-    {ok, Ts};
-find_timestamp_in_key([_|Rest]) ->
-    find_timestamp_in_key(Rest).

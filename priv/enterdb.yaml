@@ -1,11 +1,14 @@
 # ENTERDB Application configuration file
 ---
 app_name : enterdb
-notify_cb: [enterdb_server, notify]
-verify_cb: [enterdb_server, verify]
+notify_cb: []
+verify_cb: []
 params	 :
     db_path : "data/enterdb" # Relative or Absolute path to db
-    wal_path : "data/enterdb" # Relative or Absolute path to wal file
-    backup_path : "data/enterdb/backups" # Relative or Absolute path to db backups
-    checkpoint_path : "data/enterdb/snapshots" # Relative or Absolute path to db sanpshots
+    wal_path : "data/wal" # Relative or Absolute path to wal file
+    backup_path : "data/backups" # Relative or Absolute path to db backups
+    restore_path : "data/restore"
+    checkpoint_path : "data/snapshots" # Relative or Absolute path to db sanpshots
+    hh_path : "data/hinted_handoff"
+    hh_log_size : 100 # max size in MB
     num_of_local_shards : 16 # Number of local shards per db table

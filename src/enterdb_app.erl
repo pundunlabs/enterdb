@@ -19,8 +19,8 @@ start(_StartType, _StartArgs) ->
         ok ->
 	    case enterdb_sup:start_link() of
 		{ok, Pid} ->
-		    Res = open_all_tables(),
-		    ?debug("Open all tables.. ~p", [Res]),
+		    Res = open_internal_tables(),
+		    ?debug("Open internal tables -> ~p", [Res]),
 		    {ok, Pid};
 		{error, Reason} ->
 		    {error, Reason}
@@ -32,22 +32,19 @@ stop(_State) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Open existing database table shards.
+%% Open internal database table shards.
 %% @end
 %%--------------------------------------------------------------------
--spec open_all_tables() -> ok | {error, Reason :: term()}.
-open_all_tables() ->
-    ?debug("Opening all tables..", []),
-    case enterdb_db:transaction(fun() -> mnesia:all_keys(enterdb_stab) end) of
-	{atomic, DBList} ->
-	    enterdb_lib:open_shards(DBList);
-	{error, Reason} ->
-	    {error, Reason}
-    end.
+-spec open_internal_tables() -> ok | {error, Reason :: term()}.
+open_internal_tables() ->
+    ?info("Opening internal tables first"),
+    Tabs = ["gb_dyno_topo_ix", "gb_dyno_metadata"],
+    [enterdb_lib:open_table(Tab, false) || Tab <- Tabs],
+    ?info("done opening intenal tables.").
 
 -spec ensure_directories() ->
     ok.
 ensure_directories() ->
-    List = [ enterdb_lib:get_path(D) || D <- [db_path, wal_path, backup_path, checkpoint_path]],
+    List = [ enterdb_lib:get_path(D) || D <- [db_path, wal_path, backup_path, checkpoint_path, hh_path, restore_path]],
     [ ok = filelib:ensure_dir(P) || P <- List, P =/= undefined],
     ok.

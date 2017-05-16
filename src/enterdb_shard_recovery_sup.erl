@@ -1,6 +1,6 @@
 %%%===================================================================
-%% @author Erdem Aksu
-%% @copyright 2016 Pundun Labs AB
+%% @author Jonas Falkevik
+%% @copyright 2017 Pundun Labs AB
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,12 +14,12 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %% -------------------------------------------------------------------
+%% @title
 %% @doc
-%% Module Description:
+%% Supervisor for any shard logger
 %% @end
 %%%===================================================================
-
--module(enterdb_sup).
+-module(enterdb_shard_recovery_sup).
 
 -behaviour(supervisor).
 
@@ -29,24 +29,19 @@
 %% Supervisor callbacks
 -export([init/1]).
 
--define(SERVER, ?MODULE).
-
--include_lib("gb_log/include/gb_log.hrl").
 %%%===================================================================
 %%% API functions
 %%%===================================================================
 
 %%--------------------------------------------------------------------
 %% @doc
-%% 
+%% Starts the supervisor
 %%
+%% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
 %% @end
 %%--------------------------------------------------------------------
--spec start_link() -> {ok, Pid :: pid()} |
-		      ignore |
-		      {error, Error :: term()}.
 start_link() ->
-    supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
 %%%===================================================================
 %%% Supervisor callbacks
@@ -66,42 +61,18 @@ start_link() ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
-    RestartStrategy = one_for_one,
-    MaxRestarts = 4,
-    MaxSecondsBetweenRestarts = 3600,
+    SupFlags = #{strategy => simple_one_for_one,
+                 intensity => 1,
+                 period => 5},
+    ChildSpecs = [
+		  #{id => 'ID',
+                    start => {enterdb_shard_recovery, start_link, []},
+                    restart => transient,
+		    shutdown => brutal_kill,
+		    type => worker}
+		  ],
 
-    SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
-
-    EdbMemMgrServer = {enterdb_mem_wrp_mgr, {enterdb_mem_wrp_mgr, start_link, []},
-			permanent, 2000, worker, [enterdb_mem_wrp_mgr]},
-    EdbRdbSup	    = {enterdb_rdb_sup,
-			{enterdb_simple_sup, start_link,[rocksdb]},
-			permanent, infinity, supervisor,[enterdb_simple_sup]},
-    EdbLdbSup	    = {enterdb_ldb_sup,
-			{enterdb_simple_sup, start_link,[leveldb]},
-			permanent, infinity, supervisor,[enterdb_simple_sup]},
-    EdbLdbWrpSup    = {enterdb_wrp_sup,
-			{enterdb_simple_sup, start_link,[leveldb_wrp]},
-			permanent, infinity, supervisor,[enterdb_simple_sup]},
-    EdbLdbTdaSup    = {enterdb_tda_sup,
-			{enterdb_simple_sup, start_link,[leveldb_tda]},
-			permanent, infinity, supervisor,[enterdb_simple_sup]},
-    EdbLitSup	    = {enterdb_it_sup,
-			{enterdb_simple_sup, start_link,[leveldb_it]},
-			permanent, infinity, supervisor,[enterdb_simple_sup]},
-    EdbNS	    = {enterdb_ns, {enterdb_ns, start_link, []},
-			permanent, 20000, worker, [enterdb_ns]},
-    EdbRS	    = {enterdb_rs, {enterdb_rs, start_link, []},
-			permanent, 20000, worker, [enterdb_rs]},
-    EdbPTS	    = {enterdb_pts, {enterdb_pts, start_link, []},
-			permanent, 20000, worker, [enterdb_pts]},
-
-    EdbShardRecovery = {enterdb_shard_recovery_sup, {enterdb_shard_recovery_sup, start_link, []},
-			permanent, 20000, supervisor, [enterdb_shard_recovery_sup]},
-
-    {ok, {SupFlags, [EdbNS, EdbRS, EdbPTS, EdbLitSup,
-		     EdbLdbWrpSup, EdbLdbTdaSup, EdbRdbSup, EdbLdbSup,
-		     EdbMemMgrServer, EdbShardRecovery]}}.
+    {ok, {SupFlags, ChildSpecs}}.
 
 %%%===================================================================
 %%% Internal functions

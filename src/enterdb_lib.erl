@@ -49,6 +49,7 @@
 	 check_error_response/1,
 	 map_shards/3]).
 
+
 -export([open_shard/1,
 	 close_shard/1,
 	 get_shard_def/1,
@@ -78,7 +79,7 @@
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Get the database's directory path from configuration.
+%% Get the database's paths from configuration.
 %% @end
 %%--------------------------------------------------------------------
 -spec get_path(Path :: db_path |
@@ -342,13 +343,6 @@ verify_table_options([{wrapper, Wrapper} | Rest]) ->
 	    {error, Reason}
     end;
 
-%% wrapping details for ets part of wrapped db
-verify_table_options([{mem_wrapper, {BucketSpan, NumBuckets}}|Rest])
-    when
-	is_integer( BucketSpan ), BucketSpan > 0,
-	is_integer( NumBuckets ), NumBuckets > 0
-    ->
-	verify_table_options(Rest);
 %% comparator defines how the keys will be sorted
 verify_table_options([{comparator, C}|Rest]) when C == descending;
 						  C == ascending ->
@@ -399,27 +393,31 @@ verify_tda(Tda) ->
 -spec verify_wrapper(Wrapper :: #{}) ->
     ok | {error, Reason :: term()}.
 verify_wrapper(#{num_of_buckets := N} = Wrp) when is_integer(N), N > 2 ->
-    case Wrp of
-	#{time_margin := TimeMargin, size_margin := SizeMargin} ->
-	    TM = valid_time_margin(TimeMargin),
-	    SM = valid_size_margin(SizeMargin),
-	    case (TM or SM) of
-		true -> ok;
-		false -> {error, {Wrp, "invalid_option"}}
-	    end;
-	#{time_margin := TimeMargin} ->
-	    case valid_time_margin(TimeMargin) of
-		true -> ok;
-		false -> {error, {Wrp, "invalid_option"}}
-	    end;
-	#{size_margin := TimeMargin} ->
-	    case valid_size_margin(TimeMargin) of
-		true -> ok;
-		false -> {error, {Wrp, "invalid_option"}}
-	    end
-    end;
+    verify_wrpr_margin(Wrp);
 verify_wrapper(Elem)->
     {error, {Elem, "invalid_option"}}.
+
+-spec verify_wrpr_margin(Wrapper :: #{}) ->
+    ok | {error, Reason :: term()}.
+verify_wrpr_margin(#{time_margin := TimeMargin, size_margin := SizeMargin} = Wrp) ->
+    TM = valid_time_margin(TimeMargin),
+    SM = valid_size_margin(SizeMargin),
+    case (TM or SM) of
+	true -> ok;
+	false -> {error, {Wrp, "invalid_option"}}
+    end;
+verify_wrpr_margin(#{time_margin := TimeMargin} = Wrp) ->
+    case valid_time_margin(TimeMargin) of
+	true -> ok;
+	false -> {error, {Wrp, "invalid_option"}}
+    end;
+verify_wrpr_margin(#{size_margin := TimeMargin} = Wrp) ->
+    case valid_size_margin(TimeMargin) of
+	true -> ok;
+	false -> {error, {Wrp, "invalid_option"}}
+    end;
+verify_wrpr_margin(Wrp) ->
+    {error, {Wrp, "invalid_option"}}.
 
 -spec valid_time_margin(TimeMargin :: time_margin()) ->
     true | false.
@@ -574,18 +572,17 @@ do_create_shards(#{name := Name,
 -spec do_create_shard(Shard :: shard_name(),
 		      EDBT :: #{}) ->
     ok | {error, Reason :: term()}.
-do_create_shard(Shard, EDBT) ->
+do_create_shard(Shard, EDBT0) ->
     DbPath = get_path(db_path),
-    WalPath = get_path(wal_path, DbPath),
-    BackupPath = get_path(backup_path, filename:join([DbPath, backups])),
-    CheckpointPath = get_path(checkpoint_path, filename:join([DbPath, snapshots])),
-    ESTAB = EDBT#{shard => Shard, db_path => DbPath, wal_path => WalPath,
-		  backup_path => BackupPath, checkpoint_path => CheckpointPath},
+    Shards = maps:get(shards, EDBT0),
+    EDBT = maps:remove(shards, EDBT0),
+    ShardDist = proplists:get_value(Shard, Shards),
+    ESTAB = EDBT#{shard => Shard, shard_dist => ShardDist,
+		  db_path => DbPath},
     write_shard_table(ESTAB),
     do_create_shard_type(ESTAB).
 
--spec do_create_shard_type(ESTAB :: #{}) ->
-    ok | {error, Reason :: term()}.
+-spec do_create_shard_type(ESTAB :: #{}) -> ok.
 do_create_shard_type(#{type := leveldb} = ESTAB) ->
     create_leveldb_shard(ESTAB);
 
@@ -625,10 +622,19 @@ open_shard(Name) ->
     end.
 
 %% Open existing shard locally
-do_open_shard(#{shard := Shard} = EDBT) ->
+
+do_open_shard(#{shard := Shard, name := Name} = EDST) ->
+    case Name of
+	_ when Name =:= "gb_dyno_topo_ix";
+	       Name =:= "gb_dyno_metadata" ->
+	    %% enterdb internal table
+	    ok;
+	_ ->
+	    enterdb_recovery:check_ready_status(EDST)
+    end,
     case enterdb_ns:get(Shard) of
 	{error,no_ns_entry} ->
-	    do_open_shard_(EDBT);
+	    do_open_shard_(EDST);
 	_Pid ->
 	    ?debug("Shard: ~p is already open, ~p.",[Shard, _Pid])
     end.
@@ -682,7 +688,7 @@ do_close_shard(#{shard := Shard, type := leveldb_tda}, Pid)->
 do_close_shard(#{type := rocksdb}, Pid)->
     supervisor:terminate_child(enterdb_rdb_sup, Pid);
 do_close_shard(Else, _)->
-    ?debug("enterdb:close_table: {type, ~p} not supported", [Else]),
+    ?debug("do_close_shard ~p not supported", [Else]),
     {error, "type_not_supported"}.
 
 %% create leveldb shard
@@ -925,11 +931,15 @@ delete_shards([]) ->
     ok.
 
 delete_shard(Shard) ->
-    SD = get_shard_def(Shard),
-    ?debug("Deleting ~p, SD: ~p",[Shard, SD]),
-    mnesia:dirty_delete(enterdb_stab, Shard),
-    delete_shard_help(SD),
-    do_close_shard(SD).
+    try
+	SD = get_shard_def(Shard),
+	?info("Deleting ~p, SD: ~p",[Shard, SD]),
+	mnesia:dirty_delete(enterdb_stab, Shard),
+	delete_shard_help(SD),
+	do_close_shard(SD)
+    catch _:_ ->
+	?info("could not close shard ~p", [Shard])
+    end.
 
 %% add delete per type
 delete_shard_help(ESTAB = #{type := leveldb}) ->

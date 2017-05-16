@@ -46,9 +46,11 @@
 
 %% OAM callbacks
 -export([backup_db/2,
+	 backup_db/3,
 	 get_backup_info/1,
 	 restore_db/1,
 	 restore_db/2,
+	 restore_db/3,
 	 create_checkpoint/1]).
 
 -define(SERVER, ?MODULE).
@@ -259,6 +261,17 @@ backup_db(Shard, Timeout) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Create a backup for the shard.
+%% @end
+%%--------------------------------------------------------------------
+-spec backup_db(Shard :: string(), BackupDir :: string(), Timeout :: pos_integer()) ->
+    ok | {error, Reason :: term()}.
+backup_db(Shard, BackupDir, Timeout) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, {backup_db, BackupDir}, Timeout).
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Retrieve previously taken backups' information..
 %% @end
 %%--------------------------------------------------------------------
@@ -288,6 +301,17 @@ restore_db(Shard) ->
 restore_db(Shard, BackupId) when is_integer(BackupId) ->
     Pid = enterdb_ns:get(Shard),
     gen_server:call(Pid, {restore_db, BackupId}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Restore shard from given backup id.
+%% @end
+%%--------------------------------------------------------------------
+-spec restore_db(Shard :: string(), BackupId :: integer(), FromPath :: string()) ->
+    ok | {error, Reason :: term()}.
+restore_db(Shard, BackupId, FromPath) when is_integer(BackupId) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, {restore_db, BackupId, FromPath}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -427,6 +451,13 @@ handle_call({get_iterator, Caller}, _From, State) ->
     MonMap = State#state.it_mon,
     NewMonMap = maps:put(Mref, Caller, MonMap),
     {reply, R, State#state{it_mon = NewMonMap}};
+handle_call({backup_db, BackupDir}, From,
+            State = #state{db_ref = DB}) ->
+    spawn(fun() ->
+	    Reply = rocksdb:backup_db(DB, BackupDir),
+	    gen_server:reply(From, Reply)
+	  end ),
+    {noreply, State};
 handle_call(backup_db, From,
             State = #state{db_ref = DB,
                            backup_path = BackupPath}) ->
@@ -447,16 +478,56 @@ handle_call(get_backup_info, From,
 	    gen_server:reply(From, Reply)
 	  end ),
     {noreply, State};
-handle_call({restore_db, BackupId}, _From,
-            State = #state{db_path = DbPath,
-			   wal_path = WalPath,
-			   backup_path = BackupPath}) ->
+handle_call({restore_db, BackupId, FromPath}, _From,
+            State = #state{shard = Shard,
+			   db_ref = DB,
+			   db_path = DbPath,
+			   ttl = TTL,
+			   options_pl = OptionsPL}) ->
+    ok = delete_enterdb_ldb_resource(Shard),
+    ok = rocksdb:close_db(DB),
     Reply =
 	case BackupId of
-	    0 -> rocksdb:restore_db(BackupPath, DbPath, WalPath);
-	    _ -> rocksdb:restore_db(BackupPath, DbPath, WalPath, BackupId)
+	    0 -> rocksdb:restore_db(FromPath, DbPath, DbPath);
+	    _ -> rocksdb:restore_db(FromPath, DbPath, DbPath, BackupId)
 	end,
-    {reply, Reply, State};
+    IntOptionsPL = lists:keyreplace(error_if_exists, 1, OptionsPL,
+				    {error_if_exists, false}),
+    NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
+				    {create_if_missing, false}),
+    {ok, NewOptions} = rocksdb:options(NewOptionsPL),
+    {ok, NewDB} = open_db(NewOptions, DbPath, TTL),
+    ELR = #enterdb_ldb_resource{name = Shard, resource = NewDB},
+    ok = write_enterdb_ldb_resource(ELR),
+    {reply, Reply, State#state{db_ref=NewDB,
+			       options=NewOptions,
+			       options_pl=NewOptionsPL}};
+handle_call({restore_db, BackupId}, _From,
+            State = #state{shard = Shard,
+			   db_ref = DB,
+			   db_path = DbPath,
+			   backup_path = FromPath,
+			   ttl = TTL,
+			   options_pl = OptionsPL}) ->
+    ?info("DbPath ~p", [DbPath]),
+    ok = delete_enterdb_ldb_resource(Shard),
+    ok = rocksdb:close_db(DB),
+    Reply =
+	case BackupId of
+	    0 -> rocksdb:restore_db(FromPath, DbPath, DbPath);
+	    _ -> rocksdb:restore_db(FromPath, DbPath, DbPath, BackupId)
+	end,
+    IntOptionsPL = lists:keyreplace(error_if_exists, 1, OptionsPL,
+				    {error_if_exists, false}),
+    NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
+				    {create_if_missing, false}),
+    {ok, NewOptions} = rocksdb:options(NewOptionsPL),
+    {ok, NewDB} = open_db(NewOptions, DbPath, TTL),
+    ELR = #enterdb_ldb_resource{name = Shard, resource = NewDB},
+    ok = write_enterdb_ldb_resource(ELR),
+    {reply, Reply, State#state{db_ref=NewDB,
+			       options=NewOptions,
+			       options_pl=NewOptionsPL}};
 handle_call(create_checkpoint, From,
             State = #state{db_ref = DB,
                            checkpoint_path = CheckpointPath}) ->
@@ -521,7 +592,6 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info({'DOWN', Mref, process, Pid, _Info},
 	    State = #state{it_mon = MonMap}) ->
-    ?debug("Iterator down, Pid: ~p", [Pid]),
     NewMonMap = maps:remove(Mref, MonMap),
     {noreply, State#state{it_mon = NewMonMap}};
 handle_info(_Info, State) ->
@@ -568,9 +638,9 @@ code_change(_OldVsn, State, _Extra) ->
 			 Subdir :: string(),
 			 Shard :: string()) ->
     term().
-ensure_directories(Args, Subdir, Shard) ->
+ensure_directories(_Args, Subdir, Shard) ->
     [ begin
-	Dir = maps:get(P, Args),
+	Dir = enterdb_lib:get_path(P),
 	Path = filename:join([Dir, Subdir, Shard]),
 	filelib:ensure_dir(Path),
 	Path
