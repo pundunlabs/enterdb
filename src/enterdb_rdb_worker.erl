@@ -386,8 +386,7 @@ init(Args) ->
         {ok, Options, ColumnFamiliyOpts} ->
             [DbPath, WalPath, BackupPath, CheckpointPath] =
 		ensure_directories(Args, Subdir, Shard),
-	    TTL = maps:get(ttl, Args, undefined),
-	    case open_db(Options, DbPath, TTL, ColumnFamiliyOpts) of
+	    case open_db(Options, DbPath, ColumnFamiliyOpts) of
                 {error, Reason} ->
                     {stop, {error, Reason}};
                 {ok, DB} ->
@@ -411,7 +410,6 @@ init(Args) ->
                                 wal_path = WalPath,
                                 backup_path = BackupPath,
                                 checkpoint_path = CheckpointPath,
-				ttl = TTL,
 				options_pl = OptionsPL,
 				it_mon = maps:new()}}
             end;
@@ -581,7 +579,6 @@ handle_cast(recreate_shard, State = #state{shard = Shard,
 					   db_ref = DB,
 					   options = Options,
 					   db_path = DbPath,
-					   ttl = TTL,
 					   options_pl = OptionsPL}) ->
     ?debug("Recreating shard: ~p", [Shard]),
     ok = delete_enterdb_ldb_resource(Shard),
@@ -597,7 +594,7 @@ handle_cast(recreate_shard, State = #state{shard = Shard,
     NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
 				    {create_if_missing, true}),
     {ok, NewOptions, ColumnFamiliyOpts} = do_make_options("", NewOptionsPL),
-    {ok, NewDB} = open_db(NewOptions, DbPath, TTL, ColumnFamiliyOpts),
+    {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
     ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Shard,
 							  resource = NewDB}),
     {noreply, State#state{db_ref = NewDB,
@@ -680,13 +677,10 @@ ensure_directories(Args, Subdir, Shard) ->
 
 -spec open_db(Options :: term(),
 	      DbPath :: string(),
-	      TTL :: undefined | pos_integer(),
 	      ColumnFamiliyOpts :: [{string(), term()}]) ->
     {ok, DB :: term()} | {error, Reason :: term()}.
-open_db(Options, DbPath, undefined, ColumnFamiliyOpts) ->
-    rocksdb:open_db(Options, DbPath, ColumnFamiliyOpts);
-open_db(Options, DbPath, TTL, _) ->
-    rocksdb:open_db_with_ttl(Options, DbPath, TTL).
+open_db(Options, DbPath, ColumnFamiliyOpts) ->
+    rocksdb:open_db(Options, DbPath, ColumnFamiliyOpts).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -830,21 +824,32 @@ del_dir(Dir, [File | Rest]) ->
 make_options(Args) ->
     Name = maps:get(name, Args),
     OptionsPL = maps:get(options, Args),
-    do_make_options(Name, OptionsPL).
+    TTL = maps:get(ttl, Args, undefined),
+    do_make_options(Name, [{"ttl", TTL} | OptionsPL]).
 
 do_make_options(?TERM_INDEX_TABLE, OptionsPL)->
     {ok, Opts, COpts} = do_make_options("", OptionsPL),
     {ok, Opts, [{"term_index", "true"} | COpts]};
 do_make_options(_, OptionsPL)->
+    {ok, Rest, CLOpts} = get_cl_opts(OptionsPL),
+    {ok, Opts} = rocksdb:options(Rest),
+    {ok, Opts, CLOpts}.
+
+get_cl_opts(OptionsPL) ->
     PidTuple = {"pid", enterdb_index_update:get_pid()},
-    case lists:keytake("comparator", 1, OptionsPL) of
-	{_, Tuple, NewOptionsPL} ->
-	    {ok, Opts} = rocksdb:options(NewOptionsPL),
-	    {ok, Opts, [Tuple, PidTuple]};
-	false ->
-	    {ok, Opts} = rocksdb:options(OptionsPL),
-	    {ok, Opts, [PidTuple]}
-    end.
+    get_cl_opts(OptionsPL, [], [PidTuple]).
+
+get_cl_opts([{"ttl", T} | Rest], AccO, AccC) ->
+    case is_integer(T) of
+	true -> get_cl_opts(Rest, AccO, [{"ttl", T} | AccC]);
+	false -> get_cl_opts(Rest, AccO, AccC)
+    end;
+get_cl_opts([{"comparator", C} | Rest], AccO, AccC) ->
+    get_cl_opts(Rest, AccO, [{"comparator", C} | AccC]);
+get_cl_opts([O | Rest], AccO, AccC)->
+    get_cl_opts(Rest, [O | AccO], AccC);
+get_cl_opts([], AccO, AccC)->
+    {ok, AccO, AccC}.
 
 get_empty_index(Mapper, IndexOn) ->
     [{Mapper:lookup(I), ""} || I <- IndexOn].

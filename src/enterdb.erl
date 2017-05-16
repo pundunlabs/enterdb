@@ -714,6 +714,7 @@ do_index_read(#{name := Tab,
 		key := KeyDef,
 		distributed := Dist} = TD, IxKey) ->
     Postings = enterdb_index_update:index_read(KeyDef, IxKey),
+    io:format("[~p:~p] Postings ~p",[?MODULE,?LINE,Postings]),
     Results =
 	[begin
 	    {ok, DBKey, HashKey} = enterdb_lib:make_key(TD, K),
