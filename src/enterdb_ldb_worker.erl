@@ -323,7 +323,7 @@ handle_call({update, DBKey, Op, DataModel, Mapper, Dist}, _From, State) ->
 	end,
     case enterdb_lib:apply_update_op(Op, BinValue, DataModel, Mapper, Dist) of
 	{ok, BinValue} ->
-	    {reply, {error, not_found}, State};
+	    {reply, {ok, BinValue}, State};
 	{ok, Columns} ->
 	    Reply =
 		case leveldb:put(DB, WriteOptions, DBKey, Columns) of
