@@ -43,7 +43,9 @@
 	 approximate_sizes/2,
 	 approximate_size/1,
 	 get_iterator/2,
-	 term_index/3]).
+	 term_index/3,
+	 add_index_ttl/3,
+	 remove_index_ttl/2]).
 
 %% OAM callbacks
 -export([backup_db/2,
@@ -63,6 +65,7 @@
 -include_lib("gb_log/include/gb_log.hrl").
 
 -record(state, {table_id,
+		name,
 		db_ref,
                 options,
 		readoptions,
@@ -74,7 +77,6 @@
 		wal_path,
 		backup_path,
 		checkpoint_path,
-		ttl,
 		options_pl,
 		it_mon}).
 
@@ -280,6 +282,30 @@ term_index(Shard, Term, Key) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Register index ttl for table with Tid.
+%% @end
+%%--------------------------------------------------------------------
+-spec add_index_ttl(Shard :: string(),
+		    Tid :: integer(),
+		    TTL :: integer()) ->
+    ok | {error,    Reason :: term()}.
+add_index_ttl(Shard, Tid, TTL) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, {add_index_ttl, Tid, TTL}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Unregister index ttl for table with Tid.
+%% @end
+%%--------------------------------------------------------------------
+-spec remove_index_ttl(Shard :: string(), Tid :: integer()) ->
+    ok | {error,       Reason :: term()}.
+remove_index_ttl(Shard, Tid) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, {remove_index_ttl, Tid}).
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Create a backup for the shard.
 %% @end
 %%--------------------------------------------------------------------
@@ -397,8 +423,12 @@ init(Args) ->
                     {ok, ReadOptions} = rocksdb:readoptions(ReadOptionsRec),
                     WriteOptionsRec = build_writeoptions([]),
                     {ok, WriteOptions} = rocksdb:writeoptions(WriteOptionsRec),
+		    Tid = ?TABLE_LOOKUP:lookup(Subdir),
+		    TTL = maps:get(ttl, Args, 0),
+		    enterdb_index_update:register_ttl(Subdir, Tid, TTL),
                     process_flag(trap_exit, true),
-		    {ok, #state{table_id = ?TABLE_LOOKUP:lookup(Subdir),
+		    {ok, #state{table_id = Tid,
+				name = Subdir,
 				db_ref = DB,
                                 options = Options,
 				readoptions = ReadOptions,
@@ -502,6 +532,14 @@ handle_call({term_index, Term, Key}, _From, State) ->
     #state{db_ref = DB,
            writeoptions = WriteOptions} = State,
     Reply = rocksdb:term_index(DB, WriteOptions, Term, Key),
+    {reply, Reply, State};
+handle_call({add_index_ttl, Tid, TTL}, _From, State) ->
+    #state{db_ref = DB} = State,
+    Reply = rocksdb:add_index_ttl(DB, Tid, TTL),
+    {reply, Reply, State};
+handle_call({remove_index_ttl, Tid}, _From, State) ->
+    #state{db_ref = DB} = State,
+    Reply = rocksdb:remove_index_ttl(DB, Tid),
     {reply, Reply, State};
 handle_call(backup_db, From,
             State = #state{db_ref = DB,
@@ -634,9 +672,12 @@ handle_info(_Info, State) ->
 %%--------------------------------------------------------------------
 terminate(_Reason, _State = #state{db_ref = undefined}) ->
     ok;
-terminate(_Reason, _State = #state{shard = Shard,
+terminate(_Reason, _State = #state{table_id = Tid,
+				   name = Name,
+				   shard = Shard,
 				   it_mon = MonMap}) ->
     ?debug("Terminating ldb worker for shard: ~p", [Shard]),
+    enterdb_index_update:unregister_ttl(Name, Tid),
     maps:fold(fun(Mref, Pid, _Acc) ->
 		erlang:demonitor(Mref, [flush]),
 		Res = (catch gen_server:stop(Pid)),

@@ -699,7 +699,7 @@ index_read(Tab, Column, Term) ->
 	    case Mapper:lookup(Column) of
 		Cid when is_integer(Cid) ->
 		    Tid = ?TABLE_LOOKUP:lookup(Tab),
-		    IxKey = [{"tid", Tid}, {"cid", Cid}, {"term", Term}],
+		    IxKey = #{tid => Tid, cid => Cid, term => Term},
 		    {ResL, _Bad} = rpc:multicall(Nodes, ?MODULE,
 						 do_index_read, [TD, IxKey]),
 		    {ok, unique_kvl(ResL)};
@@ -714,7 +714,7 @@ do_index_read(#{name := Tab,
 		key := KeyDef,
 		distributed := Dist} = TD, IxKey) ->
     Postings = enterdb_index_update:index_read(KeyDef, IxKey),
-    io:format("[~p:~p] Postings ~p",[?MODULE,?LINE,Postings]),
+    %%io:format("[~p:~p] Postings ~p~n",[?MODULE,?LINE,Postings]),
     Results =
 	[begin
 	    {ok, DBKey, HashKey} = enterdb_lib:make_key(TD, K),

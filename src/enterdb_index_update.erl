@@ -33,6 +33,9 @@
 	 term_index_update/5,
 	 index_read/2]).
 
+-export([register_ttl/3,
+	 unregister_ttl/2]).
+
 %% gen_server callbacks
 -export([init/1,
          handle_call/3,
@@ -46,6 +49,8 @@
 -define(SERVER, ?MODULE).
 -define(ADD, 43).
 -define(REM, 45).
+-define(TWO_BYTES, 2).
+-define(FOUR_BYTES, 4).
 
 -include_lib("gb_log/include/gb_log.hrl").
 -include("enterdb.hrl").
@@ -75,8 +80,8 @@ get_pid() ->
     ok.
 index(DB, WriteOptions, TableId,
       Key, [{ColId, Term} | Rest]) when is_integer(ColId)->
-    Tid = <<TableId:16>>,
-    Cid = <<ColId:16>>,
+    Tid = encode_unsigned(?TWO_BYTES, TableId),
+    Cid = encode_unsigned(?TWO_BYTES, ColId),
     IndexKey = << Tid/binary, Cid/binary, Key/binary >>,
     ok = rocksdb:index_merge(DB, WriteOptions, IndexKey, Term),
     index(DB, WriteOptions, TableId, Key, Rest);
@@ -92,35 +97,59 @@ index(_DB, _WriteOptions, _TableId, _Key, []) ->
 			OldTerm :: string()) ->
     ok.
 term_index_update(Tid, Cid, Key, NewTerm, OldTerm) ->
-    TD = enterdb_lib:get_tab_def(?TERM_INDEX_TABLE),
-    term_index_update(TD, ?ADD, Tid, Cid, Key, NewTerm),
-    term_index_update(TD, ?REM, Tid, Cid, Key, OldTerm).
+    term_index_update_(?ADD, Tid, Cid, Key, NewTerm),
+    term_index_update_(?REM, Tid, Cid, Key, OldTerm).
 
-
-term_index_update(_, _, _, _, _, undefined) ->
+term_index_update_(_, _, _, _, undefined) ->
     ok;
-term_index_update(TD, Op, Tid, Cid, Key, Terms) ->
+term_index_update_(Op, Tid, Cid, Key, Terms) ->
     Tokens = string:tokens(Terms, " "),
-    [do_term_index_update(TD, Op, Tid, Cid, Key, T) || T <- Tokens].
+    [term_index_update__(Op, Tid, Cid, Key, T) || T <- Tokens].
 
-do_term_index_update(#{key := KeyDef, hash_key := HashKey},
-		  Op, Tid, Cid, Key, Term) ->
-    TermIndexKey = [{"tid", Tid}, {"cid", Cid}, {"term", Term}],
-    {ok, DBKey, DBHashKey} = enterdb_lib:make_db_key(KeyDef, HashKey, TermIndexKey),
+term_index_update__(Op, Tid, Cid, Key, Term) ->
+    {ok, DBKey, DBHashKey} = make_index_key(Tid, Cid, Term),
     {ok, Shard} = gb_hash:get_local_node(?TERM_INDEX_TABLE, DBHashKey),
     enterdb_rdb_worker:term_index(Shard, DBKey, encode_key(Op, Key)).
 
 -spec index_read(KeyDef :: key(),
-		 Key :: [{Tag :: string(), NewTerm :: integer() | string()}]) ->
+		 IxKey :: #{}) ->
     {ok, [term()]}.
-index_read(KeyDef, Key) ->
-    #{key := TermKeyDef, hash_key := HashKey} =
-	enterdb_lib:get_tab_def(?TERM_INDEX_TABLE),
-    {ok, DBKey, DBHashKey} = enterdb_lib:make_db_key(TermKeyDef, HashKey, Key),
+index_read(KeyDef, IxKey) ->
+    {ok, DBKey, DBHashKey} = make_index_key(IxKey),
     {ok, Shard} = gb_hash:get_local_node(?TERM_INDEX_TABLE, DBHashKey),
     Res = enterdb_rdb_worker:read(Shard, DBKey),
     parse_postings(KeyDef, Res).
 
+-spec register_ttl(Name :: string(),
+		   Tid :: integer(),
+		   TTL :: integer()) ->
+    ok.
+register_ttl(?TERM_INDEX_TABLE, _, _) ->
+    ok;
+register_ttl(_, Tid, TTL) ->
+    case enterdb_lib:get_tab_def(?TERM_INDEX_TABLE) of
+        #{shards := Shards} ->
+	    Req = {enterdb_rdb_worker, add_index_ttl, [Tid, TTL]},
+	    enterdb_lib:map_shards(false, Req, Shards),
+	    ok;
+	_ ->
+	    ok
+    end.
+
+-spec unregister_ttl(Name :: string(),
+		     Tid :: integer()) ->
+    ok.
+unregister_ttl(?TERM_INDEX_TABLE, _) ->
+    ok;
+unregister_ttl(_, Tid) ->
+    case enterdb_lib:get_tab_def(?TERM_INDEX_TABLE) of
+        #{shards := Shards} ->
+	    Req = {enterdb_rdb_worker, remove_index_ttl, [Tid]},
+	    enterdb_lib:map_shards(false, Req, Shards),
+	    ok;
+	_ ->
+	    ok
+    end.
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -190,8 +219,10 @@ handle_info({index_update, _, Term, Term}, State) ->
     ?debug("~p received same term: ~p", [?SERVER, Term]),
     %%io:format("~p:~p, received same term: ~p~n", [?MODULE, ?LINE, Term]),
     {noreply, State};
-handle_info({index_update, << Tid:16, Cid:16, Key/binary >>,
-	     NewTerm, OldTerm}, State) ->
+handle_info({index_update,
+	    << Tid:?TWO_BYTES/big-unsigned-integer-unit:8,
+	    Cid:?TWO_BYTES/big-unsigned-integer-unit:8,
+	    Key/binary >>, NewTerm, OldTerm}, State) ->
     ?debug("~p received term change: ~p -> ~p", [?SERVER, OldTerm, NewTerm]),
     %%io:format("~p:~p, received term change: ~s -> ~s~n", [?MODULE, ?LINE, OldTerm, NewTerm]),
     spawn(?MODULE, term_index_update, [Tid, Cid, Key, NewTerm, OldTerm]),
@@ -228,25 +259,40 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+make_index_key(#{tid := Tid, cid := Cid, term := Term}) ->
+    make_index_key(Tid, Cid, Term).
+
+make_index_key(Tid, Cid, Term) ->
+    TidBin = encode_unsigned(?TWO_BYTES, Tid),
+    CidBin = encode_unsigned(?TWO_BYTES, Cid),
+    TermBin = unicode:characters_to_binary(Term, unicode, utf8),
+    HashKey = << TidBin/binary, CidBin/binary >>,
+    {ok, << HashKey/binary, TermBin/binary >>, HashKey}.
+
 encode_key(Op, Key) ->
-    Unsigned = binary:encode_unsigned(size(Key)+1),
-    Length =
-	case 4 - size(Unsigned) of
-	    3 -> << <<0,0,0>>/binary, Unsigned/binary >>;
-	    2 -> << <<0,0>>/binary, Unsigned/binary >>;
-	    1 -> << <<0>>/binary, Unsigned/binary >>;
-	    0 -> Unsigned
-    end,
-    << Length/binary, <<Op>>/binary, Key/binary >>.
+    %%Length = Size of Key + 1 Byte (Op) + 4 Bytes (Ts)
+    Length = encode_unsigned(?FOUR_BYTES, size(Key)+5),
+    Ts = encode_unsigned(?FOUR_BYTES, erlang:system_time(second)),
+    << Length/binary, <<Op>>/binary, Key/binary, Ts/binary >>.
+
+encode_unsigned(Size, Int) when is_integer(Int) ->
+    Unsigned = binary:encode_unsigned(Int, big),
+    case Size - size(Unsigned) of
+	Fill when Fill >= 0 ->
+	    << <<0:Fill/unit:8>>/binary, Unsigned/binary >>;
+	_ ->
+	    Unsigned
+    end.
 
 parse_postings(KeyDef, {ok, Binary}) ->
     parse_postings(KeyDef, Binary, []);
 parse_postings(_, {error, _Reason}) ->
     [].
 
-parse_postings(KeyDef, << Length:4/big-unsigned-integer-unit:8, Bin/binary>>, Acc) ->
-    Len = (Length-1),
-    << Key:Len/bytes, Rest/binary >> = Bin,
+parse_postings(KeyDef, << Length:?FOUR_BYTES/big-unsigned-integer-unit:8, Bin/binary>>, Acc) ->
+    %% Len = Length - 1 Byte (Op removed) - 4 Bytes (Ts)
+    Len = Length-5,
+    << Key:Len/bytes, _Ts:4/bytes, Rest/binary >> = Bin,
     parse_postings(KeyDef, Rest, [enterdb_lib:make_app_key(KeyDef, Key) | Acc]);
 parse_postings(_, <<>>, Acc) ->
     Acc.
