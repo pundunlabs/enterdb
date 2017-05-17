@@ -76,7 +76,7 @@ write_loop(N) when N > 0 ->
 %%--------------------------------------------------------------------
 %% @doc
 %% Creates a table that is defined by Name, KeyDef and given Options.
-%% KeyDef is a list and if list has more than one element, then the key 
+%% KeyDef is a list and if list has more than one element, then the key
 %% will be a compound key.
 %% @end
 %%--------------------------------------------------------------------
@@ -530,7 +530,7 @@ read_range_n_(_TD, {error, _} = E, _N) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Delete a database table completely. Ensures the table is closed 
+%% Delete a database table completely. Ensures the table is closed
 %% before deletion.
 %% @end
 %%--------------------------------------------------------------------
