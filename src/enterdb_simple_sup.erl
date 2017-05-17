@@ -25,22 +25,55 @@ start_link(Type) ->
     {error, "not_supported"}.
 
 init([rocksdb]) ->
-    {ok, {{simple_one_for_one, 10, 5},
-          [{enterdb_rdb_worker, {enterdb_rdb_worker, start_link, []},
-            transient, 2000, worker, [enterdb_rdb_worker]}]}};
+    {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 5},
+	  [
+	   #{id => enterdb_rdb_worker,
+	     start => {enterdb_rdb_worker, start_link, []},
+             restart => transient,
+	     shutdown => 2000,
+	     type => worker,
+	      modules => [enterdb_rdb_worker]}
+	  ]
+	 }};
 init([leveldb]) ->
-    {ok, {{simple_one_for_one, 10, 5},
-          [{enterdb_ldb_worker, {enterdb_ldb_worker, start_link, []},
-            transient, 2000, worker, [enterdb_ldb_worker]}]}};
+    {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 5},
+          [
+	   #{id => enterdb_ldb_worker,
+	     start => {enterdb_ldb_worker, start_link, []},
+	     restart => transient,
+	     shutdown => 2000,
+	     type => worker,
+	     modules => [enterdb_ldb_worker]}
+	  ]
+	 }};
 init([leveldb_wrp]) ->
-    {ok, {{simple_one_for_one, 10, 5},
-          [{enterdb_ldb_wrp, {enterdb_ldb_wrp, start_link, []},
-            transient, 2000, worker, [enterdb_ldb_wrp]}]}};
+    {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 5},
+          [#{id => enterdb_ldb_wrp,
+	     start => {enterdb_ldb_wrp, start_link, []},
+             restart => transient,
+	     shutdown => 2000,
+	     type => worker,
+	     modules => [enterdb_ldb_wrp]}
+	  ]
+	 }};
 init([leveldb_tda]) ->
-    {ok, {{simple_one_for_one, 10, 5},
-          [{enterdb_ldb_tda, {enterdb_ldb_tda, start_link, []},
-            transient, 2000, worker, [enterdb_ldb_tda]}]}};
+    {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 5},
+          [
+	   #{id => enterdb_ldb_tda,
+	     start => {enterdb_ldb_tda, start_link, []},
+             restart => transient,
+	     shutdown => 2000,
+	     type => worker,
+	     modules => [enterdb_ldb_tda]}
+	  ]
+	 }};
 init([leveldb_it]) ->
-    {ok, {{simple_one_for_one, 0, 1},
-          [{enterdb_it_worker, {enterdb_it_worker, start_link, []},
-            temporary, 2000, worker, [enterdb_it_worker]}]}}.
+    {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 5},
+          [#{id => enterdb_it_worker,
+	     start => {enterdb_it_worker, start_link, []},
+	     restart => temporary,
+	     shutdown => 2000,
+	     type => worker,
+	     modules => [enterdb_it_worker]}
+	  ]
+	 }}.

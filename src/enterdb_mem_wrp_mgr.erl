@@ -93,7 +93,7 @@ wrap(Table, Fenix) ->
     schedule_next_wrap(Table, BSpan, Fenix).
 
 move_out_old_bucket(Table, BSpan) ->
-    case ets:lookup(?mem_meta_tab, {Table, last}) of 
+    case ets:lookup(?mem_meta_tab, {Table, last}) of
 	[{{Table, last}, TSBucket}] ->
 	    NextTSBucket = enterdb_mem_wrp:step_time(TSBucket, BSpan),
 	    ets:insert(?mem_meta_tab, {{Table, last}, NextTSBucket}),
@@ -115,7 +115,7 @@ write_bucket_to_backend(Table, Ets, TSBucket) ->
     ?debug("dumped ~p ~p with ~p elements (~ps)", [Table, TSBucket, Elements, trunc(Time)]),
     ets:delete(?mem_meta_tab, {Table, TSBucket}),
     ets:delete(Ets).
-    
+
 do_write_bucket_to_backend(_Table, '$end_of_table') ->
     ok;
 do_write_bucket_to_backend(Table, {Data, Cont}) ->
@@ -167,7 +167,7 @@ schedule_next_wrap(Table, BucketSpan, Fenix) ->
 
 open_table(Table, {BucketSize, NumBuckets}, State) ->
     Current = enterdb_mem_wrp:calc_bucket(os:timestamp(), BucketSize),
-    
+
     FutureSteps = lists:seq(BucketSize, BucketSize * 4, BucketSize),
     FutureBuckets = [ enterdb_mem_wrp:step_time(Current, FTS) || FTS <- FutureSteps ],
     ?debug("~p futurebuckets ~p", [Table, FutureBuckets]),
@@ -175,14 +175,14 @@ open_table(Table, {BucketSize, NumBuckets}, State) ->
     HistoryBuckets = [ enterdb_mem_wrp:step_time(Current, HTS) || HTS <- HistorySteps ],
     ?debug("~p historybuckets ~p", [Table, HistoryBuckets]),
     open_ets_tables(Table, lists:flatten(FutureBuckets ++ HistoryBuckets)),
-    
+
     % insert pointer to first and last bucket
     ets:insert(?mem_meta_tab, {{Table, first}, lists:last(FutureBuckets)}),
     ets:insert(?mem_meta_tab, {{Table, last}, hd(HistoryBuckets)}),
 
     Config = #enterdb_mem_tab_config{bucket_span = BucketSize, num_buckets = NumBuckets},
     ets:insert(?mem_meta_tab, {{Table, config}, Config}),
-    
+
     %% schedule next wrap callback
     schedule_next_wrap(Table, BucketSize, State#state.fenix).
 
@@ -194,7 +194,7 @@ open_ets_tables(_, []) ->
 
 do_open_ets_table(Tab, Bucket) ->
     %% name is not important of the table
-    EtsID = 
+    EtsID =
 	ets:new(enterdb_mem_wrp_, [public,
 				   {read_concurrency, true},
 				   {write_concurrency, true}]),

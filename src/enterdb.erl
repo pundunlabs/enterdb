@@ -41,16 +41,20 @@
 	 last/1,
 	 seek/2,
 	 next/1,
-	 prev/1
+	 prev/1,
+	 index_read/3,
+	 add_index/2,
+	 remove_index/2
 	 ]).
 
--export([do_write/4,
+-export([do_write/5,
 	 do_update/4,
 	 do_read/3,
 	 do_read_from_disk/3,
-	 do_delete/3]).
+	 do_delete/3,
+	 do_index_read/2]).
 
--export([do_write_force/4,
+-export([do_write_force/5,
 	 do_update_force/4,
 	 do_delete_force/3]).
 
@@ -77,7 +81,7 @@ write_loop(N) when N > 0 ->
 %%--------------------------------------------------------------------
 %% @doc
 %% Creates a table that is defined by Name, KeyDef and given Options.
-%% KeyDef is a list and if list has more than one element, then the key 
+%% KeyDef is a list and if list has more than one element, then the key
 %% will be a compound key.
 %% @end
 %%--------------------------------------------------------------------
@@ -108,7 +112,8 @@ create_table(Name, KeyDef, Options)->
 				 hash_key => HashKey,
 				 hashing_method => HashingMethod,
 				 num_of_shards => NumberOfShards,
-				 replication_factor => RF},
+				 replication_factor => RF,
+				 index_on => []},
 	    enterdb_lib:create_table(NewTab);
 	{error, Reason} ->
                 {error, Reason}
@@ -268,55 +273,60 @@ write(Tab, Key, Columns) ->
 
 -spec write_(Tab :: string(),
 	     Key :: key(),
-	     DB_Key_Columns :: {ok, DBKey :: binary(),
+	     DB_Key_Columns :: {ok,
+				DBKey :: binary(),
 				HashKey :: binary(),
-				DBColumns :: binary()} |
+				DBColumns :: binary(),
+				IndexTerms :: [{string(), string()}]} |
 			       {error, Error :: term()},
 	     Dist :: boolean()) ->
     ok | {error, Reason :: term()}.
-write_(Tab, Key, {ok, DBKey, HashKey, DBColumns}, _Dist = true) ->
+write_(Tab, Key, {ok, DBKey, HashKey, DBColumns, IndexTerms}, _Dist = true) ->
     {ok, {Shard, Nodes}} = gb_hash:get_node(Tab, HashKey),
-    ?dyno:call(Nodes, {?MODULE, do_write, [Shard,Key,DBKey,DBColumns]}, write);
-write_(Tab, Key, {ok, DBKey, HashKey, DBColumns}, _Dist = false) ->
+    ?dyno:call(Nodes, {?MODULE, do_write, [Shard,Key,DBKey,DBColumns,IndexTerms]}, write);
+write_(Tab, Key, {ok, DBKey, HashKey, DBColumns, IndexTerms}, _Dist = false) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
-    do_write(Shard, Key, DBKey, DBColumns);
+    do_write(Shard, Key, DBKey, DBColumns, IndexTerms);
 write_(_Tab, _, {error, _} = E, _) ->
     E.
 
-do_write(Shard, Key, DBKey, DBColumns) ->
+do_write(Shard, Key, DBKey, DBColumns, IndexTerms) ->
     TD = enterdb_lib:get_shard_def(Shard),
-    do_write(TD, Shard, Key, DBKey, DBColumns).
+    do_write(TD, Shard, Key, DBKey, DBColumns, IndexTerms).
 
-do_write_force(Shard, Key, DBKey, DBColumns) ->
+do_write_force(Shard, Key, DBKey, DBColumns, IndexTerms) ->
     TD = (enterdb_lib:get_shard_def(Shard))#{ready_status => forced},
-    do_write(TD, Shard, Key, DBKey, DBColumns).
+    do_write(TD, Shard, Key, DBKey, DBColumns, IndexTerms).
 
-do_write(#{ready_status := not_ready}, _Shard, _Key, _DBKey, _DBColumns) ->
+do_write(#{ready_status := not_ready}, _Shard, _Key,
+	 _DBKey, _DBColumns, _IndexTerms) ->
     {error, not_ready};
-do_write(#{ready_status := recovering}, Shard, Key, DBKey, DBColumns) ->
+do_write(#{ready_status := recovering}, Shard, Key,
+	 DBKey, DBColumns, IndexTerms) ->
     enterdb_shard_recovery:log_event_recover({Shard, node()},
 					     {?MODULE, do_write_force,
-						[Shard, Key, DBKey, DBColumns]}),
+						[Shard, Key, DBKey,
+						 DBColumns, IndexTerms]}),
     {error, {processed, recovering}};
 
 %% Type leveldb_wrapped
 do_write(#{type := leveldb_wrapped, wrapper := Wrapper},
-	 ShardTab, _Key, DBKey, DBColumns) ->
+	 ShardTab, _Key, DBKey, DBColumns, _) ->
     enterdb_ldb_wrp:write(ShardTab, Wrapper, DBKey, DBColumns);
 %% Type leveldb_tda
 do_write(#{type := leveldb_tda, tda := Tda},
-	 ShardTab, Key, DBKey, DBColumns) ->
+	 ShardTab, Key, DBKey, DBColumns, _) ->
     enterdb_ldb_tda:write(ShardTab, Tda, Key, DBKey, DBColumns);
 %% Type leveldb
-do_write(#{type := leveldb}, ShardTab, _Key, DBKey, DBColumns) ->
+do_write(#{type := leveldb}, ShardTab, _Key, DBKey, DBColumns, _IndexTerms) ->
     enterdb_ldb_worker:write(ShardTab, DBKey, DBColumns);
-do_write(#{type := rocksdb}, ShardTab, _Key, DBKey, DBColumns) ->
-    enterdb_rdb_worker:write(ShardTab, DBKey, DBColumns);
-do_write({error, R}, _, _Key, _DBKey, _DBColumns) ->
+do_write(#{type := rocksdb}, ShardTab, _Key, DBKey, DBColumns, IndexTerms) ->
+    enterdb_rdb_worker:write(ShardTab, DBKey, DBColumns, IndexTerms);
+do_write({error, R}, _, _Key, _DBKey, _DBColumns, _IndexTerms) ->
     {error, R};
 
 %% No match
-do_write(TD, Tab, Key, _DBKey, _DBColumns) ->
+do_write(TD, Tab, Key, _DBKey, _DBColumns, _IndexTerms) ->
     ?debug("could not write ~p", [{TD, Tab, Key}]),
     {error, {bad_tab, {Tab, TD}}}.
 
@@ -511,27 +521,27 @@ read_range_(_Tab, _, {error, _} = E, _N) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
 read_range_n(Name, StartKey, N) ->
     case enterdb_lib:get_tab_def(Name) of
-	Tab = #{}->
-	    DBKey = enterdb_lib:make_key(Tab, StartKey),
-	    read_range_n_(Tab, DBKey, N);
+	TD = #{}->
+	    DBKey = enterdb_lib:make_key(TD, StartKey),
+	    read_range_n_(TD, DBKey, N);
 	{error, _} = R ->
 	    R
     end.
 
 
--spec read_range_n_(Tab :: #{},
+-spec read_range_n_(TD :: #{},
 		    {ok, DBKey :: binary(), binary()},
 		    N :: pos_integer()) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
-read_range_n_(Tab, {ok, DBKey, _}, N) ->
-    Shards = gb_hash:get_nodes(maps:get(name, Tab)),
-    enterdb_lib:read_range_n_on_shards(Shards, Tab, DBKey, N);
-read_range_n_(_Tab, {error, _} = E, _N) ->
+read_range_n_(TD, {ok, DBKey, _}, N) ->
+    Shards = gb_hash:get_nodes(maps:get(name, TD)),
+    enterdb_lib:read_range_n_on_shards(Shards, TD, DBKey, N);
+read_range_n_(_TD, {error, _} = E, _N) ->
     E.
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Delete a database table completely. Ensures the table is closed 
+%% Delete a database table completely. Ensures the table is closed
 %% before deletion.
 %% @end
 %%--------------------------------------------------------------------
@@ -674,3 +684,94 @@ next(Ref) ->
     {ok, KVP :: kvp()} | {error, Reason :: invalid | term()}.
 prev(Ref) ->
     enterdb_it_worker:prev(Ref).
+
+-spec index_read(Tab :: string(),
+		 Column :: string(),
+		 Term :: string()) ->
+    {ok, [term()]} | {error, Reason :: term()}.
+index_read(Tab, Column, Term) ->
+    case enterdb_lib:get_tab_def(Tab) of
+	TD = #{column_mapper := Mapper,
+	       nodes := Nodes} ->
+	    case Mapper:lookup(Column) of
+		Cid when is_integer(Cid) ->
+		    Tid = ?TABLE_LOOKUP:lookup(Tab),
+		    IxKey = #{tid => Tid, cid => Cid, term => Term},
+		    {ResL, _Bad} = rpc:multicall(Nodes, ?MODULE,
+						 do_index_read, [TD, IxKey]),
+		    {ok, unique_kvl(ResL)};
+		_ ->
+		    {error, column_not_indexed}
+	    end;
+	{error, _} = R ->
+	    R
+    end.
+
+do_index_read(#{name := Tab,
+		key := KeyDef,
+		distributed := Dist} = TD, IxKey) ->
+    Postings = enterdb_index_update:index_read(KeyDef, IxKey),
+    %%io:format("[~p:~p] Postings ~p~n",[?MODULE,?LINE,Postings]),
+    Results =
+	[begin
+	    {ok, DBKey, HashKey} = enterdb_lib:make_key(TD, K),
+	    Shard =
+		case Dist of
+		    true ->
+			{ok, {S, _}} = gb_hash:get_node(Tab, HashKey),
+			S;
+		    false ->
+			{ok, S} = gb_hash:get_local_node(Tab, HashKey),
+			S
+		end,
+	    DBValue = enterdb_rdb_worker:read(Shard, DBKey),
+	    {K, enterdb_lib:make_app_value(TD, DBValue)}
+	 end || K <- Postings],
+    [{K, Value} || {K, {ok, Value}} <- Results].
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Add new fields to indexed columns. Field may or may not exists as
+%% a column already.
+%% @end
+%%--------------------------------------------------------------------
+-spec add_index(Tab :: string(),
+	        Fields :: [string()]) ->
+    ok | {error, Reason :: term()}.
+add_index(Tab, Fields) ->
+    update_index(add_index, Tab, Fields).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Remove fields from indexed columns.
+%% @end
+%%--------------------------------------------------------------------
+-spec remove_index(Tab :: string(),
+		   Fields :: [string()]) ->
+    ok | {error, Reason :: term()}.
+remove_index(Tab, Fields) ->
+    update_index(remove_index, Tab, Fields).
+
+-spec update_index(Op :: add_index | remove_index,
+		   Tab :: string(),
+		   Fields :: [string()]) ->
+    ok | {error, Reason :: term()}.
+update_index(Op, Tab, Fields) ->
+    case enterdb_lib:get_tab_def(Tab) of
+	TD = #{type := rocksdb} ->
+	       enterdb_lib:update_table_attr(TD, {Op, Fields});
+	_ ->
+	    {error, "backend_not_supported"}
+    end.
+
+-spec unique_kvl([[{term(),term()}]]) ->
+    [{term(),term()}].
+unique_kvl(Resl) ->
+    unique_kvl(Resl, #{}).
+
+unique_kvl([[{Key, Value} | RestIn] | Rest], Acc) ->
+    unique_kvl([RestIn | Rest], Acc#{Key => Value});
+unique_kvl([[] | Rest], Acc) ->
+    unique_kvl(Rest, Acc);
+unique_kvl([], Acc) ->
+    maps:to_list(Acc).

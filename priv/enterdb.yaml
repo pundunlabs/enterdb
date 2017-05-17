@@ -9,6 +9,7 @@ params	 :
     backup_path : "data/backups" # Relative or Absolute path to db backups
     restore_path : "data/restore"
     checkpoint_path : "data/snapshots" # Relative or Absolute path to db sanpshots
+    systab_path : "data/systab" # Relative or Absolute path to db
     hh_path : "data/hinted_handoff"
     hh_log_size : 100 # max size in MB
     num_of_local_shards : 16 # Number of local shards per db table

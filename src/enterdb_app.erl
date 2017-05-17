@@ -6,7 +6,7 @@
 -export([start/2, stop/1]).
 
 -include_lib("gb_log/include/gb_log.hrl").
-
+-include("enterdb.hrl").
 %% ===================================================================
 %% Application callbacks
 %% ===================================================================
@@ -19,8 +19,8 @@ start(_StartType, _StartArgs) ->
         ok ->
 	    case enterdb_sup:start_link() of
 		{ok, Pid} ->
-		    Res = open_internal_tables(),
-		    ?debug("Open internal tables -> ~p", [Res]),
+		    Res = open_system_tables(),
+		    ?debug("Open system tables -> ~p", [Res]),
 		    {ok, Pid};
 		{error, Reason} ->
 		    {error, Reason}
@@ -35,12 +35,24 @@ stop(_State) ->
 %% Open internal database table shards.
 %% @end
 %%--------------------------------------------------------------------
--spec open_internal_tables() -> ok | {error, Reason :: term()}.
-open_internal_tables() ->
-    ?info("Opening internal tables first"),
-    Tabs = ["gb_dyno_topo_ix", "gb_dyno_metadata"],
-    [enterdb_lib:open_table(Tab, false) || Tab <- Tabs],
-    ?info("done opening intenal tables.").
+-spec open_system_tables() ->
+    ok | {error, Reason :: term()}.
+open_system_tables() ->
+    ?debug("Opening system tables..", []),
+    Fun =
+	fun(#enterdb_table{name = Name, map = Map}, Acc) ->
+	    case maps:get(system_table, Map, false) of
+		true ->	[Name | Acc];
+		false -> Acc
+	    end
+	end,
+    case enterdb_db:transaction(fun() -> mnesia:foldl(Fun, [], enterdb_table) end) of
+	{atomic, SysTabList} ->
+	    [enterdb_lib:open_table(Tab, false) || Tab <- SysTabList],
+	    ok;
+	{error, Reason} ->
+	    {error, Reason}
+    end.
 
 -spec ensure_directories() ->
     ok.

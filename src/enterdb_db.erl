@@ -14,6 +14,7 @@
 -export([transaction/1]).
 
 -include("enterdb.hrl").
+-include("enterdb_internal.hrl").
 
 %%%===================================================================
 %%% API
@@ -29,7 +30,8 @@ create_tables(Nodes) ->
     [create_table(Nodes, T) || T <- [enterdb_stab,
 				     enterdb_table,
 				     enterdb_ldb_resource,
-				     enterdb_it_resource]].
+				     enterdb_it_resource]],
+    gb_reg:new(?TABLE_LOOKUP_STR).
 
 %%--------------------------------------------------------------------
 %% @doc

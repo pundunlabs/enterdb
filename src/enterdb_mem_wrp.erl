@@ -91,4 +91,3 @@ sec_to_next_span(BucketSpan) ->
     NextBucketSec = CurrBucketSec + BucketSpan * 60,
     CurrSec = calendar:datetime_to_gregorian_seconds(calendar:now_to_datetime(Now)),
     NextBucketSec - CurrSec.
-

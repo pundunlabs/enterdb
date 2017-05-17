@@ -338,7 +338,7 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({'DOWN', Mref, process, It, Inf},
+handle_info({'DOWN', Mref, process, It, _Inf},
 	    #state{monitors = Monitors} = State) ->
     case maps:get(Mref, Monitors, undefined) of
 	It ->
@@ -362,7 +362,7 @@ handle_info(_Info, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
-terminate(Reason, _State) ->
+terminate(_Reason, _State) ->
     ok.
 %%--------------------------------------------------------------------
 %% @private
@@ -522,7 +522,7 @@ apply_prev_last(UtilsMod, Dir, ValidIterators, InvalidIterators)->
 				[KVP | Acc];
 			    {error, invalid} ->
 				Acc
-			end	
+			end
 		    end, [], ValidIterators),
     LastKVPs = maps:keys(iterate(InvalidIterators, last)),
     case UtilsMod:sort_kvl(opposite(Dir), KVL++LastKVPs) of

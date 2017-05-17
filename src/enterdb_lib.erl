@@ -61,13 +61,15 @@
 	 reduce_cont/2,
 	 cut_kvl_at/2,
 	 comparator_to_dir/1,
-	 get_ldb_worker_args/2]).
+	 get_ldb_worker_args/2,
+	 update_table_attr/2]).
 
 %% Inter-Node API
 -export([do_create_shards/1,
 	 do_open_table/1,
 	 do_close_table/1,
-	 do_delete_table/1]).
+	 do_delete_table/1,
+	 do_update_table_attr/2]).
 
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
@@ -85,7 +87,8 @@
 -spec get_path(Path :: db_path |
 		       backup_path |
 		       wal_path |
-		       checkpoint_path) -> string().
+		       checkpoint_path |
+		       systab_path ) -> string().
 get_path(Path) ->
     get_path(Path, undefined).
 
@@ -297,6 +300,11 @@ verify_table_options([{distributed, Bool}|Rest])
 when is_boolean(Bool) ->
     verify_table_options(Rest);
 
+%% System Table
+verify_table_options([{system_table, Bool}|Rest])
+when is_boolean(Bool) ->
+    verify_table_options(Rest);
+
 %% Replication Factor
 verify_table_options([{replication_factor, RF}|Rest])
 when is_integer(RF), RF > 0 ->
@@ -485,6 +493,24 @@ get_shards(Name, NumOfShards, ReplicationFactor) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Extract per Node view from shard allocation.
+%% @end
+%%--------------------------------------------------------------------
+-spec get_allocated_nodes(Shards :: [{Shard :: string(), Ring :: map()}]) ->
+    {ok, [node()]}.
+get_allocated_nodes(Shards) ->
+    get_allocated_nodes(Shards, []).
+
+get_allocated_nodes([{_Shard, Ring} | Rest], Acc) ->
+    Cont = maps:fold(fun (_, NodeList, AccIn) ->
+			lists:append(NodeList, AccIn)
+		     end, Acc, Ring),
+    get_allocated_nodes(Rest, Cont);
+get_allocated_nodes([], Acc) ->
+    {ok, lists:usort(Acc)}.
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Create and return list of {Shard, Ring} tuples for all shards
 %% only for local node.
 %% @end
@@ -508,32 +534,35 @@ create_table(#{name := Name,
     NumOfShards	= maps:get(num_of_shards, EnterdbTable),
     %%Generate Shards and allocate nodes on shards
     {ok, Shards} = get_local_shards(Name, NumOfShards),
-    
+
     %%Create local ring with given allocated shards
     Strategy = maps:get(hashing_method, EnterdbTable),
     HashOpts = [local, {algorithm, sha256}, {strategy, Strategy}],
     {ok, _Beam} = gb_hash:create_ring(Name, Shards, HashOpts),
-    do_create_shards(EnterdbTable#{shards => Shards});
+    do_create_shards(EnterdbTable#{shards => Shards,
+				   nodes => [node()]});
 
 create_table(#{name := Name} = EnterdbTable)->
     NumOfShards	= maps:get(num_of_shards, EnterdbTable),
     RF = maps:get(replication_factor, EnterdbTable),
-    
+
     %%Generate Shards and allocate nodes on shards
     {ok, AllocatedShards} = get_shards(Name, NumOfShards, RF),
     ?debug("table allocated shards ~p", [AllocatedShards]),
-    
+
     %%Create local ring with given allocated shards
     Strategy = maps:get(hashing_method, EnterdbTable),
     HashOpts = [{algorithm, sha256}, {strategy, Strategy}],
     {ok, Beam} = gb_hash:create_ring(Name, AllocatedShards, HashOpts),
-    
+
     %% Distribute the ring
     MFA = {gb_hash_register, load_store_ok, [Beam]},
     CommitID = undefined,
     RMFA = {gb_hash_register, revert, [CommitID]},
     Result = ?dyno:topo_call(MFA, [{timeout, 10000}, {revert, RMFA}]),
-    create_table(Result, EnterdbTable#{shards => AllocatedShards}).
+    {ok, AllocatedNodes} = get_allocated_nodes(AllocatedShards),
+    create_table(Result, EnterdbTable#{shards => AllocatedShards,
+				       nodes => AllocatedNodes}).
 
 -spec create_table(RingResult :: ok | {error, Reason :: term()},
 		   EnterdbTable :: #{}) ->
@@ -558,6 +587,7 @@ do_create_shards(#{name := Name,
 		   data_model := DataModel,
 		   shards := Shards} = EDBT) ->
     LocalShards = find_local_shards(Shards),
+    gb_reg:add_keys(?TABLE_LOOKUP, [Name]),
     Mapper = get_column_mapper(Name, DataModel),
     NewEDBT = EDBT#{column_mapper => Mapper},
     write_enterdb_table(NewEDBT),
@@ -573,7 +603,11 @@ do_create_shards(#{name := Name,
 		      EDBT :: #{}) ->
     ok | {error, Reason :: term()}.
 do_create_shard(Shard, EDBT0) ->
-    DbPath = get_path(db_path),
+    DbPath =
+	case maps:get(system_table, EDBT0, false) of
+	    false -> get_path(db_path);
+	    true -> get_path(systab_path)
+	end,
     Shards = maps:get(shards, EDBT0),
     EDBT = maps:remove(shards, EDBT0),
     ShardDist = proplists:get_value(Shard, Shards),
@@ -769,7 +803,7 @@ write_shard_table(#{shard := Shard} = Map) ->
             ok;
         {aborted, Reason} ->
            {error, {aborted, Reason}}
-    end. 
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -802,7 +836,7 @@ open_table(Name, true) ->
     ?dyno:topo_call(MFA, [{timeout, 60000}]);
 open_table(Name, false) ->
     do_open_table(Name).
-    
+
 %%--------------------------------------------------------------------
 %% @doc
 %% This function is used in inter-node communication.
@@ -818,7 +852,7 @@ do_open_table(Name) ->
 	    open_shards(LocalShards);
 	undefined ->
 	    {error, "no_table"}
-    end. 
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -869,7 +903,7 @@ do_close_table(Name) ->
 	    close_shards(LocalShards);
 	undefined ->
 	    {error, "no_table"}
-    end. 
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1154,7 +1188,7 @@ sum_up_sizes([_ | Rest], Sum) ->
 %% Make key according to KeyDef defined in table configuration.
 %% @end
 %%--------------------------------------------------------------------
--spec make_key(TD :: #enterdb_table{},
+-spec make_key(TD :: #{},
 	       Key :: [{string(), term()}]) ->
     {ok, DbKey :: binary(), HashKey :: binary()} |
     {error, Reason :: term()}.
@@ -1170,7 +1204,8 @@ make_key(#{key := KeyDef, hash_key := HashKey}, Key) ->
 -spec make_key_columns(TableDef :: #{},
 		       Key :: [{string(), term()}],
 		       Columns :: term()) ->
-    {ok, DbKey :: binary(), HashKey :: binary(), Columns :: binary()} |
+    {ok, DbKey :: binary(), HashKey :: binary(),
+	 Columns :: binary(), IndexTerms :: [string()]} |
     {error, Reason :: term()}.
 make_key_columns(TD = #{key := KeyDef,
 			hash_key := HashKeyDef}, Key, Columns) ->
@@ -1183,13 +1218,16 @@ make_key_columns(TD = #{key := KeyDef,
 
 make_key_columns_help(#{data_model := DataModel,
 			column_mapper := ColumnMapper,
-			distributed := Dist},
+			distributed := Dist,
+			index_on := IndexOn},
 		      DBKey,
 		      HashKey,
 		      Columns) ->
     case make_db_value(DataModel, ColumnMapper, Dist, Columns) of
 	{ok, DBValue} ->
-	    {ok, DBKey, HashKey, DBValue};
+	    IndexTerms = get_index_terms(ColumnMapper, IndexOn, Columns),
+	    %%io:format("~p:~p, index_terms ~p~n",[?MODULE,?LINE, IndexTerms]),
+	    {ok, DBKey, HashKey, DBValue, IndexTerms};
 	{error, E} ->
 	    {error, E}
     end.
@@ -1350,7 +1388,7 @@ map_columns(Mapper, Distributed, [], Acc) ->
     case [Field || {'$no_mapping', Field, _} <- Acc] of
 	[] ->
 	    Acc;
-	AddKeys ->  
+	AddKeys ->
 	    Rest = [{Field, Value} || {'$no_mapping', Field, Value} <- Acc],
 	    Done = lists:filter(fun({'$no_mapping',_,_}) -> false;
 				   (_) -> true
@@ -1614,7 +1652,7 @@ find_local_shards([], _Node, _DC, Acc) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Parallel map requests on local node. Args will be constructed by 
+%% Parallel map requests on local node. Args will be constructed by
 %% Adding Elements from List to BaseArgs. apply(Mod, Fun, Args)
 %% will be called on local node. Result list will be in respective
 %% order to request list.
@@ -1666,7 +1704,7 @@ do_yield(Pid, Timeout) ->
             {value, R}
         after Timeout ->
             timeout
-    end. 
+    end.
 
 -spec get_ldb_worker_args(Start :: create | open | delete,
 			  Smap :: #{}) ->
@@ -1697,9 +1735,87 @@ get_rdb_worker_args(Start, Smap = #{comparator := Comp}) ->
 -spec rdb_open_options(Start :: create | open | delete) ->
     [{string(), string()}].
 rdb_open_options(create) ->
-    [{"create_if_missing", "true"}, {"error_if_exists", "true"}];
+    [{"create_if_missing", "true"}, {"error_if_exists", "true"},
+     {"create_missing_column_families", "true"}];
 rdb_open_options(Start) when Start == open; Start == delete ->
     [{"create_if_missing", "false"}, {"error_if_exists", "false"}].
 
 cmp_str(descending) -> "descending";
 cmp_str(ascending) -> "ascending".
+
+get_index_terms(Mapper, IndexOn, Columns) ->
+    get_index_terms(Mapper, IndexOn, Columns, []).
+
+get_index_terms(Mapper, [Col | Rest], Columns, Acc) ->
+    Ref = Mapper:lookup(Col),
+    case lists:keyfind(Col, 1, Columns) of
+	{_, Value} ->
+	    get_index_terms(Mapper, Rest, Columns, [{Ref, Value} | Acc]);
+	false ->
+	    get_index_terms(Mapper, Rest, Columns, [{Ref, ""} | Acc])
+    end;
+get_index_terms(_Mapper, [], _Columns, Acc) ->
+    Acc.
+
+-spec update_table_attr(TD :: map(),
+			AV :: {Attr :: add_index |
+				       remove_index,
+			       Fields :: [string()]} | term()) ->
+    ok.
+update_table_attr(#{name := Name,
+		    nodes := Nodes,
+		    index_on := IndexOn}, {add_index, Fields}) ->
+    UpdatedIndexOn = add_index(IndexOn, Fields),
+    update_table_attr(Nodes, Name, index_on, UpdatedIndexOn);
+update_table_attr(#{name := Name,
+		    nodes := Nodes,
+		    index_on := IndexOn}, {remove_index, Fields}) ->
+    UpdatedIndexOn = remove_index(IndexOn, Fields),
+    update_table_attr(Nodes, Name, index_on, UpdatedIndexOn);
+update_table_attr(_TD, _) ->
+    ok.
+
+update_table_attr(Nodes, Name, Attr, Val) ->
+    {[ok], BadNodes} = rpc:multicall(Nodes, ?MODULE, do_update_table_attr,
+				     [Name, {Attr, Val}]),
+    ?debug("Bad nodes on update_table_attr: ~p", [BadNodes]),
+    ok.
+
+do_update_table_attr(Name, {Attr, Val}) ->
+    Fun =
+	fun() ->
+	    TD = #{name := Name, shards := Shards} = get_tab_def(Name),
+	    mnesia:write(#enterdb_table{name = Name,
+					map = TD#{Attr => Val}}),
+	    ResL =
+		[begin
+		    case mnesia:read(enterdb_stab, Shard) of
+			[] ->
+			    ok;
+			[S = #enterdb_stab{map = M}] ->
+			    mnesia:write(S#enterdb_stab{map = M#{Attr => Val}})
+		    end
+		 end || {Shard, _} <- Shards],
+	    check_error_response(lists:usort(ResL))
+	 end,
+    case mnesia:transaction(Fun) of
+	{aborted, Reason} ->
+	    {error, Reason};
+	{atomic, ok} ->
+	    ok
+    end.
+
+add_index(List, [Field | Rest]) ->
+    case io_lib:printable_unicode_list(Field) of
+	true ->
+	    add_index([Field | List], Rest);
+	false ->
+	    add_index(List, Rest)
+    end;
+add_index(List, []) ->
+    lists:usort(List).
+
+remove_index(List, [Field | Rest]) ->
+    remove_index(lists:delete(Field, List), Rest);
+remove_index(List, []) ->
+    List.

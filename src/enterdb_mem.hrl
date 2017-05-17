@@ -7,4 +7,3 @@
 %%%-------------------------------------------------------------------
 
 -record(enterdb_mem_tab_config, {bucket_span, num_buckets}).
-

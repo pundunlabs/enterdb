@@ -18,5 +18,3 @@ init_tab(_)->
 
 init_mem_wrapper(Table, {BucketSize, NumBuckets}) ->
     enterdb_mem_wrp_mgr:init_tab(Table, {BucketSize, NumBuckets}).
-
-

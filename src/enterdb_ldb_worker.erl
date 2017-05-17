@@ -254,9 +254,9 @@ init(Args) ->
     Subdir = proplists:get_value(subdir, Args),
     Path = proplists:get_value(db_path, Args),
     ok = ensure_closed(Name),
- 
+
     OptionsPL = proplists:get_value(options, Args),
-    
+
     OptionsRec = build_leveldb_options(OptionsPL),
 
     case leveldb:options(OptionsRec) of
@@ -286,8 +286,8 @@ init(Args) ->
             end;
         {error, Reason} ->
             {stop, {error, Reason}}
-    end. 
-                                   
+    end.
+
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -530,7 +530,6 @@ ensure_closed(Name) ->
 	    {error, Reason}
     end.
 
- 
 %%--------------------------------------------------------------------
 %% @doc
 %% Store the #enterdb_ldb_resource entry in mnesia ram_copy

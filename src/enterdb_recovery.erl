@@ -176,7 +176,7 @@ do_backup(Shard, Timeout) ->
     Res = enterdb_rdb_worker:backup_db(Shard, RestorePath, Timeout),
     {Res, RestorePath}.
 
-copy_backup(Node, Shard, RestorePath, RemotePath) ->
+copy_backup(Node, _Shard, RestorePath, RemotePath) ->
     filelib:ensure_dir(RestorePath ++ "/"),
     {ok, Pid, Port} = gb_stream_tar:start_receiver(self(), RestorePath),
     {ok, Hostname} = inet:gethostname(),
