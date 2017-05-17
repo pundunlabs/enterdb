@@ -6,7 +6,7 @@
 -export([start/2, stop/1]).
 
 -include_lib("gb_log/include/gb_log.hrl").
-
+-include("enterdb.hrl").
 %% ===================================================================
 %% Application callbacks
 %% ===================================================================
@@ -35,12 +35,27 @@ stop(_State) ->
 %% Open existing database table shards.
 %% @end
 %%--------------------------------------------------------------------
--spec open_all_tables() -> ok | {error, Reason :: term()}.
+-spec open_all_tables() ->
+    ok | {error, Reason :: term()}.
 open_all_tables() ->
-    ?debug("Opening all tables..", []),
-    case enterdb_db:transaction(fun() -> mnesia:all_keys(enterdb_stab) end) of
-	{atomic, DBList} ->
-	    enterdb_lib:open_shards(DBList);
+    {ok, UserTabList} = open_system_tables(),
+    enterdb_lib:open_shards(UserTabList).
+
+-spec open_system_tables() ->
+    {ok, UserTabList :: [string()]} | {error, Reason :: term()}.
+open_system_tables() ->
+    ?debug("Opening system tables..", []),
+    Fun =
+	fun(#enterdb_stab{shard = Shard, map = Map}, {S,U}) ->
+	    case maps:get(system_table, Map, false) of
+		true ->	{[Shard | S], U};
+		false ->{S, [Shard | U]}
+	    end
+	end,
+    case enterdb_db:transaction(fun() -> mnesia:foldl(Fun, {[],[]}, enterdb_stab) end) of
+	{atomic, {SysTabList, UserTabList}} ->
+	    enterdb_lib:open_shards(SysTabList),
+	    {ok, UserTabList};
 	{error, Reason} ->
 	    {error, Reason}
     end.

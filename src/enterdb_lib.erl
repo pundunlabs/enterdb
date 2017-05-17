@@ -85,7 +85,8 @@
 -spec get_path(Path :: db_path |
 		       backup_path |
 		       wal_path |
-		       checkpoint_path) -> string().
+		       checkpoint_path |
+		       systab_path ) -> string().
 get_path(Path) ->
     get_path(Path, undefined).
 
@@ -297,6 +298,11 @@ verify_table_options([{distributed, Bool}|Rest])
 when is_boolean(Bool) ->
     verify_table_options(Rest);
 
+%% System Table
+verify_table_options([{system_table, Bool}|Rest])
+when is_boolean(Bool) ->
+    verify_table_options(Rest);
+
 %% Replication Factor
 verify_table_options([{replication_factor, RF}|Rest])
 when is_integer(RF), RF > 0 ->
@@ -496,21 +502,13 @@ get_shards(Name, NumOfShards, ReplicationFactor) ->
 get_allocated_nodes(Shards) ->
     get_allocated_nodes(Shards, []).
 
-get_allocated_nodes([{Shard, Ring} | Rest], Acc) ->
+get_allocated_nodes([{_Shard, Ring} | Rest], Acc) ->
     Cont = maps:fold(fun (_, NodeList, AccIn) ->
 			lists:append(NodeList, AccIn)
 		     end, Acc, Ring),
     get_allocated_nodes(Rest, Cont);
 get_allocated_nodes([], Acc) ->
     {ok, lists:usort(Acc)}.
-
-shard_append_to_nodes(Shard, [Node | Rest], Acc) ->
-    L = maps:get(Node, Acc, []),
-    Cont = maps:put(Node, [Shard | L], Acc),
-    shard_append_to_nodes(Shard, Rest, Cont);
-shard_append_to_nodes(_, [], Acc) ->
-    Acc.
-
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -537,7 +535,7 @@ create_table(#{name := Name,
     NumOfShards	= maps:get(num_of_shards, EnterdbTable),
     %%Generate Shards and allocate nodes on shards
     {ok, Shards} = get_local_shards(Name, NumOfShards),
-    
+
     %%Create local ring with given allocated shards
     Strategy = maps:get(hashing_method, EnterdbTable),
     HashOpts = [local, {algorithm, sha256}, {strategy, Strategy}],
@@ -548,16 +546,16 @@ create_table(#{name := Name,
 create_table(#{name := Name} = EnterdbTable)->
     NumOfShards	= maps:get(num_of_shards, EnterdbTable),
     RF = maps:get(replication_factor, EnterdbTable),
-    
+
     %%Generate Shards and allocate nodes on shards
     {ok, AllocatedShards} = get_shards(Name, NumOfShards, RF),
     ?debug("table allocated shards ~p", [AllocatedShards]),
-    
+
     %%Create local ring with given allocated shards
     Strategy = maps:get(hashing_method, EnterdbTable),
     HashOpts = [{algorithm, sha256}, {strategy, Strategy}],
     {ok, Beam} = gb_hash:create_ring(Name, AllocatedShards, HashOpts),
-    
+
     %% Distribute the ring
     MFA = {gb_hash_register, load_store_ok, [Beam]},
     CommitID = undefined,
@@ -606,7 +604,11 @@ do_create_shards(#{name := Name,
 		      EDBT :: #{}) ->
     ok | {error, Reason :: term()}.
 do_create_shard(Shard, EDBT) ->
-    DbPath = get_path(db_path),
+    DbPath =
+	case maps:get(system_table, EDBT, false) of
+	    false -> get_path(db_path);
+	    true -> get_path(systab_path)
+	end,
     WalPath = get_path(wal_path, DbPath),
     BackupPath = get_path(backup_path, filename:join([DbPath, backups])),
     CheckpointPath = get_path(checkpoint_path, filename:join([DbPath, snapshots])),
@@ -794,7 +796,7 @@ write_shard_table(#{shard := Shard} = Map) ->
             ok;
         {aborted, Reason} ->
            {error, {aborted, Reason}}
-    end. 
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -827,7 +829,7 @@ open_table(Name, true) ->
     ?dyno:topo_call(MFA, [{timeout, 60000}]);
 open_table(Name, false) ->
     do_open_table(Name).
-    
+
 %%--------------------------------------------------------------------
 %% @doc
 %% This function is used in inter-node communication.
@@ -843,7 +845,7 @@ do_open_table(Name) ->
 	    open_shards(LocalShards);
 	undefined ->
 	    {error, "no_table"}
-    end. 
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -894,7 +896,7 @@ do_close_table(Name) ->
 	    close_shards(LocalShards);
 	undefined ->
 	    {error, "no_table"}
-    end. 
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1375,7 +1377,7 @@ map_columns(Mapper, Distributed, [], Acc) ->
     case [Field || {'$no_mapping', Field, _} <- Acc] of
 	[] ->
 	    Acc;
-	AddKeys ->  
+	AddKeys ->
 	    Rest = [{Field, Value} || {'$no_mapping', Field, Value} <- Acc],
 	    Done = lists:filter(fun({'$no_mapping',_,_}) -> false;
 				   (_) -> true
@@ -1639,7 +1641,7 @@ find_local_shards([], _Node, _DC, Acc) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Parallel map requests on local node. Args will be constructed by 
+%% Parallel map requests on local node. Args will be constructed by
 %% Adding Elements from List to BaseArgs. apply(Mod, Fun, Args)
 %% will be called on local node. Result list will be in respective
 %% order to request list.
@@ -1691,7 +1693,7 @@ do_yield(Pid, Timeout) ->
             {value, R}
         after Timeout ->
             timeout
-    end. 
+    end.
 
 -spec get_ldb_worker_args(Start :: create | open | delete,
 			  Smap :: #{}) ->
@@ -1731,7 +1733,7 @@ cmp_str(descending) -> "descending";
 cmp_str(ascending) -> "ascending".
 
 get_index_terms(Mapper, IndexOn, Columns) ->
-    get_index_terms(Mapper, IndexOn, Columns, []). 
+    get_index_terms(Mapper, IndexOn, Columns, []).
 
 get_index_terms(Mapper, [Col | Rest], Columns, Acc) ->
     Ref = Mapper:lookup(Col),

@@ -10,7 +10,7 @@
 %%
 %% Unless required by applicable law or agreed to in writing, software
 %% distributed under the License is distributed on an "AS IS" BASIS,
-%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or 
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
 %% implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
@@ -140,7 +140,7 @@ handle_cast(_Msg, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_info({'DOWN', _Ref, process, Pid, _Info}, State) ->
-    delete_pid(State#state.rs_table, Pid), 
+    delete_pid(State#state.rs_table, Pid),
     {noreply, State};
 handle_info(_Info, State) ->
     {noreply, State}.

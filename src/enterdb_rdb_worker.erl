@@ -175,7 +175,7 @@ delete_db(Args) ->
     Subdir = maps:get(name, Args),
     Path = maps:get(db_path, Args),
     ok = ensure_closed(Shard),
-    {ok, Options, _} = make_options(Args),
+    {ok, Options, _} = make_options(Subdir, Args),
     FullPath = filename:join([Path, Subdir, Shard]),
     rocksdb:destroy_db(FullPath, Options).
 
@@ -408,7 +408,7 @@ init(Args) ->
     ColumnMapper = maps:get(column_mapper, Args),
     IndexOn = maps:get(index_on, Args),
     EmptyIndex = get_empty_index(ColumnMapper, IndexOn),
-    case make_options(Args) of
+    case make_options(Subdir, Args) of
         {ok, Options, ColumnFamiliyOpts} ->
             [DbPath, WalPath, BackupPath, CheckpointPath] =
 		ensure_directories(Args, Subdir, Shard),
@@ -416,6 +416,9 @@ init(Args) ->
                 {error, Reason} ->
                     {stop, {error, Reason}};
                 {ok, DB} ->
+		    Tid = ?TABLE_LOOKUP:lookup(Subdir),
+		    TTL = maps:get(ttl, Args, 0),
+		    handle_term_index(DB, Subdir, Tid, TTL),
 		    ELR = #enterdb_ldb_resource{name = Shard, resource = DB},
                     ok = write_enterdb_ldb_resource(ELR),
 		    %%ReadOptionsRec = build_readoptions([{tailing,true}]),
@@ -423,9 +426,6 @@ init(Args) ->
                     {ok, ReadOptions} = rocksdb:readoptions(ReadOptionsRec),
                     WriteOptionsRec = build_writeoptions([]),
                     {ok, WriteOptions} = rocksdb:writeoptions(WriteOptionsRec),
-		    Tid = ?TABLE_LOOKUP:lookup(Subdir),
-		    TTL = maps:get(ttl, Args, 0),
-		    enterdb_index_update:register_ttl(Subdir, Tid, TTL),
                     process_flag(trap_exit, true),
 		    {ok, #state{table_id = Tid,
 				name = Subdir,
@@ -445,8 +445,8 @@ init(Args) ->
             end;
         {error, Reason} ->
             {stop, {error, Reason}}
-    end. 
-                                   
+    end.
+
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -535,7 +535,7 @@ handle_call({term_index, Term, Key}, _From, State) ->
     {reply, Reply, State};
 handle_call({add_index_ttl, Tid, TTL}, _From, State) ->
     #state{db_ref = DB} = State,
-    Reply = rocksdb:add_index_ttl(DB, Tid, TTL),
+    Reply = rocksdb:add_index_ttl(DB, [{Tid, TTL}]),
     {reply, Reply, State};
 handle_call({remove_index_ttl, Tid}, _From, State) ->
     #state{db_ref = DB} = State,
@@ -779,7 +779,6 @@ ensure_closed(Shard) ->
 	    {error, Reason}
     end.
 
- 
 %%--------------------------------------------------------------------
 %% @doc
 %% Store the #enterdb_ldb_resource entry in mnesia ram_copy
@@ -859,11 +858,10 @@ del_dir(Dir, [File | Rest]) ->
     file:delete(filename:join([Dir, File])),
     del_dir(Dir, Rest).
 
--spec make_options(Args :: [term()]) ->
+-spec make_options(Name :: string(), Args :: [term()]) ->
     {ok, Options :: binary(), CFOpts :: [term()]} |
     {error, Reason :: term()}.
-make_options(Args) ->
-    Name = maps:get(name, Args),
+make_options(Name, Args) ->
     OptionsPL = maps:get(options, Args),
     TTL = maps:get(ttl, Args, undefined),
     do_make_options(Name, [{"ttl", TTL} | OptionsPL]).
@@ -894,3 +892,20 @@ get_cl_opts([], AccO, AccC)->
 
 get_empty_index(Mapper, IndexOn) ->
     [{Mapper:lookup(I), ""} || I <- IndexOn].
+
+handle_term_index(DB, ?TERM_INDEX_TABLE,  _, _) ->
+    Fun =
+	fun(#enterdb_table{name = Name, map = Map}, Acc) ->
+	    Tid = ?TABLE_LOOKUP:lookup(Name),
+	    TTL =  maps:get(ttl, Map, 0),
+	    [{Tid, TTL} | Acc]
+	end,
+    case enterdb_db:transaction(
+	fun() -> mnesia:foldl(Fun, [], enterdb_table) end) of
+	{atomic, KVL} ->
+	    rocksdb:add_index_ttl(DB, KVL);
+	{error, Reason} ->
+	    {error, Reason}
+    end;
+handle_term_index(_, Subdir, Tid, TTL) ->
+    enterdb_index_update:register_ttl(Subdir, Tid, TTL).

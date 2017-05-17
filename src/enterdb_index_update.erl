@@ -171,6 +171,7 @@ init([]) ->
 			 [{type, rocksdb},
 			  {comparator, ascending},
 			  {hash_exclude, ["term"]},
+			  {system_table, true},
 			  {distributed, false}]),
     {ok, #state{}}.
 

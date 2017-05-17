@@ -528,7 +528,7 @@ apply_prev_last(UtilsMod, Dir, ValidIterators, InvalidIterators)->
 				[KVP | Acc];
 			    {error, invalid} ->
 				Acc
-			end	
+			end
 		    end, [], ValidIterators),
     LastKVPs = maps:keys(iterate(InvalidIterators, last)),
     case UtilsMod:sort_kvl(opposite(Dir), KVL++LastKVPs) of

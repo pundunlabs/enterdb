@@ -8,4 +8,5 @@ params	 :
     wal_path : "data/enterdb" # Relative or Absolute path to wal file
     backup_path : "data/enterdb/backups" # Relative or Absolute path to db backups
     checkpoint_path : "data/enterdb/snapshots" # Relative or Absolute path to db sanpshots
+    systab_path : "data/systab" # Relative or Absolute path to db
     num_of_local_shards : 16 # Number of local shards per db table
