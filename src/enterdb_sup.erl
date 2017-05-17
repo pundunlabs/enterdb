@@ -70,12 +70,6 @@ init([]) ->
 		 intensity => 4,
 		 period => 3600},
 
-    EdbMemMgrServer = #{id => enterdb_mem_wrp_mgr,
-			start => {enterdb_mem_wrp_mgr, start_link, []},
-			restart => permanent,
-			shutdown => 20000,
-			type => worker,
-			modules => [enterdb_mem_wrp_mgr]},
     EdbRdbSup	    = #{id => enterdb_rdb_sup,
 			start => {enterdb_simple_sup, start_link,[rocksdb]},
 			restart => permanent,
@@ -131,12 +125,16 @@ init([]) ->
 			type => worker,
 			modules => [enterdb_index_update]},
 
-    EdbShardRecovery = {enterdb_shard_recovery_sup, {enterdb_shard_recovery_sup, start_link, []},
-			permanent, 20000, supervisor, [enterdb_shard_recovery_sup]},
+    EdbShardRecovery = #{id => enterdb_shard_recovery_sup,
+			 start => {enterdb_shard_recovery_sup, start_link, []},
+			 restart => permanent,
+			 shutdown => 20000,
+			 type => supervisor,
+			 modules => [enterdb_shard_recovery_sup]},
 
     {ok, {SupFlags, [EdbNS, EdbRS, EdbPTS, EdbLitSup,
 		     EdbLdbWrpSup, EdbLdbTdaSup, EdbRdbSup, EdbLdbSup,
-		     EdbMemMgrServer, EdbShardRecovery, EdbIndexUpdate]}}.
+		     EdbShardRecovery, EdbIndexUpdate]}}.
 
 %%%===================================================================
 %%% Internal functions

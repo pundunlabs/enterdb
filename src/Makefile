@@ -18,9 +18,6 @@ MODULES = \
     enterdb_simple_sup \
     enterdb_ldb_worker \
     gb_chash \
-    enterdb_mem \
-    enterdb_mem_wrp_mgr \
-    enterdb_mem_wrp \
 
 ERL_BEAMS = $(MODULES:%=$(EBIN)/%.beam)
 
