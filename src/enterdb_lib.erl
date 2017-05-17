@@ -602,16 +602,17 @@ do_create_shards(#{name := Name,
 -spec do_create_shard(Shard :: shard_name(),
 		      EDBT :: #{}) ->
     ok | {error, Reason :: term()}.
-do_create_shard(Shard, EDBT0) ->
+do_create_shard(Shard, EDBT) ->
     DbPath =
-	case maps:get(system_table, EDBT0, false) of
+	case maps:get(system_table, EDBT, false) of
 	    false -> get_path(db_path);
 	    true -> get_path(systab_path)
 	end,
-    Shards = maps:get(shards, EDBT0),
-    EDBT = maps:remove(shards, EDBT0),
+    Shards = maps:get(shards, EDBT),
+    EDBT1 = maps:remove(shards, EDBT),
     ShardDist = proplists:get_value(Shard, Shards),
-    ESTAB = EDBT#{shard => Shard, shard_dist => ShardDist,
+    EDBT2 = maps:remove(system_table, EDBT1),
+    ESTAB = EDBT2#{shard => Shard, shard_dist => ShardDist,
 		  db_path => DbPath},
     write_shard_table(ESTAB),
     do_create_shard_type(ESTAB).
@@ -658,13 +659,16 @@ open_shard(Name) ->
 %% Open existing shard locally
 
 do_open_shard(#{shard := Shard, name := Name} = EDST) ->
-    case Name of
-	_ when Name =:= "gb_dyno_topo_ix";
-	       Name =:= "gb_dyno_metadata" ->
-	    %% enterdb internal table
-	    ok;
+    Dist = maps:get(distributed, EDST, false),
+
+    TabMap = get_tab_def(Name),
+    SysT = maps:get(system_table,TabMap, false),
+
+    case {Dist, SysT} of
+	  {true, false} ->
+	    enterdb_recovery:check_ready_status(EDST);
 	_ ->
-	    enterdb_recovery:check_ready_status(EDST)
+	    ok
     end,
     case enterdb_ns:get(Shard) of
 	{error,no_ns_entry} ->
@@ -674,15 +678,15 @@ do_open_shard(#{shard := Shard, name := Name} = EDST) ->
     end.
 
 %% Open existing shard locally
-do_open_shard_(#{type := leveldb} = EDBT) ->
-    open_leveldb_shard(EDBT);
-do_open_shard_(#{type := leveldb_wrapped} = EDBT) ->
-    open_leveldb_wrp_shard(EDBT);
-do_open_shard_(#{type := leveldb_tda} = EDBT) ->
-    open_leveldb_tda_shard(EDBT);
-do_open_shard_(#{type := mem_leveldb} = EDBT) ->
+do_open_shard_(#{type := leveldb} = EST) ->
+    open_leveldb_shard(EST);
+do_open_shard_(#{type := leveldb_wrapped} = EST) ->
+    open_leveldb_wrp_shard(EST);
+do_open_shard_(#{type := leveldb_tda} = EST) ->
+    open_leveldb_tda_shard(EST);
+do_open_shard_(#{type := mem_leveldb} = EST) ->
     %% TODO: init LRU-Cache here as well
-    open_leveldb_shard(EDBT);
+    open_leveldb_shard(EST);
 do_open_shard_(#{type := rocksdb} = EDBT) ->
     open_rocksdb_shard(EDBT);
 do_open_shard_(Else)->
