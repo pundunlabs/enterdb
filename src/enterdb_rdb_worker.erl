@@ -445,7 +445,7 @@ init(Args) ->
 		    Tid = ?TABLE_LOOKUP:lookup(Subdir),
 		    TTL = maps:get(ttl, Args, 0),
 		    IndexOn = maps:get(index_on, Args),
-		    handle_term_index(DB, Subdir, Tid, TTL, IndexOn),
+		    handle_term_index(Subdir, Tid, TTL, IndexOn),
 		    ELR = #enterdb_ldb_resource{name = Shard, resource = DB},
                     ok = write_enterdb_ldb_resource(ELR),
 		    %%ReadOptionsRec = build_readoptions([{tailing,true}]),
@@ -949,7 +949,8 @@ make_options(Name, Args) ->
 
 do_make_options(?TERM_INDEX_TABLE, OptionsPL)->
     {ok, Opts, COpts} = do_make_options("", OptionsPL),
-    {ok, Opts, [{"term_index", "true"} | COpts]};
+    {ok, KVL} = get_ttl_registry(),
+    {ok, Opts, [{"term_index", KVL} | COpts]};
 do_make_options(_, OptionsPL)->
     {ok, Rest, CLOpts} = get_cl_opts(OptionsPL),
     {ok, Opts} = rocksdb:options(Rest),
@@ -973,11 +974,8 @@ get_cl_opts([], AccO, AccC)->
 
 get_empty_index(Mapper, IndexOn) ->
     [{Mapper:lookup(I), ""} || I <- IndexOn].
-
-%% empty IndexOn
-handle_term_index(_, _, _, _, []) ->
-    ok;
-handle_term_index(DB, ?TERM_INDEX_TABLE,  _, _, _IndexOn) ->
+    
+get_ttl_registry() ->
     Fun =
 	fun(#enterdb_table{name = Name, map = Map}, Acc) ->
 	    Tid = ?TABLE_LOOKUP:lookup(Name),
@@ -987,9 +985,13 @@ handle_term_index(DB, ?TERM_INDEX_TABLE,  _, _, _IndexOn) ->
     case enterdb_db:transaction(
 	fun() -> mnesia:foldl(Fun, [], enterdb_table) end) of
 	{atomic, KVL} ->
-	    rocksdb:add_index_ttl(DB, KVL);
+	    {ok, KVL};
 	{error, Reason} ->
 	    {error, Reason}
-    end;
-handle_term_index(_, Subdir, Tid, TTL, _IndexOn) ->
+    end.
+
+%% empty IndexOn
+handle_term_index(_, _, _, []) ->
+    ok;
+handle_term_index(Subdir, Tid, TTL, _IndexOn) ->
     enterdb_index_update:register_ttl(Subdir, Tid, TTL).
