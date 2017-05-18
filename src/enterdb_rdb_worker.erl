@@ -444,7 +444,8 @@ init(Args) ->
                 {ok, DB} ->
 		    Tid = ?TABLE_LOOKUP:lookup(Subdir),
 		    TTL = maps:get(ttl, Args, 0),
-		    handle_term_index(DB, Subdir, Tid, TTL),
+		    IndexOn = maps:get(index_on, Args),
+		    handle_term_index(DB, Subdir, Tid, TTL, IndexOn),
 		    ELR = #enterdb_ldb_resource{name = Shard, resource = DB},
                     ok = write_enterdb_ldb_resource(ELR),
 		    %%ReadOptionsRec = build_readoptions([{tailing,true}]),
@@ -973,7 +974,10 @@ get_cl_opts([], AccO, AccC)->
 get_empty_index(Mapper, IndexOn) ->
     [{Mapper:lookup(I), ""} || I <- IndexOn].
 
-handle_term_index(DB, ?TERM_INDEX_TABLE,  _, _) ->
+%% empty IndexOn
+handle_term_index(_, _, _, _, []) ->
+    ok;
+handle_term_index(DB, ?TERM_INDEX_TABLE,  _, _, _IndexOn) ->
     Fun =
 	fun(#enterdb_table{name = Name, map = Map}, Acc) ->
 	    Tid = ?TABLE_LOOKUP:lookup(Name),
@@ -987,5 +991,5 @@ handle_term_index(DB, ?TERM_INDEX_TABLE,  _, _) ->
 	{error, Reason} ->
 	    {error, Reason}
     end;
-handle_term_index(_, Subdir, Tid, TTL) ->
+handle_term_index(_, Subdir, Tid, TTL, _IndexOn) ->
     enterdb_index_update:register_ttl(Subdir, Tid, TTL).

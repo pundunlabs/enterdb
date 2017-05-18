@@ -38,7 +38,7 @@ stop(_State) ->
 -spec open_system_tables() ->
     ok | {error, Reason :: term()}.
 open_system_tables() ->
-    ?debug("Opening system tables..", []),
+    ?info("Opening system tables..", []),
     Fun =
 	fun(#enterdb_table{name = Name, map = Map}, Acc) ->
 	    case maps:get(system_table, Map, false) of

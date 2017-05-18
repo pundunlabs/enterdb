@@ -699,7 +699,7 @@ index_read(Tab, Column, Term) ->
 		    IxKey = #{tid => Tid, cid => Cid, term => Term},
 		    {ResL, _Bad} = rpc:multicall(Nodes, ?MODULE,
 						 do_index_read, [TD, IxKey]),
-		    {ok, unique_kvl(ResL)};
+		    unique_kvl(ResL);
 		_ ->
 		    {error, column_not_indexed}
 	    end;
@@ -758,8 +758,11 @@ remove_index(Tab, Fields) ->
     ok | {error, Reason :: term()}.
 update_index(Op, Tab, Fields) ->
     case enterdb_lib:get_tab_def(Tab) of
-	TD = #{type := rocksdb} ->
-	       enterdb_lib:update_table_attr(TD, {Op, Fields});
+	TD = #{type := rocksdb,
+	       nodes := Nodes} ->
+	    {ResL, _Bad} = rpc:multicall(Nodes, enterdb_lib,
+					 update_table_attr, [TD, {Op,Fields}]),
+	    enterdb_lib:check_error_response(lists:usort(ResL));
 	_ ->
 	    {error, "backend_not_supported"}
     end.

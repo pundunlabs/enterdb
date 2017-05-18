@@ -662,7 +662,7 @@ do_open_shard(#{shard := Shard, name := Name} = EDST) ->
     Dist = maps:get(distributed, EDST, false),
 
     TabMap = get_tab_def(Name),
-    SysT = maps:get(system_table,TabMap, false),
+    SysT = maps:get(system_table, TabMap, false),
 
     case {Dist, SysT} of
 	  {true, false} ->
@@ -850,6 +850,7 @@ open_table(Name, false) ->
 -spec do_open_table(Name :: string()) ->
     ok | {error, Reason :: term()}.
 do_open_table(Name) ->
+    ?info("Opening table: ~p", [Name]),
     case gb_hash:get_nodes(Name) of
 	{ok, Shards} ->
 	    LocalShards = find_local_shards(Shards),
@@ -1768,20 +1769,25 @@ get_index_terms(_Mapper, [], _Columns, Acc) ->
     ok.
 update_table_attr(#{name := Name,
 		    nodes := Nodes,
-		    index_on := IndexOn}, {add_index, Fields}) ->
+		    index_on := IndexOn} = Map, {add_index, Fields}) ->
     UpdatedIndexOn = add_index(IndexOn, Fields),
+    update_ttl_register(Name, ?TABLE_LOOKUP:lookup(Name), 
+			maps:get(ttl, Map, 0), IndexOn, UpdatedIndexOn),
     update_table_attr(Nodes, Name, index_on, UpdatedIndexOn);
 update_table_attr(#{name := Name,
 		    nodes := Nodes,
-		    index_on := IndexOn}, {remove_index, Fields}) ->
+		    index_on := IndexOn} = Map, {remove_index, Fields}) ->
     UpdatedIndexOn = remove_index(IndexOn, Fields),
+    update_ttl_register(Name, ?TABLE_LOOKUP:lookup(Name), 
+			maps:get(ttl, Map, 0), IndexOn, UpdatedIndexOn),
     update_table_attr(Nodes, Name, index_on, UpdatedIndexOn);
 update_table_attr(_TD, _) ->
     ok.
 
 update_table_attr(Nodes, Name, Attr, Val) ->
-    {[ok], BadNodes} = rpc:multicall(Nodes, ?MODULE, do_update_table_attr,
+    {ResL, BadNodes} = rpc:multicall(Nodes, ?MODULE, do_update_table_attr,
 				     [Name, {Attr, Val}]),
+    check_error_response(lists:usort(ResL)),
     ?debug("Bad nodes on update_table_attr: ~p", [BadNodes]),
     ok.
 
@@ -1823,3 +1829,10 @@ remove_index(List, [Field | Rest]) ->
     remove_index(lists:delete(Field, List), Rest);
 remove_index(List, []) ->
     List.
+
+update_ttl_register(Name, Tid, TTL, [], [_|_]) ->
+    enterdb_index_update:register_ttl(Name, Tid, TTL);
+update_ttl_register(Name, Tid, _TTL, [_|_], []) ->
+    enterdb_index_update:unregister_ttl(Name, Tid);
+update_ttl_register(_Name, _Tid, _TTL, _, _) ->
+    ok.

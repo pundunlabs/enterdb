@@ -149,7 +149,7 @@ prev(Pid) ->
 init([Shard, Caller, Mod]) ->
     process_flag(trap_exit, true),
     Mref = erlang:monitor(process, Caller),
-    case enterdb_ldb_worker:get_iterator(self(), Shard) of
+    case enterdb_rdb_worker:get_iterator(self(), Shard) of
 	{ok, It} ->
 	    {ok, #state{mod = Mod,
 			it = It,
