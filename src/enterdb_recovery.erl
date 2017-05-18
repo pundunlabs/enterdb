@@ -120,7 +120,6 @@ do_start_recovery(full, Node, Shard) ->
     gb_dyno_metadata:node_rem_prop(node(), {Shard, oos}),
     ?info("recovery done for shard ~p", [Shard]).
 
-
 update_local_shard(Node, Shard, need_full_recovery) ->
     copy_shard(Node, Shard);
 
@@ -130,19 +129,16 @@ update_local_shard(Node, Shard, Log) ->
 	done = loop_through_data(Node, Log, R),
 	ok = rpc:call(Node, enterdb_shard_recovery, stop, [{node(), Shard}])
    catch C:E ->
-	?info("recover data failed ~p ~p", [{C,E}, erlang:get_stacktrace()]),
-	?info("falling back to full recover of shard"),
+	?warning("recover data failed ~p ~p", [{C,E}, erlang:get_stacktrace()]),
+	?warning("falling back to full recover of shard"),
 	%% fallback to full recovery
 	copy_shard(Node, Shard)
     end.
 
 loop_through_data(_Node, _Log, eof) ->
-    ?info("got eof"),
     done;
 loop_through_data(Node, Log, {Cont, Data}) ->
-    ?info("remote data ~p", [Data]),
     R = [apply(M, F, A) || {M,F,A} <- Data],
-    ?info("applied log ~p", [R]),
     loop_through_data(Node, Log, rpc:call(Node, disk_log, chunk, [Log, Cont])).
 
 update_column_mapper(Node, Shard) ->
@@ -163,8 +159,8 @@ copy_shard(Node, Shard) ->
     ?info("about to restore from ~p", [RestorePath]),
     Res = enterdb_rdb_worker:restore_db(Shard, 0, RestorePath),
     ?info("restore_db returned ~p", [Res]),
-    %?info("deleting restore dir ~p", [RestorePath]),
-    %os:cmd("rm -rf " ++ RestorePath),
+    ?info("deleting restore dir ~p", [RestorePath]),
+    os:cmd("rm -rf " ++ RestorePath),
     ok.
 
 do_backup(Shard, Timeout) ->
@@ -191,138 +187,6 @@ copy_backup(Node, _Shard, RestorePath, RemotePath) ->
 	10*60000 ->
 	    {error, timeout}
     end.
-
-
-
-%% start_receiver() ->
-%%     {ok, LSocket} = gen_tcp:listen(0, [binary]),
-%%     Report = self(),
-%%     proc_lib:spawn_link(fun() -> {ok, Socket} = gen_tcp:accept(LSocket),
-%% 				 receive_loop(Socket, #{report_to => Report, status => need_name, buf => <<>>}) end),
-%%     {ok, _LocalPort} = inet:port(LSocket).
-%%
-%% receive_loop(_, State = #{rem_size := 0}) ->
-%%     untar_restore(State),
-%%     maps:get(report_to, State) ! ready_for_restore,
-%%     ok;
-%%
-%% receive_loop(_, State = #{rem_size := Size}) when Size < 0 ->
-%%     ?warning("this should not happen; remsize is negative"),
-%%     untar_restore(State),
-%%     maps:get(report_to, State) ! ready_for_restore,
-%%     ok;
-%%
-%% receive_loop(Socket, State0) ->
-%%     inet:setopts(Socket, [{active, once}]),
-%%     Buf = maps:get(buf, State0),
-%%     State = State0#{buf=><<>>},
-%%     receive
-%% 	{tcp, Socket, Data} ->
-%% 	   NewState = handle_received_data(<<Buf/binary, Data/binary>>, State),
-%% 	   gen_tcp:send(Socket, "ok"),
-%% 	   receive_loop(Socket, NewState);
-%% 	{Socket, Data} ->
-%% 	    NewState = handle_received_data(<<Buf/binary, Data/binary>>, State),
-%% 	    gen_tcp:send(Socket, "ok"),
-%% 	    receive_loop(Socket, NewState);
-%% 	M ->
-%% 	    ?info("received unknonw message ~p", [M]),
-%% 	    receive_loop(Socket, State)
-%%     after 120000 ->
-%% 	?warning("expected data.. stopping receiver"),
-%% 	error_cleanup(State)
-%%     end.
-%%
-%% handle_received_data(<<Size:32, Name0:Size/binary, Rest/binary>>, State = #{status := need_name}) ->
-%%     Name = binary_to_list(Name0),
-%%     {ok, Fd} = open_restore_file(Name),
-%%     State#{status => need_size_data, fd=>Fd, name => Name, buf => Rest};
-%%
-%% handle_received_data(<<Size:64, Data/binary>>, State = #{status := need_size_data}) ->
-%%     file:write(maps:get(fd, State), Data),
-%%     State#{status => need_data, rem_size => Size - size(Data)};
-%%
-%% handle_received_data(Data, State = #{status := need_data, rem_size := Size}) ->
-%%     file:write(maps:get(fd, State), Data),
-%%     RemSize = Size - size(Data),
-%%     State#{status => need_data, rem_size => RemSize};
-%%
-%% %% data not complete
-%% handle_received_data(Data, State) ->
-%%     State#{buf => Data}.
-%%
-%% open_restore_file(Name) ->
-%%     RestoreDir = enterdb_lib:get_path("restore_path"),
-%%     filelib:ensure_dir(RestoreDir ++ "/"),
-%%     FilePath = filename:join([RestoreDir, Name]),
-%%     ?info("creating restore file ~p", [FilePath]),
-%%     file:open(FilePath, [write]).
-%%
-%% error_cleanup(_State = #{name := Name, fd := Fd}) ->
-%%     file:close(Fd),
-%%     RestoreDir = enterdb_lib:get_path("restore_path"),
-%%     file:delete(RestoreDir ++ Name).
-%%
-%% %% TODO: stream tar and untar while receiveing data
-%% untar_restore(_State = #{name := Name, fd := Fd}) ->
-%%     file:close(Fd),
-%%     RestoreDir = enterdb_lib:get_path("restore_path"),
-%%     FilePath = filename:join([RestoreDir, Name]),
-%%     Cmd = "tar -C " ++ RestoreDir ++" -xzf " ++ FilePath,
-%%     ?info("about to untar received backup with cmd ~p", [Cmd]),
-%%     os:cmd(Cmd),
-%%     ?debug("cleaning up received tar ~p", [FilePath]),
-%%     file:delete(FilePath),
-%%     ok.
-%%
-%%
-%% send_backup(Shard, Hostname, Port) ->
-%%     BackupPath = enterdb_lib:get_path("backup_path"),
-%%     Name = maps:get(name, enterdb_lib:get_shard_def(Shard)),
-%%     BackupDir = filename:join([BackupPath, Name]),
-%%     FilePath = filename:join([BackupDir, Shard ++ ".tar.gz"]),
-%%     %% TODO: stream tar and untar while receiveing data; maybe untar directly over the shard?
-%%     Cmd = "tar -C " ++ BackupDir ++" -czf " ++ FilePath ++ " " ++ Shard,
-%%     ?info("about to tar backup before sending with cmd ~p", [Cmd]),
-%%     OSRes = os:cmd(Cmd),
-%%     ?info("send backup to ~p:~p", [Hostname, Port]),
-%%     start_send(FilePath, Hostname, Port).
-%%
-%% start_send(FilePath, Hostname, Port) ->
-%%     {ok, Socket} = gen_tcp:connect(Hostname, Port, []),
-%%     ?info("connected"),
-%%     FileSize = filelib:file_size(FilePath),
-%%     BaseName = list_to_binary(filename:basename(FilePath)),
-%%     gen_tcp:send(Socket, <<(size(BaseName)):32, BaseName/binary, FileSize:64>>),
-%%     {ok, Fd} = file:open(FilePath, [read, binary]),
-%%     loop_send_file(Fd, Socket).
-%% loop_send_file(Fd, Socket) ->
-%%     case file:read(Fd, 1024 * 1024) of
-%% 	{ok, Data} ->
-%% 	    gen_tcp:send(Socket, Data),
-%% 	    loop_send_file(Fd, Socket);
-%% 	eof ->
-%% 	    %% wait for other end to receive data
-%% 	    close_loop(Socket)
-%%     end.
-%%
-%% close_loop(Socket) ->
-%%     receive
-%% 	{tcp, Socket, Data} ->
-%% 	    ?info("received ~p", [Data]),
-%% 	    close_loop(Socket);
-%% 	{Socket, Data} ->
-%% 	    ?info("received ~p", [Data]),
-%% 	    close_loop(Socket);
-%% 	{tcp_closed, Socket} ->
-%% 	    ?info("tcp closed");
-%% 	M ->
-%% 	    ?info("unknown message closing: ~p", [M]),
-%% 	    done
-%%     after 40000 ->
-%% 	?info("timeout"),
-%% 	{error, timeout}
-%%     end.
 
 %%--------------------------------------------------------------------
 %% @doc
