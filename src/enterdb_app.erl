@@ -7,6 +7,7 @@
 
 -include_lib("gb_log/include/gb_log.hrl").
 -include("enterdb.hrl").
+-include("enterdb_internal.hrl").
 %% ===================================================================
 %% Application callbacks
 %% ===================================================================
@@ -19,6 +20,7 @@ start(_StartType, _StartArgs) ->
         ok ->
 	    case enterdb_sup:start_link() of
 		{ok, Pid} ->
+		    gb_reg:new(?TABLE_LOOKUP_STR),
 		    Res = open_system_tables(),
 		    ?debug("Open system tables -> ~p", [Res]),
 		    {ok, Pid};

@@ -138,7 +138,7 @@ update_local_shard(Node, Shard, Log) ->
 loop_through_data(_Node, _Log, eof) ->
     done;
 loop_through_data(Node, Log, {Cont, Data}) ->
-    R = [apply(M, F, A) || {M,F,A} <- Data],
+    _R = [apply(M, F, A) || {M,F,A} <- Data],
     loop_through_data(Node, Log, rpc:call(Node, disk_log, chunk, [Log, Cont])).
 
 update_column_mapper(Node, Shard) ->
