@@ -18,9 +18,9 @@ start(_StartType, _StartArgs) ->
         {timeout, RemainingTabs} ->
 	    {error, {not_exists, RemainingTabs}};
         ok ->
+	    gb_reg:new(?TABLE_LOOKUP_STR),
 	    case enterdb_sup:start_link() of
 		{ok, Pid} ->
-		    gb_reg:new(?TABLE_LOOKUP_STR),
 		    Res = open_system_tables(),
 		    ?debug("Open system tables -> ~p", [Res]),
 		    {ok, Pid};
