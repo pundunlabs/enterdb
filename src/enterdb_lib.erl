@@ -949,6 +949,7 @@ do_delete_table(Name) ->
     case gb_hash:get_nodes(Name) of
 	{ok, Shards} ->
 	    LocalShards = find_local_shards(Shards),
+	    ?info("Deleting ~p, Local Shards: ~p",[Name, LocalShards]),
 	    delete_shards(LocalShards),
 	    cleanup_table(Name);
 	undefined ->
@@ -972,7 +973,7 @@ delete_shards([]) ->
 delete_shard(Shard) ->
     try
 	SD = get_shard_def(Shard),
-	?info("Deleting ~p, SD: ~p",[Shard, SD]),
+	?debug("Deleting ~p, SD: ~p",[Shard, SD]),
 	mnesia:dirty_delete(enterdb_stab, Shard),
 	delete_shard_help(SD),
 	do_close_shard(SD)
