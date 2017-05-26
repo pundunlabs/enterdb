@@ -84,7 +84,7 @@ index(DB, WriteOptions, TableId,
     Tid = encode_unsigned(?TWO_BYTES, TableId),
     Cid = encode_unsigned(?TWO_BYTES, ColId),
     IndexKey = << Tid/binary, Cid/binary, Key/binary >>,
-    ok = rocksdb:index_merge(DB, WriteOptions, IndexKey, Term),
+    ok = rocksdb:index_merge(DB, WriteOptions, IndexKey, list_to_binary(Term)),
     index(DB, WriteOptions, TableId, Key, Rest);
 index(DB, WriteOptions, TableId, Key, [_ | Rest]) ->
     index(DB, WriteOptions, TableId, Key, Rest);
