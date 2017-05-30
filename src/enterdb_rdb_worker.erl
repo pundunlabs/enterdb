@@ -556,11 +556,14 @@ handle_call({get_iterator, Caller}, _From, State) ->
     MonMap = State#state.it_mon,
     NewMonMap = maps:put(Mref, Caller, MonMap),
     {reply, R, State#state{it_mon = NewMonMap}};
-handle_call({term_index, Term, Key}, _From, State) ->
+handle_call({term_index, Term, Key}, From, State) ->
     #state{db_ref = DB,
            writeoptions = WriteOptions} = State,
-    Reply = rocksdb:term_index(DB, WriteOptions, Term, Key),
-    {reply, Reply, State};
+    spawn(fun() ->
+	    Reply = rocksdb:term_index(DB, WriteOptions, Term, Key),
+	    gen_server:reply(From, Reply)
+	  end ),
+    {noreply, State};
 handle_call({add_index_ttl, Tid, TTL}, _From, State) ->
     #state{db_ref = DB} = State,
     Reply = rocksdb:add_index_ttl(DB, [{Tid, TTL}]),

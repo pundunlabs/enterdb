@@ -33,3 +33,5 @@ rebar.lock
 
 #other
 compile_commands.json
+.rebar3
+ebin
