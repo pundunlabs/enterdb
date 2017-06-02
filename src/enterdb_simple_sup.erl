@@ -1,3 +1,24 @@
+%%%===================================================================
+%% @copyright 2017 Pundun Labs AB
+%% Licensed under the Apache License, Version 2.0 (the "License");
+%% you may not use this file except in compliance with the License.
+%% You may obtain a copy of the License at
+%%
+%% http://www.apache.org/licenses/LICENSE-2.0
+%%
+%% Unless required by applicable law or agreed to in writing, software
+%% distributed under the License is distributed on an "AS IS" BASIS,
+%% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+%% implied.
+%% See the License for the specific language governing permissions and
+%% limitations under the License.
+%% -------------------------------------------------------------------
+%% @title
+%% @doc
+%% Module Description:
+%% @end
+%%%===================================================================
+
 -module(enterdb_simple_sup).
 -behaviour(supervisor).
 
@@ -7,18 +28,9 @@
 start_link(rocksdb) ->
     supervisor:start_link({local, enterdb_rdb_sup},
                           ?MODULE, [rocksdb]);
-start_link(leveldb) ->
-    supervisor:start_link({local, enterdb_ldb_sup},
-                          ?MODULE, [leveldb]);
-start_link(leveldb_wrp) ->
-    supervisor:start_link({local, enterdb_wrp_sup},
-                          ?MODULE, [leveldb_wrp]);
-start_link(leveldb_tda) ->
-    supervisor:start_link({local, enterdb_tda_sup},
-                          ?MODULE, [leveldb_tda]);
-start_link(leveldb_it) ->
+start_link(enterdb_it) ->
     supervisor:start_link({local, enterdb_it_sup},
-                          ?MODULE, [leveldb_it]);
+                          ?MODULE, [enterdb_it]);
 start_link(Type) ->
     error_logger:error_msg("Enterdb backend type: ~p not suported yet.~n",
                            [Type]),
@@ -35,39 +47,7 @@ init([rocksdb]) ->
 	      modules => [enterdb_rdb_worker]}
 	  ]
 	 }};
-init([leveldb]) ->
-    {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 5},
-          [
-	   #{id => enterdb_ldb_worker,
-	     start => {enterdb_ldb_worker, start_link, []},
-	     restart => transient,
-	     shutdown => 2000,
-	     type => worker,
-	     modules => [enterdb_ldb_worker]}
-	  ]
-	 }};
-init([leveldb_wrp]) ->
-    {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 5},
-          [#{id => enterdb_ldb_wrp,
-	     start => {enterdb_ldb_wrp, start_link, []},
-             restart => transient,
-	     shutdown => 2000,
-	     type => worker,
-	     modules => [enterdb_ldb_wrp]}
-	  ]
-	 }};
-init([leveldb_tda]) ->
-    {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 5},
-          [
-	   #{id => enterdb_ldb_tda,
-	     start => {enterdb_ldb_tda, start_link, []},
-             restart => transient,
-	     shutdown => 2000,
-	     type => worker,
-	     modules => [enterdb_ldb_tda]}
-	  ]
-	 }};
-init([leveldb_it]) ->
+init([enterdb_it]) ->
     {ok, {#{strategy => simple_one_for_one, intensity => 10, period => 5},
           [#{id => enterdb_it_worker,
 	     start => {enterdb_it_worker, start_link, []},
@@ -77,3 +57,4 @@ init([leveldb_it]) ->
 	     modules => [enterdb_it_worker]}
 	  ]
 	 }}.
+

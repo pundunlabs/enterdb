@@ -76,26 +76,8 @@ init([]) ->
 			shutdown => infinity,
 			type => supervisor,
 			modules => [enterdb_simple_sup]},
-    EdbLdbSup	    = #{id => enterdb_ldb_sup,
-			start => {enterdb_simple_sup, start_link,[leveldb]},
-			restart => permanent,
-			shutdown => infinity,
-			type => supervisor,
-			modules => [enterdb_simple_sup]},
-    EdbLdbWrpSup    = #{id => enterdb_wrp_sup,
-			start => {enterdb_simple_sup, start_link,[leveldb_wrp]},
-			restart => permanent,
-			shutdown => infinity,
-			type => supervisor,
-			modules => [enterdb_simple_sup]},
-    EdbLdbTdaSup    = #{id => enterdb_tda_sup,
-			start => {enterdb_simple_sup, start_link,[leveldb_tda]},
-			restart => permanent,
-			shutdown => infinity,
-			type => supervisor,
-			modules => [enterdb_simple_sup]},
-    EdbLitSup	    = #{id => enterdb_it_sup,
-			start => {enterdb_simple_sup, start_link,[leveldb_it]},
+    EdbItSup	    = #{id => enterdb_it_sup,
+			start => {enterdb_simple_sup, start_link,[enterdb_it]},
 			restart => permanent,
 			shutdown => infinity,
 			type => supervisor,
@@ -132,9 +114,9 @@ init([]) ->
 			 type => supervisor,
 			 modules => [enterdb_shard_recovery_sup]},
 
-    {ok, {SupFlags, [EdbNS, EdbRS, EdbPTS, EdbLitSup,
-		     EdbLdbWrpSup, EdbLdbTdaSup, EdbRdbSup, EdbLdbSup,
-		     EdbShardRecovery, EdbIndexUpdate]}}.
+    {ok, {SupFlags, [EdbNS, EdbRS, EdbPTS, EdbItSup,
+		     EdbRdbSup, EdbShardRecovery,
+		     EdbIndexUpdate]}}.
 
 %%%===================================================================
 %%% Internal functions

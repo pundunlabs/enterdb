@@ -265,9 +265,9 @@ approximate_size(Shard) ->
 %% Get an iterator resource from rocksdb backend.
 %% @end
 %%--------------------------------------------------------------------
--spec get_iterator(Caller :: pid(), Shard :: string()) ->
+-spec get_iterator(Shard :: string(), Caller :: pid()) ->
     {ok, It :: it()} | {error, Reason :: term()}.
-get_iterator(Caller, Shard) ->
+get_iterator(Shard, Caller) ->
     Pid = enterdb_ns:get(Shard),
     gen_server:call(Pid, {get_iterator, Caller}).
 
