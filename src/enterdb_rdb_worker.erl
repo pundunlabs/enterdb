@@ -760,7 +760,7 @@ terminate(_Reason, _State = #state{table_id = Tid,
 				   name = Name,
 				   shard = Shard,
 				   it_mon = MonMap}) ->
-    ?debug("Terminating ldb worker for shard: ~p", [Shard]),
+    ?debug("Terminating worker for shard: ~p", [Shard]),
     enterdb_index_update:unregister_ttl(Name, Tid),
     maps:fold(fun(Mref, Pid, _Acc) ->
 		erlang:demonitor(Mref, [flush]),
