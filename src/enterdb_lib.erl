@@ -313,9 +313,6 @@ when is_integer(RF), RF > 0 ->
 %% Table types
 verify_table_options([{type, Type}|Rest])
     when
-	 Type =:= leveldb;
-	 Type =:= leveldb_wrapped;
-	 Type =:= leveldb_tda;
 	 Type =:= rocksdb
     ->
 	verify_table_options(Rest);
@@ -329,27 +326,10 @@ verify_table_options([{data_model, DM}|Rest])
     ->
 	verify_table_options(Rest);
 
-%% Tda details for leveldb parts
-verify_table_options([{tda, Tda} | Rest]) ->
-    case verify_tda(Tda) of
-        ok ->
-	    verify_table_options(Rest);
-        {error, Reason} ->
-	    {error, Reason}
-    end;
 
 %% TTL details for rocksds parts
 verify_table_options([{ttl, TTL} | Rest]) when is_integer(TTL) ->
     verify_table_options(Rest);
-
-%% Wrapping details for leveldb parts
-verify_table_options([{wrapper, Wrapper} | Rest]) ->
-    case verify_wrapper(Wrapper) of
-        ok ->
-	    verify_table_options(Rest);
-        {error, Reason} ->
-	    {error, Reason}
-    end;
 
 %% comparator defines how the keys will be sorted
 verify_table_options([{comparator, C}|Rest]) when C == descending;
@@ -381,79 +361,6 @@ verify_table_options([Elem|_])->
 %% All Options OK
 verify_table_options([]) ->
     ok.
-
--spec verify_tda(Tda :: #{}) ->
-    ok | {error, Reason :: term()}.
-verify_tda(#{num_of_buckets := N,
-	     time_margin := TimeMargin,
-	     ts_field := TsField,
-	     precision := Unit} = Tda) when is_integer(N),
-					    N > 2,
-					    is_list(TsField) ->
-    case (valid_time_margin(TimeMargin) and valid_tda(Unit)) of
-	true -> ok;
-	false -> {error, {Tda, "invalid_option"}}
-    end;
-verify_tda(Tda) ->
-    {error, {Tda, "invalid_option"}}.
-
-
--spec verify_wrapper(Wrapper :: #{}) ->
-    ok | {error, Reason :: term()}.
-verify_wrapper(#{num_of_buckets := N} = Wrp) when is_integer(N), N > 2 ->
-    verify_wrpr_margin(Wrp);
-verify_wrapper(Elem)->
-    {error, {Elem, "invalid_option"}}.
-
--spec verify_wrpr_margin(Wrapper :: #{}) ->
-    ok | {error, Reason :: term()}.
-verify_wrpr_margin(#{time_margin := TimeMargin, size_margin := SizeMargin} = Wrp) ->
-    TM = valid_time_margin(TimeMargin),
-    SM = valid_size_margin(SizeMargin),
-    case (TM or SM) of
-	true -> ok;
-	false -> {error, {Wrp, "invalid_option"}}
-    end;
-verify_wrpr_margin(#{time_margin := TimeMargin} = Wrp) ->
-    case valid_time_margin(TimeMargin) of
-	true -> ok;
-	false -> {error, {Wrp, "invalid_option"}}
-    end;
-verify_wrpr_margin(#{size_margin := TimeMargin} = Wrp) ->
-    case valid_size_margin(TimeMargin) of
-	true -> ok;
-	false -> {error, {Wrp, "invalid_option"}}
-    end;
-verify_wrpr_margin(Wrp) ->
-    {error, {Wrp, "invalid_option"}}.
-
--spec valid_time_margin(TimeMargin :: time_margin()) ->
-    true | false.
-valid_time_margin({seconds, Time}) when is_integer(Time), Time > 0 ->
-    true;
-valid_time_margin({minutes, Time}) when is_integer(Time), Time > 0 ->
-    true;
-valid_time_margin({hours, Time}) when is_integer(Time), Time > 0 ->
-    true;
-valid_time_margin(_) ->
-    false.
-
--spec valid_size_margin(SizeMargin :: size_margin()) ->
-    true | false.
-valid_size_margin({megabytes, Size}) when is_integer(Size), Size > 0 ->
-    true;
-valid_size_margin(_) ->
-    false.
-
--spec valid_tda(SizeMargin :: time_unit()) ->
-    true | false.
-valid_tda(Unit) when Unit == second;
-		     Unit == millisecond;
-		     Unit == microsecond;
-		     Unit == nanosecond ->
-    true;
-valid_tda(_) ->
-    false.
 
 -spec check_if_table_exists(Name :: string()) ->
     ok | {error, Reason :: term()}.
@@ -617,27 +524,8 @@ do_create_shard(Shard, EDBT) ->
     write_shard_table(ESTAB),
     do_create_shard_type(ESTAB).
 
--spec do_create_shard_type(ESTAB :: #{}) -> ok.
-do_create_shard_type(#{type := leveldb} = ESTAB) ->
-    create_leveldb_shard(ESTAB);
-
-do_create_shard_type(#{type := leveldb_wrapped} = ESTAB) ->
-    create_leveldb_wrp_shard(ESTAB);
-
-do_create_shard_type(#{type := leveldb_tda} = ESTAB) ->
-    create_leveldb_tda_shard(ESTAB);
-
-do_create_shard_type(#{type := mem_leveldb} = ESTAB) ->
-    %% TODO: init LRU-Cache here as well
-    create_leveldb_shard(ESTAB);
-
-do_create_shard_type(#{type := mem_leveldb_wrapped} = ESTAB)->
-    %% TODO: init wrapping LRU-Cache here as well
-    create_leveldb_shard(ESTAB);
-
 do_create_shard_type(#{type := rocksdb} = ESTAB) ->
     create_rocksdb_shard(ESTAB).
-
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -678,15 +566,6 @@ do_open_shard(#{shard := Shard, name := Name} = EDST) ->
     end.
 
 %% Open existing shard locally
-do_open_shard_(#{type := leveldb} = EST) ->
-    open_leveldb_shard(EST);
-do_open_shard_(#{type := leveldb_wrapped} = EST) ->
-    open_leveldb_wrp_shard(EST);
-do_open_shard_(#{type := leveldb_tda} = EST) ->
-    open_leveldb_tda_shard(EST);
-do_open_shard_(#{type := mem_leveldb} = EST) ->
-    %% TODO: init LRU-Cache here as well
-    open_leveldb_shard(EST);
 do_open_shard_(#{type := rocksdb} = EDBT) ->
     open_rocksdb_shard(EDBT);
 do_open_shard_(Else)->
@@ -715,27 +594,11 @@ do_close_shard(#{shard := Shard} = ESTAB)->
     ok.
 do_close_shard(#{shard := Shard}, {error,no_ns_entry})->
     ?debug("Shard ~p, is already closed.",[Shard]);
-do_close_shard(#{type := leveldb}, Pid)->
-    supervisor:terminate_child(enterdb_ldb_sup, Pid);
-do_close_shard(#{shard := Shard, type := leveldb_wrapped}, Pid)->
-    enterdb_ldb_wrp:close_shard(Shard),
-    supervisor:terminate_child(enterdb_wrp_sup, Pid);
-do_close_shard(#{shard := Shard, type := leveldb_tda}, Pid)->
-    enterdb_ldb_tda:close_shard(Shard),
-    supervisor:terminate_child(enterdb_tda_sup, Pid);
 do_close_shard(#{type := rocksdb}, Pid)->
     supervisor:terminate_child(enterdb_rdb_sup, Pid);
 do_close_shard(Else, _)->
     ?debug("do_close_shard ~p not supported", [Else]),
     {error, "type_not_supported"}.
-
-%% create leveldb shard
-%% TODO: move out to leveldb specific lib.
--spec create_leveldb_shard(ESTAB :: #{}) -> ok.
-create_leveldb_shard(ESTAB) ->
-    ChildArgs = get_ldb_worker_args(create, ESTAB),
-    {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
-    ok.
 
 %% create rocksdb shard
 %% TODO: move out to rocksdb specific lib.
@@ -745,52 +608,12 @@ create_rocksdb_shard(ESTAB) ->
     {ok, _Pid} = supervisor:start_child(enterdb_rdb_sup, [ChildArgs]),
     ok.
 
-%% open leveldb shard
-%% TODO: move out to leveldb specific lib.
--spec open_leveldb_shard(ESTAB :: #{}) -> ok.
-open_leveldb_shard(ESTAB) ->
-    ChildArgs = get_ldb_worker_args(open, ESTAB),
-    {ok, _Pid} = supervisor:start_child(enterdb_ldb_sup, [ChildArgs]),
-    ok.
-
 %% open rocksdb shard
 %% TODO: move out to rocksdb specific lib.
 -spec open_rocksdb_shard(ESTAB :: #{}) -> ok.
 open_rocksdb_shard(ESTAB) ->
     ChildArgs = get_rdb_worker_args(open, ESTAB),
     {ok, _Pid} = supervisor:start_child(enterdb_rdb_sup, [ChildArgs]),
-    ok.
-
--spec create_leveldb_wrp_shard(ESTAB :: #{}) ->
-    ok | {error, Reason :: term()}.
-create_leveldb_wrp_shard(#{wrapper := _} = ESTAB) ->
-    Args = [create, ESTAB],
-    {ok, _Pid} = supervisor:start_child(enterdb_wrp_sup, [Args]),
-    ok;
-create_leveldb_wrp_shard(_) ->
-    {error, "wrapper_not_defined"}.
-
--spec open_leveldb_wrp_shard(ESTAB :: #{}) ->
-    ok.
-open_leveldb_wrp_shard(ESTAB) ->
-    Args = [open, ESTAB],
-    {ok, _Pid} = supervisor:start_child(enterdb_wrp_sup, [Args]),
-    ok.
-
--spec create_leveldb_tda_shard(ESTAB :: #{}) ->
-    ok | {error, Reason :: term()}.
-create_leveldb_tda_shard(#{tda := _} = ESTAB) ->
-    Args = [create, ESTAB],
-    {ok, _Pid} = supervisor:start_child(enterdb_tda_sup, [Args]),
-    ok;
-create_leveldb_tda_shard(_) ->
-    {error, "tda_not_defined"}.
-
--spec open_leveldb_tda_shard(ESTAB :: #{}) ->
-    ok.
-open_leveldb_tda_shard(ESTAB) ->
-    Args = [open, ESTAB],
-    {ok, _Pid} = supervisor:start_child(enterdb_tda_sup, [Args]),
     ok.
 
 %%--------------------------------------------------------------------
@@ -982,15 +805,6 @@ delete_shard(Shard) ->
     end.
 
 %% add delete per type
-delete_shard_help(ESTAB = #{type := leveldb}) ->
-    Args = get_ldb_worker_args(delete, ESTAB),
-    enterdb_ldb_worker:delete_db(Args);
-delete_shard_help(ESTAB = #{type := leveldb_wrapped}) ->
-    Args = get_ldb_worker_args(delete, ESTAB),
-    enterdb_ldb_wrp:delete_shard(Args);
-delete_shard_help(ESTAB = #{type := leveldb_tda}) ->
-    Args = get_ldb_worker_args(delete, ESTAB),
-    enterdb_ldb_tda:delete_shard(Args);
 delete_shard_help(ESTAB = #{type := rocksdb}) ->
     Args = get_rdb_worker_args(delete, ESTAB),
     enterdb_rdb_worker:delete_db(Args);
@@ -1031,11 +845,6 @@ read_range_on_shards({ok, Shards},
     Dir = comparator_to_dir(Comp),
     {CallbackMod, TrailingArgs} =
 	case Type of
-	    leveldb -> {enterdb_ldb_worker, []};
-	    mem_leveldb -> {enterdb_ldb_worker, []};
-	    leveldb_wrapped -> {enterdb_ldb_wrp, [Dir]};
-	    leveldb_tda -> {enterdb_ldb_tda, [Dir]};
-	    mem_leveldb_wrapped -> {enterdb_ldb_worker, []};
 	    rocksdb -> {enterdb_rdb_worker, []}
 	end,
     BaseArgs = [RangeDB, Chunk | TrailingArgs],
@@ -1075,11 +884,11 @@ unzip_range_result([], Acc) ->
 			 ContKeys :: [binary()]) ->
     {ok, KVL :: [kvp()]}.
 merge_and_cut_kvls(Dir, _KeyDef, KVLs, []) ->
-   {ok, KVL} = leveldb_utils:merge_sorted_kvls(Dir, KVLs),
+   {ok, KVL} = enterdb_utils:merge_sorted_kvls(Dir, KVLs),
    {ok, KVL, complete};
 merge_and_cut_kvls(Dir, KeyDef, KVLs, ContKeys) ->
     {Cont, _} = ContKVP = reduce_cont(Dir, ContKeys),
-    {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls(Dir, [[ContKVP]|KVLs]),
+    {ok, MergedKVL} = enterdb_utils:merge_sorted_kvls(Dir, [[ContKVP]|KVLs]),
     ContKey =  make_app_key(KeyDef, Cont),
     {ok, cut_kvl_at(Cont, MergedKVL), ContKey}.
 
@@ -1088,7 +897,7 @@ merge_and_cut_kvls(Dir, KeyDef, KVLs, ContKeys) ->
     {key(), binary()}.
 reduce_cont(Dir, ContKeys) ->
     SortableKVPs = [{K, <<>>} || K <- ContKeys],
-    {ok, Sorted} = leveldb_utils:sort_kvl( Dir, SortableKVPs ),
+    {ok, Sorted} = enterdb_utils:sort_kvl( Dir, SortableKVPs ),
     hd(Sorted).
 
 -spec cut_kvl_at(Cont :: binary(), KVL :: [kvp()]) ->
@@ -1127,11 +936,6 @@ read_range_n_on_shards({ok, Shards},
     Dir = comparator_to_dir(Comp),
     {CallbackMod, TrailingArgs} =
 	case Type of
-	    leveldb -> {enterdb_ldb_worker, []};
-	    mem_leveldb -> {enterdb_ldb_worker, []};
-	    leveldb_wrapped -> {enterdb_ldb_wrp, [Dir]};
-	    leveldb_tda -> {enterdb_ldb_tda, [Dir]};
-	    mem_leveldb_wrapped -> {enterdb_ldb_worker, []};
 	    rocksdb -> {enterdb_rdb_worker, []}
 	end,
     %%To be more efficient we can read less number of records from each shard.
@@ -1142,7 +946,7 @@ read_range_n_on_shards({ok, Shards},
     Req = {CallbackMod, read_range_n_binary, BaseArgs},
     ResL = map_shards(Dist, Req, Shards),
     KVLs = [begin {ok, R} = Res, R end || Res <- ResL],
-    {ok, MergedKVL} = leveldb_utils:merge_sorted_kvls(Dir, KVLs),
+    {ok, MergedKVL} = enterdb_utils:merge_sorted_kvls(Dir, KVLs),
     N_KVP = lists:sublist(MergedKVL, N),
     make_app_kvp(Tab, N_KVP).
 
@@ -1155,16 +959,6 @@ read_range_n_on_shards({ok, Shards},
 		       Shards :: shards(),
 		       Dist :: boolean()) ->
     {ok, Size :: pos_integer()} | {error, Reason :: term()}.
-approximate_size(leveldb, Shards, true) ->
-    Req = {enterdb_ldb_worker, approximate_size, []},
-    Sizes = ?dyno:map_shards_seq(Req, Shards),
-    ?debug("Sizes of all shards: ~p", [Sizes]),
-    sum_up_sizes(Sizes, 0);
-approximate_size(leveldb, Shards, false) ->
-    Req = {enterdb_ldb_worker, approximate_size, []},
-    Sizes = pmap(Req, Shards),
-    ?debug("Sizes of all shards: ~p", [Sizes]),
-    sum_up_sizes(Sizes, 0);
 approximate_size(rocksdb, Shards, true)  ->
     Req = {enterdb_rdb_worker, approximate_size, []},
     Sizes = ?dyno:map_shards_seq(Req, Shards),

@@ -67,7 +67,7 @@ start(Args) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Start a simple worker, get a level db iterator, enter
+%% Start a simple worker, get a db iterator, enter
 %% server loop and retrun server pid.
 %% @end
 %%--------------------------------------------------------------------
@@ -83,7 +83,7 @@ init_iterator(Shard, Caller, Mod) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Applies {leveldb, first, [It]} where It = State#state.it
+%% Applies first to iterator
 %% @end
 %%--------------------------------------------------------------------
 -spec first(Pid :: pid()) ->
@@ -93,7 +93,7 @@ first(Pid) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Applies {leveldb, last, [It]} where It = State#state.it
+%% Applies last to iterator
 %% @end
 %%--------------------------------------------------------------------
 -spec last(Pid :: pid()) ->
@@ -103,7 +103,7 @@ last(Pid) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Applies {leveldb, seek, [It, Key]} where It = State#state.it
+%% Applies seek to iterator
 %% @end
 %%--------------------------------------------------------------------
 -spec seek(Pid :: pid(), Key :: term()) ->
@@ -113,7 +113,7 @@ seek(Pid, Key) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Applies {leveldb, next, [It]} where It = State#state.it
+%% Applies next to iterator
 %% @end
 %%--------------------------------------------------------------------
 -spec next(Pid :: pid()) ->
@@ -123,7 +123,7 @@ next(Pid) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Applies {leveldb, prev, [It]} where It = State#state.it
+%% Applies prev to iterator
 %% @end
 %%--------------------------------------------------------------------
 -spec prev(Pid :: pid()) ->
@@ -149,7 +149,7 @@ prev(Pid) ->
 init([Shard, Caller, Mod]) ->
     process_flag(trap_exit, true),
     Mref = erlang:monitor(process, Caller),
-    case enterdb_rdb_worker:get_iterator(self(), Shard) of
+    case get_iterator(Mod, Shard, self()) of
 	{ok, It} ->
 	    {ok, #state{mod = Mod,
 			it = It,
@@ -252,3 +252,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+-spec get_iterator(Type :: atom(),
+		   Shard :: string(),
+		   Caller :: pid()) ->
+    {ok, It :: it()} | {error, Reason :: term()}.
+get_iterator(rocksdb, Shard, Caller) ->
+    enterdb_rdb_worker:get_iterator(Shard, Caller).
+

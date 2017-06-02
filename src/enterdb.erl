@@ -205,32 +205,12 @@ do_read(#{ready_status := not_ready}, _, _, _) ->
 do_read(#{ready_status := recovering}, _, _, _) ->
     {error, recovering};
 %% internal read based on table / shard type
-do_read(_TD = #{type := leveldb}, ShardTab, _Key, DBKey) ->
-    enterdb_ldb_worker:read(ShardTab, DBKey);
-do_read(_TD = #{type := leveldb_wrapped}, ShardTab, _Key, DBKey) ->
-    enterdb_ldb_wrp:read(ShardTab, DBKey);
-do_read(_TD = #{type := leveldb_tda,
-		tda := Tda}, ShardTab, Key, DBKey) ->
-    enterdb_ldb_tda:read(ShardTab, Tda, Key, DBKey);
 do_read(_TD = #{type := rocksdb}, ShardTab, _Key, DBKey) ->
     enterdb_rdb_worker:read(ShardTab, DBKey);
 do_read(_TD = #{type := Type}, _ShardTab, _Key, _DBKey) ->
     {error, {"read_not_supported", Type}};
 do_read({error, R}, _, _, _) ->
     {error, R}.
-
-do_read_from_disk(TD = #{type := Type}, ShardTab, _Key, DBKey)
-    when Type =:= mem_leveldb ->
-    enterdb_ldb_worker:read(TD, ShardTab, DBKey);
-
-do_read_from_disk(TD = #{type := Type}, ShardTab, _Key, DBKey)
-    when Type =:= mem_leveldb_wrapped ->
-    enterdb_ldb_wrp:read(TD, ShardTab, DBKey);
-
-do_read_from_disk(#{type := mem_leveldb_tda,
-		    tda := Tda},
-		  ShardTab, Key, DBKey) ->
-    enterdb_ldb_tda:read(ShardTab, Tda, Key, DBKey);
 
 %% Use ordinary read for table type
 do_read_from_disk(TD, ShardTab, Key, DBKey) ->
@@ -309,17 +289,6 @@ do_write(#{ready_status := recovering}, Shard, Key,
 						 DBColumns, IndexTerms]}),
     {error, {processed, recovering}};
 
-%% Type leveldb_wrapped
-do_write(#{type := leveldb_wrapped, wrapper := Wrapper},
-	 ShardTab, _Key, DBKey, DBColumns, _) ->
-    enterdb_ldb_wrp:write(ShardTab, Wrapper, DBKey, DBColumns);
-%% Type leveldb_tda
-do_write(#{type := leveldb_tda, tda := Tda},
-	 ShardTab, Key, DBKey, DBColumns, _) ->
-    enterdb_ldb_tda:write(ShardTab, Tda, Key, DBKey, DBColumns);
-%% Type leveldb
-do_write(#{type := leveldb}, ShardTab, _Key, DBKey, DBColumns, _IndexTerms) ->
-    enterdb_ldb_worker:write(ShardTab, DBKey, DBColumns);
 do_write(#{type := rocksdb}, ShardTab, _Key, DBKey, DBColumns, IndexTerms) ->
     enterdb_rdb_worker:write(ShardTab, DBKey, DBColumns, IndexTerms);
 do_write({error, R}, _, _Key, _DBKey, _DBColumns, _IndexTerms) ->
@@ -392,20 +361,6 @@ do_update(#{ready_status := recovering}, Shard, Key, DBKey, Op) ->
 					     {?MODULE, do_update_force,
 						[Shard, Key, DBKey, Op]}),
     {error, {processed, recovering}};
-do_update(#{type := leveldb_wrapped,
-	    data_model := DataModel,
-	    column_mapper := Mapper,
-	    distributed := Dist}, Shard, _Key, DBKey, Op) ->
-    enterdb_ldb_wrp:update(Shard, DBKey, Op, DataModel, Mapper, Dist);
-do_update(TD = #{type := leveldb_tda}, _, Key, DBKey, Op) ->
-    enterdb_ldb_tda:update(TD, Key, DBKey, Op);
-do_update(#{type := leveldb,
-	    data_model := DataModel,
-	    column_mapper := Mapper,
-	    distributed := Dist}, Shard, _Key, DBKey, Op) ->
-    enterdb_ldb_worker:update(Shard, DBKey, Op, DataModel, Mapper, Dist);
-do_update(_TD = #{type := mem_leveldb}, _Tab, _Key, _DBKey, _Op) ->
-    ok;
 do_update(#{type := rocksdb,
 	    data_model := DataModel,
 	    column_mapper := Mapper,
@@ -459,12 +414,6 @@ do_delete(#{ready_status := recovering}, Shard, Key, DBKey) ->
 						[Shard, Key, DBKey]}),
     {error, {processed, recovering}};
 %% internal read based on table / shard type
-do_delete(_TD = #{type := leveldb}, ShardTab, _Key, DBKey) ->
-    enterdb_ldb_worker:delete(ShardTab, DBKey);
-do_delete(_TD = #{type := leveldb_wrapped}, ShardTab, _Key, DBKey) ->
-    enterdb_ldb_wrp:delete(ShardTab, DBKey);
-do_delete(_TD = #{type := leveldb_tda, tda := Tda}, ShardTab, Key, DBKey) ->
-    enterdb_ldb_tda:delete(ShardTab, Tda, Key, DBKey);
 do_delete(_TD = #{type := rocksdb}, ShardTab, _Key, DBKey) ->
     enterdb_rdb_worker:delete(ShardTab, DBKey);
 do_delete(_TD = #{type := Type}, _ShardTab, _Key, _DBKey) ->
