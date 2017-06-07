@@ -30,7 +30,7 @@
 -export([get_pid/0]).
 
 -export([index/5,
-	 term_index_update/5,
+	 term_index_remove/4,
 	 index_read/2]).
 
 -export([register_ttl/3,
@@ -83,32 +83,25 @@ index(DB, WriteOptions, TableId,
       Key, [{ColId, Term} | Rest]) when is_integer(ColId)->
     Tid = encode_unsigned(?TWO_BYTES, TableId),
     Cid = encode_unsigned(?TWO_BYTES, ColId),
-    IndexKey = << Tid/binary, Cid/binary, Key/binary >>,
-    ok = rocksdb:index_merge(DB, WriteOptions, IndexKey, list_to_binary(Term)),
+    term_index_update(?ADD, Tid, Cid, Key, Term),
     index(DB, WriteOptions, TableId, Key, Rest);
 index(DB, WriteOptions, TableId, Key, [_ | Rest]) ->
     index(DB, WriteOptions, TableId, Key, Rest);
 index(_DB, _WriteOptions, _TableId, _Key, []) ->
     ok.
 
--spec term_index_update(Tid :: integer(),
+-spec term_index_remove(Tid :: integer(),
 			Cid :: integer(),
 			Key :: binary(),
-			NewTerm :: string(),
-			OldTerm :: string()) ->
+			Terms :: string()) ->
     ok.
-term_index_update(Tid, Cid, Key, NewTerm, OldTerm) ->
-    term_index_update_(?ADD, Tid, Cid, Key, NewTerm),
-    term_index_update_(?REM, Tid, Cid, Key, OldTerm).
-
-term_index_update_(_, _, _, _, undefined) ->
+term_index_remove(_Tid, _Cid, _Key, undefined) ->
     ok;
-term_index_update_(Op, Tid, Cid, Key, Terms) ->
-    Tokens = string:tokens(Terms, " "),
-    [term_index_update__(Op, Tid, Cid, Key, T) || T <- Tokens].
+term_index_remove(Tid, Cid, Key, Terms) ->
+    term_index_update(?REM, Tid, Cid, Key, Terms).
 
-term_index_update__(Op, Tid, Cid, Key, Term) ->
-    {ok, DBKey, DBHashKey} = make_index_key(Tid, Cid, Term),
+term_index_update(Op, Tid, Cid, Key, Terms) ->
+    {ok, DBKey, DBHashKey} = make_index_key(Tid, Cid, Terms),
     {ok, Shard} = gb_hash:get_local_node(?TERM_INDEX_TABLE, DBHashKey),
     enterdb_rdb_worker:term_index(Shard, DBKey, encode_key(Op, Key)).
 
@@ -217,17 +210,12 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({index_update, _, Term, Term}, State) ->
-    ?debug("~p received same term: ~p", [?SERVER, Term]),
-    %%io:format("~p:~p, received same term: ~p~n", [?MODULE, ?LINE, Term]),
-    {noreply, State};
-handle_info({index_update,
+handle_info({remove_term,
 	    << Tid:?TWO_BYTES/big-unsigned-integer-unit:8,
 	    Cid:?TWO_BYTES/big-unsigned-integer-unit:8,
-	    Key/binary >>, NewTerm, OldTerm}, State) ->
-    ?debug("~p received term change: ~p -> ~p", [?SERVER, OldTerm, NewTerm]),
-    %%io:format("~p:~p, received term change: ~s -> ~s~n", [?MODULE, ?LINE, OldTerm, NewTerm]),
-    spawn(?MODULE, term_index_update, [Tid, Cid, Key, NewTerm, OldTerm]),
+	    Key/binary >>, Terms}, State) ->
+    ?debug("~p received remove_term: ~p -> ~p", [?SERVER, Terms]),
+    spawn(?MODULE, term_index_remove, [Tid, Cid, Key, Terms]),
     {noreply, State};
 handle_info(Info, State) ->
     ?debug("~p received unhandled info: ~p", [?SERVER, Info]),
@@ -262,13 +250,13 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 make_index_key(#{tid := Tid, cid := Cid, term := Term}) ->
-    make_index_key(Tid, Cid, Term).
-
-make_index_key(Tid, Cid, Term) ->
     TidBin = encode_unsigned(?TWO_BYTES, Tid),
     CidBin = encode_unsigned(?TWO_BYTES, Cid),
+    make_index_key(TidBin, CidBin, Term).
+
+make_index_key(Tid, Cid, Term) ->
     TermBin = unicode:characters_to_binary(Term, unicode, utf8),
-    HashKey = << TidBin/binary, CidBin/binary >>,
+    HashKey = << Tid/binary, Cid/binary >>,
     {ok, << HashKey/binary, TermBin/binary >>, HashKey}.
 
 encode_key(Op, Key) ->
