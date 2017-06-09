@@ -951,9 +951,9 @@ make_options(Name, Args) ->
     do_make_options(Name, [{"ttl", TTL} | OptionsPL]).
 
 do_make_options(?TERM_INDEX_TABLE, OptionsPL)->
-    {ok, Opts, COpts} = do_make_options("", OptionsPL),
+    {ok, Opts, COpts} = do_make_options("", [{"allow_concurrent_memtable_write", "false"} | OptionsPL]),
     {ok, KVL} = get_ttl_registry(),
-    {ok, Opts, [{"term_index", KVL} | COpts]};
+    {ok, Opts,[{"term_index", KVL} | COpts]};
 do_make_options(_, OptionsPL)->
     {ok, Rest, CLOpts} = get_cl_opts(OptionsPL),
     {ok, Opts} = rocksdb:options(Rest),
@@ -970,6 +970,8 @@ get_cl_opts([{"ttl", T} | Rest], AccO, AccC) ->
     end;
 get_cl_opts([{"comparator", C} | Rest], AccO, AccC) ->
     get_cl_opts(Rest, AccO, [{"comparator", C} | AccC]);
+get_cl_opts([{"allow_concurrent_memtable_write", B} | Rest], AccO, AccC) ->
+    get_cl_opts(Rest, [{"allow_concurrent_memtable_write", B} | AccO], AccC);
 get_cl_opts([O | Rest], AccO, AccC)->
     get_cl_opts(Rest, [O | AccO], AccC);
 get_cl_opts([], AccO, AccC)->
