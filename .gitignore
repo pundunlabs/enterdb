@@ -35,3 +35,6 @@ rebar.lock
 compile_commands.json
 .rebar3
 ebin
+*.d
+*.o
+*.so
