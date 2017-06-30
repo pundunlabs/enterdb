@@ -43,7 +43,7 @@
 	 approximate_sizes/2,
 	 approximate_size/1,
 	 get_iterator/2,
-	 term_index/3,
+	 term_index/4,
 	 add_index_ttl/3,
 	 remove_index_ttl/2]).
 
@@ -277,12 +277,13 @@ get_iterator(Shard, Caller) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec term_index(Shard :: string(),
-		 Term :: binary(),
+		 TidCid :: binary(),
+		 Terms :: [unicode:charlist()],
 		 Key :: binary()) ->
     ok | {error, Reason :: term()}.
-term_index(Shard, Term, Key) ->
+term_index(Shard, TidCid, Terms, Key) ->
     Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, {term_index, Term, Key}).
+    gen_server:call(Pid, {term_index, TidCid, Terms, Key}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -556,11 +557,11 @@ handle_call({get_iterator, Caller}, _From, State) ->
     MonMap = State#state.it_mon,
     NewMonMap = maps:put(Mref, Caller, MonMap),
     {reply, R, State#state{it_mon = NewMonMap}};
-handle_call({term_index, Term, Key}, From, State) ->
+handle_call({term_index, TidCid, Terms, Key}, From, State) ->
     #state{db_ref = DB,
            writeoptions = WriteOptions} = State,
     spawn(fun() ->
-	    Reply = rocksdb:term_index(DB, WriteOptions, Term, Key),
+	    Reply = rocksdb:term_index(DB, WriteOptions, TidCid, Terms, Key),
 	    gen_server:reply(From, Reply)
 	  end ),
     {noreply, State};

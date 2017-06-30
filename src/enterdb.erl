@@ -684,7 +684,7 @@ do_index_read(#{name := Tab,
 %% @end
 %%--------------------------------------------------------------------
 -spec add_index(Tab :: string(),
-	        Fields :: [string()]) ->
+	        Fields :: [string() | {string(), index_options()}]) ->
     ok | {error, Reason :: term()}.
 add_index(Tab, Fields) ->
     update_index(add_index, Tab, Fields).
@@ -702,7 +702,7 @@ remove_index(Tab, Fields) ->
 
 -spec update_index(Op :: add_index | remove_index,
 		   Tab :: string(),
-		   Fields :: [string()]) ->
+		   Fields :: [string() | {string, index_options()}]) ->
     ok | {error, Reason :: term()}.
 update_index(Op, Tab, Fields) ->
     case enterdb_lib:get_tab_def(Tab) of

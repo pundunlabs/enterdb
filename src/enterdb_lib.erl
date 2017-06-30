@@ -1546,13 +1546,14 @@ cmp_str(ascending) -> "ascending".
 get_index_terms(Mapper, IndexOn, Columns) ->
     get_index_terms(Mapper, IndexOn, Columns, []).
 
-get_index_terms(Mapper, [Col | Rest], Columns, Acc) ->
-    Ref = Mapper:lookup(Col),
+get_index_terms(Mapper, [{Col, IndexOptions} | Rest], Columns, Acc) ->
     case lists:keyfind(Col, 1, Columns) of
-	{_, Value} ->
-	    get_index_terms(Mapper, Rest, Columns, [{Ref, Value} | Acc]);
-	false ->
-	    get_index_terms(Mapper, Rest, Columns, [{Ref, ""} | Acc])
+	{_, Value} when is_list(Value)->
+	    Terms = make_index_terms(Value, IndexOptions),
+	    Ref = Mapper:lookup(Col),
+	    get_index_terms(Mapper, Rest, Columns, [{Ref, Terms} | Acc]);
+	_ ->
+	    get_index_terms(Mapper, Rest, Columns, Acc)
     end;
 get_index_terms(_Mapper, [], _Columns, Acc) ->
     Acc.
@@ -1560,7 +1561,9 @@ get_index_terms(_Mapper, [], _Columns, Acc) ->
 -spec update_table_attr(TD :: map(),
 			AV :: {Attr :: add_index |
 				       remove_index,
-			       Fields :: [string()]} | term()) ->
+			       Fields :: [string() |
+					  {string(), index_options()}]} |
+			      term()) ->
     ok.
 update_table_attr(#{name := Name,
 		    nodes := Nodes,
@@ -1610,18 +1613,22 @@ do_update_table_attr(Name, {Attr, Val}) ->
 	    ok
     end.
 
-add_index(List, [Field | Rest]) ->
+add_index(List, [{Field, IndexOptions} | Rest]) ->
     case io_lib:printable_unicode_list(Field) of
 	true ->
-	    add_index([Field | List], Rest);
+	    add_index([{Field, IndexOptions} | List], Rest);
 	false ->
 	    add_index(List, Rest)
     end;
+add_index(List, [Field | Rest]) ->
+    add_index(List, [{Field, undefined} | Rest]);
 add_index(List, []) ->
     lists:usort(List).
 
+remove_index(List, [{Field, _} | Rest]) ->
+    remove_index(lists:keydelete(Field, 1, List), Rest);
 remove_index(List, [Field | Rest]) ->
-    remove_index(lists:delete(Field, List), Rest);
+    remove_index(lists:keydelete(Field, 1, List), Rest);
 remove_index(List, []) ->
     List.
 
@@ -1631,3 +1638,11 @@ update_ttl_register(Name, Tid, _TTL, [_|_], []) ->
     enterdb_index_update:unregister_ttl(Name, Tid);
 update_ttl_register(_Name, _Tid, _TTL, _, _) ->
     ok.
+
+-spec make_index_terms(Value :: string(),
+		       IndexOptions :: index_options()) ->
+    [unicode:charlist()].
+make_index_terms(String, undefined) ->
+    [String];
+make_index_terms(String, IndexOptions) ->
+    term_prep:analyze(IndexOptions, String).

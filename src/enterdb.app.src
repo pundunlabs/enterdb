@@ -3,6 +3,7 @@
   {vsn, "0.1"},
   {modules, []},
   {registered, []},
+  {included_applications, [term_prep]},
   {applications, [kernel, stdlib, gb_conf, gb_log, gb_hash, gb_reg]},
   {mod, {enterdb_app,[]}}
  ]}.

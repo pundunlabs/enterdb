@@ -105,6 +105,36 @@
 
 -type it() :: binary().
 
+-type char_filter() :: nfc | nfd | nfkc | nfkd |
+		       {M :: module(), F :: atom(), A :: [any()]} |
+		       undefined.
+
+-type tokenizer() :: unicode_word_boundaries |
+		     {M :: module(), F :: atom(), A :: [any()]} |
+		     undefined.
+
+-type token_transform() :: lowercase | uppercase | casefold |
+			   {M :: module(), F :: atom(), A :: [any()]} |
+			   undefined.
+
+-type token_add() :: {M :: module(), F :: atom(), A :: [any()]} |
+		     undefined.
+
+-type token_delete() :: english_stopwords |
+			lucene_stopwords |
+			wikipages_stopwords |
+			{M :: module(), F :: atom(), A :: [any()]} |
+			undefined.
+
+-type token_filter() :: #{transform := token_transform(),
+			add := token_add() | [token_add()],
+			delete := token_delete() | [token_delete()]} |
+			undefined.
+
+-type index_options() :: #{char_filter := char_filter(),
+			 tokenizer := tokenizer(),
+			 token_filter := token_filter()}.
+
 -record(enterdb_table, {name :: string(),
 			map :: #{}}).
 

@@ -80,18 +80,18 @@ get_pid() ->
 	    Terms :: [{integer(), string()}]) ->
     ok.
 index(DB, WriteOptions, TableId,
-      Key, [{ColId, Term} | Rest]) when is_integer(ColId)->
+      Key, [{ColId, Terms} | Rest]) when is_integer(ColId)->
     Tid = encode_unsigned(?TWO_BYTES, TableId),
     Cid = encode_unsigned(?TWO_BYTES, ColId),
-    term_index_update(?ADD, Tid, Cid, Key, Term),
+    term_index_update(?ADD, Tid, Cid, Key, Terms),
     index(DB, WriteOptions, TableId, Key, Rest);
 index(DB, WriteOptions, TableId, Key, [_ | Rest]) ->
     index(DB, WriteOptions, TableId, Key, Rest);
 index(_DB, _WriteOptions, _TableId, _Key, []) ->
     ok.
 
--spec term_index_remove(Tid :: integer(),
-			Cid :: integer(),
+-spec term_index_remove(Tid :: binary(),
+			Cid :: binary(),
 			Key :: binary(),
 			Terms :: string()) ->
     ok.
@@ -100,10 +100,22 @@ term_index_remove(_Tid, _Cid, _Key, undefined) ->
 term_index_remove(Tid, Cid, Key, Terms) ->
     term_index_update(?REM, Tid, Cid, Key, Terms).
 
+-spec term_index_update(Op :: 43 | 45,
+			Tid :: binary(),
+			Cid :: binary(),
+			Key :: binary(),
+			Terms :: [unicode:charlist()]) ->
+    ok.
+term_index_update(_Op, _Tid, _Cid, _Key, []) ->
+    ok;
 term_index_update(Op, Tid, Cid, Key, Terms) ->
-    {ok, DBKey, DBHashKey} = make_index_key(Tid, Cid, Terms),
-    {ok, Shard} = gb_hash:get_local_node(?TERM_INDEX_TABLE, DBHashKey),
-    enterdb_rdb_worker:term_index(Shard, DBKey, encode_key(Op, Key)).
+    {ok, TidCid} = make_hash_key(Tid, Cid),
+    {ok, Shard} = gb_hash:get_local_node(?TERM_INDEX_TABLE, TidCid),
+    BinTerms = string_to_binary_terms(Terms),
+    ?debug("ti req: ~p", [[Shard, TidCid, BinTerms, Op, Key]]),
+    Res = (catch enterdb_rdb_worker:term_index(Shard, TidCid, BinTerms, encode_key(Op, Key))),
+    ?debug("ti res: ~p", [Res]),
+    Res.
 
 -spec index_read(KeyDef :: key(),
 		 IxKey :: #{}) ->
@@ -161,6 +173,7 @@ unregister_ttl(_, Tid) ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
+    term_prep:init(),
     enterdb:create_table(?TERM_INDEX_TABLE,["tid", "cid", "term"],
 			 [{type, rocksdb},
 			  {comparator, ascending},
@@ -211,8 +224,7 @@ handle_cast(_Msg, State) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_info({remove_term,
-	    << Tid:?TWO_BYTES/big-unsigned-integer-unit:8,
-	    Cid:?TWO_BYTES/big-unsigned-integer-unit:8,
+	    << Tid:?TWO_BYTES/bytes, Cid:?TWO_BYTES/bytes,
 	    Key/binary >>, Terms}, State) ->
     ?debug("~p received remove_term: ~p -> ~p", [?SERVER, Terms]),
     spawn(?MODULE, term_index_remove, [Tid, Cid, Key, Terms]),
@@ -249,14 +261,14 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+make_hash_key(Tid, Cid) ->
+    {ok, << Tid/binary, Cid/binary >>}.
+
 make_index_key(#{tid := Tid, cid := Cid, term := Term}) ->
     TidBin = encode_unsigned(?TWO_BYTES, Tid),
     CidBin = encode_unsigned(?TWO_BYTES, Cid),
-    make_index_key(TidBin, CidBin, Term).
-
-make_index_key(Tid, Cid, Term) ->
     TermBin = unicode:characters_to_binary(Term, unicode, utf8),
-    HashKey = << Tid/binary, Cid/binary >>,
+    HashKey = << TidBin/binary, CidBin/binary >>,
     {ok, << HashKey/binary, TermBin/binary >>, HashKey}.
 
 encode_key(Op, Key) ->
@@ -286,3 +298,16 @@ parse_postings(KeyDef, << Length:?FOUR_BYTES/big-unsigned-integer-unit:8, Bin/bi
     parse_postings(KeyDef, Rest, [enterdb_lib:make_app_key(KeyDef, Key) | Acc]);
 parse_postings(_, <<>>, Acc) ->
     Acc.
+
+string_to_binary_terms(Terms) ->
+    string_to_binary_terms(Terms, []).
+
+string_to_binary_terms([{Str, F, P} | Rest], Acc) ->
+    string_to_binary_terms(Rest, [{list_to_binary(Str), F, P} | Acc]);
+string_to_binary_terms([{Str, F} | Rest], Acc) ->
+    string_to_binary_terms(Rest, [{list_to_binary(Str), F} | Acc]);
+string_to_binary_terms([Str | Rest], Acc) when is_list(Str) ->
+    string_to_binary_terms(Rest, [list_to_binary(Str) | Acc]);
+string_to_binary_terms([], Acc)  ->
+    lists:reverse(Acc).
+
