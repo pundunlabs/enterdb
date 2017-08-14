@@ -75,4 +75,3 @@ sort_kvl(KVL)->
     {ok, [{key(), value()}]} | {error, Reason :: any()}.
 sort_kvl(_Dir, _KVL)->
     erlang:nif_error(nif_library_not_loaded).
-

@@ -228,7 +228,7 @@ analyse_write(Tab, K, C) ->
 %% Writes Key/Columns to table with name Name
 %% @end
 %%--------------------------------------------------------------------
--spec write([{Name :: string(), 
+-spec write([{Name :: string(),
 	      Key :: key(),
 	      Columns :: [column()]}]) -> [ok | {error, Reason :: term()}].
 write(L) when is_list(L) ->

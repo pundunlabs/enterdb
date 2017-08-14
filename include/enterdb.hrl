@@ -105,6 +105,7 @@
 
 -type it() :: binary().
 
+%% Start Term indexer related types
 -type char_filter() :: nfc | nfd | nfkc | nfkd |
 		       {M :: module(), F :: atom(), A :: [any()]} |
 		       undefined.
@@ -127,13 +128,15 @@
 			undefined.
 
 -type token_filter() :: #{transform := token_transform(),
-			add := token_add() | [token_add()],
-			delete := token_delete() | [token_delete()]} |
+			  add := token_add() | [token_add()],
+			  delete := token_delete() | [token_delete()]} |
 			undefined.
 
 -type index_options() :: #{char_filter := char_filter(),
-			 tokenizer := tokenizer(),
-			 token_filter := token_filter()}.
+			   tokenizer := tokenizer(),
+			   token_filter := token_filter()}.
+
+%% End Term indexer related types
 
 -record(enterdb_table, {name :: string(),
 			map :: #{}}).

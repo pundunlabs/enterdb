@@ -57,4 +57,3 @@ init([enterdb_it]) ->
 	     modules => [enterdb_it_worker]}
 	  ]
 	 }}.
-

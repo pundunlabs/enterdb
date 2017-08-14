@@ -258,4 +258,3 @@ code_change(_OldVsn, State, _Extra) ->
     {ok, It :: it()} | {error, Reason :: term()}.
 get_iterator(rocksdb, Shard, Caller) ->
     enterdb_rdb_worker:get_iterator(Shard, Caller).
-

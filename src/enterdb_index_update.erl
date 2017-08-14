@@ -310,4 +310,3 @@ string_to_binary_terms([Str | Rest], Acc) when is_list(Str) ->
     string_to_binary_terms(Rest, [list_to_binary(Str) | Acc]);
 string_to_binary_terms([], Acc)  ->
     lists:reverse(Acc).
-

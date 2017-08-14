@@ -1569,14 +1569,14 @@ update_table_attr(#{name := Name,
 		    nodes := Nodes,
 		    index_on := IndexOn} = Map, {add_index, Fields}) ->
     UpdatedIndexOn = add_index(IndexOn, Fields),
-    update_ttl_register(Name, ?TABLE_LOOKUP:lookup(Name), 
+    update_ttl_register(Name, ?TABLE_LOOKUP:lookup(Name),
 			maps:get(ttl, Map, 0), IndexOn, UpdatedIndexOn),
     update_table_attr(Nodes, Name, index_on, UpdatedIndexOn);
 update_table_attr(#{name := Name,
 		    nodes := Nodes,
 		    index_on := IndexOn} = Map, {remove_index, Fields}) ->
     UpdatedIndexOn = remove_index(IndexOn, Fields),
-    update_ttl_register(Name, ?TABLE_LOOKUP:lookup(Name), 
+    update_ttl_register(Name, ?TABLE_LOOKUP:lookup(Name),
 			maps:get(ttl, Map, 0), IndexOn, UpdatedIndexOn),
     update_table_attr(Nodes, Name, index_on, UpdatedIndexOn);
 update_table_attr(_TD, _) ->

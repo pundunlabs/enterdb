@@ -69,4 +69,3 @@ class KeyValuePair : Slice {
 	ErlNifBinary value_;
 };
 }
-

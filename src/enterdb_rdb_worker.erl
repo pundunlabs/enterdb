@@ -980,7 +980,7 @@ get_cl_opts([], AccO, AccC)->
 
 get_empty_index(Mapper, IndexOn) ->
     [{Mapper:lookup(I), ""} || I <- IndexOn].
-    
+
 get_ttl_registry() ->
     Fun =
 	fun(#enterdb_table{name = Name, map = Map}, Acc) ->

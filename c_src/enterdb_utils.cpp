@@ -227,4 +227,3 @@ static ErlNifFunc nif_funcs[] = {
 };
 
 ERL_NIF_INIT(enterdb_utils, nif_funcs, load, reload, upgrade, NULL)
-
