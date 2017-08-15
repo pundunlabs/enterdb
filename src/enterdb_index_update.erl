@@ -55,6 +55,11 @@
 -include_lib("gb_log/include/gb_log.hrl").
 -include("enterdb.hrl").
 -include("enterdb_internal.hrl").
+
+-type ixterm() :: unicode:charlist() |
+                 {unicode:charlist(), integer()} |
+                 {unicode:charlist(), integer(), integer()}.
+
 %%%===================================================================
 %%% API functions
 %%%===================================================================
@@ -77,7 +82,7 @@ get_pid() ->
 	    WriteOptions :: binary(),
 	    TableId :: integer(),
 	    Key :: binary(),
-	    Terms :: [{integer(), string()}]) ->
+	    Terms :: [{integer(), ixterm()}]) ->
     ok.
 index(DB, WriteOptions, TableId,
       Key, [{ColId, Terms} | Rest]) when is_integer(ColId)->
@@ -104,7 +109,7 @@ term_index_remove(Tid, Cid, Key, Terms) ->
 			Tid :: binary(),
 			Cid :: binary(),
 			Key :: binary(),
-			Terms :: [unicode:charlist()]) ->
+			Terms :: [ixterm()]) ->
     ok.
 term_index_update(_Op, _Tid, _Cid, _Key, []) ->
     ok;
@@ -294,19 +299,32 @@ parse_postings(_, {error, _Reason}) ->
 parse_postings(KeyDef, << Length:?FOUR_BYTES/big-unsigned-integer-unit:8, Bin/binary>>, Acc) ->
     %% Len = Length - 1 Byte (Op removed) - 4 Bytes (Ts)
     Len = Length-5,
-    << Key:Len/bytes, _Ts:4/bytes, Rest/binary >> = Bin,
+    << Key:Len/bytes, _Ts:4/bytes, _Stats:8/bytes, Rest/binary >> = Bin,
+    ?debug("Parse postings, omitted stats: ~p", [_Stats]),
     parse_postings(KeyDef, Rest, [enterdb_lib:make_app_key(KeyDef, Key) | Acc]);
 parse_postings(_, <<>>, Acc) ->
     Acc.
 
 string_to_binary_terms(Terms) ->
+    ?debug("~p:~p(~p)",[?MODULE,string_to_binary_terms,Terms]),
     string_to_binary_terms(Terms, []).
 
 string_to_binary_terms([{Str, F, P} | Rest], Acc) ->
-    string_to_binary_terms(Rest, [{list_to_binary(Str), F, P} | Acc]);
+    Bin = list_to_binary(Str),
+    FreqBin = encode_unsigned(?FOUR_BYTES, F),
+    PosBin = encode_unsigned(?FOUR_BYTES, P),
+    string_to_binary_terms(Rest, [<<Bin/binary,
+				    FreqBin/binary,
+				    PosBin/binary>> | Acc]);
 string_to_binary_terms([{Str, F} | Rest], Acc) ->
-    string_to_binary_terms(Rest, [{list_to_binary(Str), F} | Acc]);
+    Bin = list_to_binary(Str),
+    FreqBin = encode_unsigned(?FOUR_BYTES, F),
+    string_to_binary_terms(Rest, [<<Bin/binary,
+				    FreqBin/binary,
+				    <<0,0,0,0>>/binary>> | Acc]);
 string_to_binary_terms([Str | Rest], Acc) when is_list(Str) ->
-    string_to_binary_terms(Rest, [list_to_binary(Str) | Acc]);
+    Bin = list_to_binary(Str),
+    string_to_binary_terms(Rest, [<<Bin/binary,
+				    <<0,0,0,0,0,0,0,0>>/binary>> | Acc]);
 string_to_binary_terms([], Acc)  ->
     lists:reverse(Acc).
