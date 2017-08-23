@@ -44,7 +44,7 @@
 	 make_app_value/2,
 	 make_app_value/3,
 	 make_app_kvp/4,
-	 apply_update_op/5,
+	 apply_update_op/3,
 	 get_hash_key_def/3,
 	 check_error_response/1,
 	 map_shards/3]).
@@ -1337,14 +1337,24 @@ make_app_kvp(DataModel, KeyDef, Mapper, KVP) ->
 %%--------------------------------------------------------------------
 -spec apply_update_op(Op :: update_op(),
 		      DBValue :: binary(),
-		      DataModel :: data_model(),
-		      Mapper :: module(),
-		      Distributed :: boolean()) ->
-    {ok, UpdatedValue :: binary()}.
-apply_update_op(Op, DBValue, DataModel, Mapper, Distributed) ->
+		      TabSpecs :: map()) ->
+    {ok, UpdatedValue :: binary(), IndexTerms :: [string()]}|
+    {error, Reason :: term()}.
+apply_update_op(Op, DBValue, #{data_model := DataModel,
+			       column_mapper := Mapper,
+			       distributed := Dist,
+			       index_on := IndexOn}) ->
     Columns = make_app_value(DataModel, Mapper, DBValue),
     UpdatedColumns = apply_update_op(Op, Columns),
-    make_db_value(DataModel, Mapper, Distributed, UpdatedColumns).
+    case make_db_value(DataModel, Mapper, Dist, UpdatedColumns) of
+	{ok, DBValue} ->
+	    {ok, DBValue, []};
+	{ok, UpdatedDBValue} ->
+	    IndexTerms = get_index_terms(Mapper, IndexOn, Columns),
+	    {ok, UpdatedDBValue, IndexTerms};
+	{error, E} ->
+	    {error, E}
+    end.
 
 apply_update_op([], UpdatedColumns) ->
     UpdatedColumns;

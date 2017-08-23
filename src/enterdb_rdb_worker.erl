@@ -33,7 +33,7 @@
 -export([read/2,
          write/3,
          write/4,
-         update/6,
+         update/4,
          delete/2,
 	 delete_db/1,
 	 read_range_binary/3,
@@ -147,12 +147,10 @@ write(Shard, Key, Columns, Terms) ->
 -spec update(Shard :: string(),
              Key :: key(),
              Op :: update_op(),
-	     DataModel :: data_model(),
-	     Mapper :: module(),
-	     Distributed :: boolean()) -> ok | {error, Reason :: term()}.
-update(Shard, Key, Op, DataModel, Mapper, Dist) ->
+	     TabSpecs :: map()) -> ok | {error, Reason :: term()}.
+update(Shard, Key, Op, TabSpecs) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {update, Key, Op, DataModel, Mapper, Dist}).
+    gen_server:call(ServerRef, {update, Key, Op, TabSpecs}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -495,30 +493,34 @@ handle_call({read, DBKey}, _From,
                            readoptions = ReadOptions}) ->
     Reply = rocksdb:get(DB, ReadOptions, DBKey),
     {reply, Reply, State};
-handle_call({write, Key, Columns, Terms}, _From, State) ->
+handle_call({write, DBKey, DBColumns, Terms}, _From, State) ->
     #state{table_id = TableId,
 	   db_ref = DB,
            writeoptions = WriteOptions} = State,
-    Reply = rocksdb:put(DB, WriteOptions, Key, Columns),
-    index_on(DB, WriteOptions, TableId, Key, Terms),
+    Reply = rocksdb:put(DB, WriteOptions, DBKey, DBColumns),
+    index_on(DB, WriteOptions, TableId, DBKey, Terms),
     {reply, Reply, State};
-handle_call({update, DBKey, Op, DataModel, Mapper, Dist}, _From, State) ->
-    #state{db_ref = DB,
+handle_call({update, DBKey, Op, TabSpecs}, _From, State) ->
+    #state{table_id = TableId,
+	   db_ref = DB,
 	   readoptions = ReadOptions,
            writeoptions = WriteOptions} = State,
     BinValue =
 	case rocksdb:get(DB, ReadOptions, DBKey) of
 	    {ok, Value} -> Value;
-	    _ -> make_empty_entry(DataModel)
+	    _ -> make_empty_entry(maps:get(data_model, TabSpecs))
 	end,
-    case enterdb_lib:apply_update_op(Op, BinValue, DataModel, Mapper, Dist) of
-	{ok, BinValue} ->
+    case enterdb_lib:apply_update_op(Op, BinValue, TabSpecs) of
+	{ok, BinValue, _Terms} ->
 	    {reply, {ok, BinValue}, State};
-	{ok, Columns} ->
+	{ok, DBColumns, Terms} ->
 	    Reply =
-		case rocksdb:put(DB, WriteOptions, DBKey, Columns) of
-		    ok -> {ok, Columns};
-		    Else -> Else
+		case rocksdb:put(DB, WriteOptions, DBKey, DBColumns) of
+		    ok ->
+			index_on(DB, WriteOptions, TableId, DBKey, Terms),
+			{ok, DBColumns};
+		    Else ->
+			Else
 		end,
 	    {reply, Reply, State}
     end;

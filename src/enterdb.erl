@@ -364,8 +364,12 @@ do_update(#{ready_status := recovering}, Shard, Key, DBKey, Op) ->
 do_update(#{type := rocksdb,
 	    data_model := DataModel,
 	    column_mapper := Mapper,
-	    distributed := Dist}, Shard, _Key, DBKey, Op) ->
-    enterdb_rdb_worker:update(Shard, DBKey, Op, DataModel, Mapper, Dist);
+	    distributed := Dist,
+	    index_on := IndexOn}, Shard, _Key, DBKey, Op) ->
+    enterdb_rdb_worker:update(Shard, DBKey, Op, #{data_model => DataModel,
+						  column_mapper => Mapper,
+						  distributed => Dist,
+						  index_on => IndexOn});
 do_update({error, R}, _, _Key, _DBKey, _Op) ->
     {error, R};
 do_update(TD, Tab, Key, _DBKey, _Op) ->
