@@ -31,7 +31,7 @@
 
 -export([index/5,
 	 term_index_remove/4,
-	 index_read/2]).
+	 index_read/1]).
 
 -export([register_ttl/3,
 	 unregister_ttl/2]).
@@ -122,14 +122,13 @@ term_index_update(Op, Tid, Cid, Key, Terms) ->
     ?debug("ti res: ~p", [Res]),
     Res.
 
--spec index_read(KeyDef :: key(),
-		 IxKey :: #{}) ->
-    {ok, [term()]}.
-index_read(KeyDef, IxKey) ->
+-spec index_read(IxKey :: #{}) ->
+    [{Stats :: binary(), Key :: binary()}].
+index_read(IxKey) ->
     {ok, DBKey, DBHashKey} = make_index_key(IxKey),
     {ok, Shard} = gb_hash:get_local_node(?TERM_INDEX_TABLE, DBHashKey),
     Res = enterdb_rdb_worker:read(Shard, DBKey),
-    parse_postings(KeyDef, Res).
+    parse_postings(Res).
 
 -spec register_ttl(Name :: string(),
 		   Tid :: integer(),
@@ -291,19 +290,19 @@ encode_unsigned(Size, Int) when is_integer(Int) ->
 	    Unsigned
     end.
 
-parse_postings(KeyDef, {ok, Binary}) ->
-    parse_postings(KeyDef, Binary, []);
-parse_postings(_, {error, _Reason}) ->
+parse_postings({ok, Binary}) ->
+    parse_postings(Binary, []);
+parse_postings({error, _Reason}) ->
     [].
 
-parse_postings(KeyDef, << Length:?FOUR_BYTES/big-unsigned-integer-unit:8, Bin/binary>>, Acc) ->
+parse_postings(<< Length:?FOUR_BYTES/big-unsigned-integer-unit:8, Bin/binary>>, Acc) ->
     %% Len = Length - 1 Byte (Op removed) - 4 Bytes (Ts)
     Len = Length-5,
-    << Key:Len/bytes, _Ts:4/bytes, _Stats:8/bytes, Rest/binary >> = Bin,
-    ?debug("Parse postings, omitted stats: ~p", [_Stats]),
-    parse_postings(KeyDef, Rest, [enterdb_lib:make_app_key(KeyDef, Key) | Acc]);
-parse_postings(_, <<>>, Acc) ->
-    Acc.
+    << Key:Len/bytes, _Ts:4/bytes, Stats:8/bytes, Rest/binary >> = Bin,
+    Posting = {Stats, Key},
+    parse_postings(Rest, [Posting | Acc]);
+parse_postings(<<>>, Acc) ->
+    lists:reverse(Acc).
 
 string_to_binary_terms(Terms) ->
     ?debug("~p:~p(~p)",[?MODULE,string_to_binary_terms,Terms]),

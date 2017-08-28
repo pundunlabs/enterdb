@@ -43,6 +43,7 @@
 	 next/1,
 	 prev/1,
 	 index_read/3,
+	 index_read/4,
 	 add_index/2,
 	 remove_index/2
 	 ]).
@@ -52,7 +53,7 @@
 	 do_read/3,
 	 do_read_from_disk/3,
 	 do_delete/3,
-	 do_index_read/2]).
+	 do_index_read/3]).
 
 -export([do_write_force/5,
 	 do_update_force/4,
@@ -643,16 +644,21 @@ prev(Ref) ->
 		 Term :: string()) ->
     {ok, [term()]} | {error, Reason :: term()}.
 index_read(Tab, Column, Term) ->
+    index_read(Tab, Column, Term, undefined).
+
+-spec index_read(Tab :: string(),
+		 Column :: string(),
+		 Term :: string(),
+		 MaxPostings :: pos_integer() | undefined) ->
+    {ok, [key()]} | {error, Reason :: term()}.
+index_read(Tab, Column, Term, MaxPostings) ->
     case enterdb_lib:get_tab_def(Tab) of
-	TD = #{column_mapper := Mapper,
-	       nodes := Nodes} ->
+	TD = #{column_mapper := Mapper} ->
 	    case Mapper:lookup(Column) of
 		Cid when is_integer(Cid) ->
 		    Tid = ?TABLE_LOOKUP:lookup(Tab),
 		    IxKey = #{tid => Tid, cid => Cid, term => Term},
-		    {ResL, _Bad} = rpc:multicall(Nodes, ?MODULE,
-						 do_index_read, [TD, IxKey]),
-		    unique_kvl(ResL);
+		    do_index_read(TD, IxKey, MaxPostings);
 		_ ->
 		    {error, column_not_indexed}
 	    end;
@@ -660,26 +666,33 @@ index_read(Tab, Column, Term) ->
 	    R
     end.
 
-do_index_read(#{name := Tab,
-		key := KeyDef,
-		distributed := Dist} = TD, IxKey) ->
-    Postings = enterdb_index_update:index_read(KeyDef, IxKey),
-    Results =
-	[begin
-	    {ok, DBKey, HashKey} = enterdb_lib:make_key(TD, K),
-	    Shard =
-		case Dist of
-		    true ->
-			{ok, {S, _}} = gb_hash:get_node(Tab, HashKey),
-			S;
-		    false ->
-			{ok, S} = gb_hash:get_local_node(Tab, HashKey),
-			S
-		end,
-	    DBValue = enterdb_rdb_worker:read(Shard, DBKey),
-	    {K, enterdb_lib:make_app_value(TD, DBValue)}
-	 end || K <- Postings],
-    [{K, Value} || {K, {ok, Value}} <- Results].
+do_index_read(#{key := KeyDef,
+		distributed := true,
+		nodes := Nodes}, IxKey, Limit) ->
+    Req = {enterdb_index_update, index_read, [IxKey]},
+    case ?dyno:call_nodes_minimal(Nodes, Req, [{timeout, 30000}]) of
+	{ok, #{resl := ResL,
+	       uncovered := Uncovered,
+	       unique := Unique}} when is_list(ResL) ->
+	    ?debug("call_nodes_minimal/3 -> uncovered shards: ~p", [Uncovered]),
+	    Postings = make_unique_postings(Unique, ResL),
+	    Sublist = sublist(Postings, Limit),
+	    {ok, [enterdb_lib:make_app_key(KeyDef, B) || {_, B} <- Sublist]};
+	{error, Reason} ->
+	    ?debug("do_index_read/3 -> ~p", [{error, Reason}]),
+	    {error, Reason}
+    end;
+do_index_read(#{key := KeyDef, distributed := false}, IxKey, Limit) ->
+    Postings = enterdb_index_update:index_read(IxKey),
+    {ok, [enterdb_lib:make_app_key(KeyDef, Bin)
+	    || {_, Bin} <- sublist(Postings, Limit)]}.
+
+make_unique_postings(true, ResL) ->
+    {ok, Postings} = enterdb_utils:merge_sorted_kvls(0, ResL),
+    Postings;
+make_unique_postings(false, ResL) ->
+    UniqueL = lists:usort(fun({_,X}, {_,Y}) -> X =< Y end, list:flatten(ResL)),
+    lists:sort(fun({A,_}, {B,_}) -> A >= B end, UniqueL).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -711,22 +724,38 @@ remove_index(Tab, Fields) ->
 update_index(Op, Tab, Fields) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #{type := rocksdb,
-	       nodes := Nodes} ->
-	    {ResL, _Bad} = rpc:multicall(Nodes, enterdb_lib,
-					 update_table_attr, [TD, {Op,Fields}]),
-	    enterdb_lib:check_error_response(lists:usort(ResL));
+	       index_on := IndexOn} ->
+		UpdatedIndexOn =
+		    case Op of
+			add_index -> add_index_fields(Fields, IndexOn);
+			remove_index -> remove_index_fields(Fields, IndexOn)
+		    end,
+		R = enterdb_lib:update_table_attr(TD, index_on, UpdatedIndexOn),
+		?debug("R: ~p",[R]),R;
 	_ ->
 	    {error, "backend_not_supported"}
     end.
 
--spec unique_kvl([[{term(),term()}]]) ->
-    [{term(),term()}].
-unique_kvl(Resl) ->
-    unique_kvl(Resl, #{}).
+add_index_fields([{Field, IndexOptions} | Rest], List) ->
+    case io_lib:printable_unicode_list(Field) of
+	true ->
+	    add_index_fields(Rest, [{Field, IndexOptions} | List]);
+	false ->
+	    add_index_fields(Rest, List)
+    end;
+add_index_fields([Field | Rest], List) ->
+    add_index_fields([{Field, undefined} | Rest], List);
+add_index_fields([], List) ->
+    lists:usort(List).
 
-unique_kvl([[{Key, Value} | RestIn] | Rest], Acc) ->
-    unique_kvl([RestIn | Rest], Acc#{Key => Value});
-unique_kvl([[] | Rest], Acc) ->
-    unique_kvl(Rest, Acc);
-unique_kvl([], Acc) ->
-    maps:to_list(Acc).
+remove_index_fields([{Field, _} | Rest], List) ->
+    remove_index_fields(Rest, lists:keydelete(Field, 1, List));
+remove_index_fields([Field | Rest], List) ->
+    remove_index_fields(Rest, lists:keydelete(Field, 1, List));
+remove_index_fields([], List) ->
+    List.
+
+sublist(List, Int) when is_integer(Int), Int > 0 ->
+    lists:sublist(List, Int);
+sublist(List, _) ->
+    List.

@@ -62,14 +62,14 @@
 	 cut_kvl_at/2,
 	 comparator_to_dir/1,
 	 get_ldb_worker_args/2,
-	 update_table_attr/2]).
+	 update_table_attr/3]).
 
 %% Inter-Node API
 -export([do_create_shards/1,
 	 do_open_table/1,
 	 do_close_table/1,
 	 do_delete_table/1,
-	 do_update_table_attr/2]).
+	 do_update_table_attr/3]).
 
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
@@ -404,17 +404,23 @@ get_shards(Name, NumOfShards, ReplicationFactor) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec get_allocated_nodes(Shards :: [{Shard :: string(), Ring :: map()}]) ->
-    {ok, [node()]}.
+    {ok, map()}.
 get_allocated_nodes(Shards) ->
-    get_allocated_nodes(Shards, []).
+    get_allocated_nodes(Shards, #{}).
 
-get_allocated_nodes([{_Shard, Ring} | Rest], Acc) ->
+get_allocated_nodes([{Shard, Ring} | Rest], Acc) ->
     Cont = maps:fold(fun (_, NodeList, AccIn) ->
-			lists:append(NodeList, AccIn)
+			map_nodes_to_shards(Shard, NodeList, AccIn)
 		     end, Acc, Ring),
     get_allocated_nodes(Rest, Cont);
 get_allocated_nodes([], Acc) ->
-    {ok, lists:usort(Acc)}.
+    {ok, Acc}.
+
+map_nodes_to_shards(Shard, [Node|Rest], Acc) ->
+    Cont = maps:update_with(Node, fun(L) -> [Shard|L] end, [Shard], Acc),
+    map_nodes_to_shards(Shard, Rest, Cont);
+map_nodes_to_shards(_Shard, [], Acc) ->
+    Acc.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1569,78 +1575,67 @@ get_index_terms(_Mapper, [], _Columns, Acc) ->
     Acc.
 
 -spec update_table_attr(TD :: map(),
-			AV :: {Attr :: add_index |
-				       remove_index,
-			       Fields :: [string() |
-					  {string(), index_options()}]} |
-			      term()) ->
+			Attr :: atom(),
+			Val :: term()) ->
     ok.
 update_table_attr(#{name := Name,
-		    nodes := Nodes,
-		    index_on := IndexOn} = Map, {add_index, Fields}) ->
-    UpdatedIndexOn = add_index(IndexOn, Fields),
-    update_ttl_register(Name, ?TABLE_LOOKUP:lookup(Name),
-			maps:get(ttl, Map, 0), IndexOn, UpdatedIndexOn),
-    update_table_attr(Nodes, Name, index_on, UpdatedIndexOn);
+		    distributed := false}, Attr, Val) ->
+    do_update_table_attr(Name, Attr, Val);
 update_table_attr(#{name := Name,
 		    nodes := Nodes,
-		    index_on := IndexOn} = Map, {remove_index, Fields}) ->
-    UpdatedIndexOn = remove_index(IndexOn, Fields),
-    update_ttl_register(Name, ?TABLE_LOOKUP:lookup(Name),
-			maps:get(ttl, Map, 0), IndexOn, UpdatedIndexOn),
-    update_table_attr(Nodes, Name, index_on, UpdatedIndexOn);
-update_table_attr(_TD, _) ->
-    ok.
+		    distributed := true} = TD, Attr, Val) ->
+    MFA = {enterdb_lib, do_update_table_attr, [Name, Attr, Val]},
+    OldVal = maps:get(Attr, TD, undefined),
+    RMFA = {enterdb_lib, do_update_table_attr, [Name, Attr, OldVal]},
+    Options = [{timeout, 30000}, {revert, RMFA}],
+    Res = ?dyno:call_nodes(Nodes, MFA, Options),
+    ?debug("update_table_attr result: ~p", [Res]),
+    Res.
 
-update_table_attr(Nodes, Name, Attr, Val) ->
-    {ResL, BadNodes} = rpc:multicall(Nodes, ?MODULE, do_update_table_attr,
-				     [Name, {Attr, Val}]),
-    check_error_response(lists:usort(ResL)),
-    ?debug("Bad nodes on update_table_attr: ~p", [BadNodes]),
-    ok.
+set_attr(TD, Attr, undefined) ->
+    maps:remove(Attr, TD);
+set_attr(TD, Attr, Val) ->
+    maps:put(Attr, Val, TD).
 
-do_update_table_attr(Name, {Attr, Val}) ->
-    Fun =
-	fun() ->
-	    TD = #{name := Name, shards := Shards} = get_tab_def(Name),
-	    mnesia:write(#enterdb_table{name = Name,
-					map = TD#{Attr => Val}}),
-	    ResL =
-		[begin
-		    case mnesia:read(enterdb_stab, Shard) of
-			[] ->
-			    ok;
-			[S = #enterdb_stab{map = M}] ->
-			    mnesia:write(S#enterdb_stab{map = M#{Attr => Val}})
-		    end
-		 end || {Shard, _} <- Shards],
-	    check_error_response(lists:usort(ResL))
-	 end,
-    case mnesia:transaction(Fun) of
+update_table_attr_fun(Name, Attr, Val) ->
+    case get_tab_def(Name) of
+	#{Attr := Val}  ->
+	    ok;
+	#{name := Name, shards := Shards} = TD ->
+	    New = set_attr(TD, Attr, Val),
+	    mnesia:write(#enterdb_table{name = Name, map = New}),
+	    ResL = update_shard_attrs(Shards, Attr, Val),
+	    UTR =
+		case Attr of
+		    index_on ->
+			CurrVal = maps:get(index_on, TD, []),
+			TTL = maps:get(ttl, TD, 0),
+			Tid = ?TABLE_LOOKUP:lookup(Name),
+			update_ttl_register(Name, Tid, TTL, CurrVal, Val);
+		    _ ->
+		        ok
+		end,
+        check_error_response(lists:usort([UTR | ResL]))
+    end.
+
+do_update_table_attr(Name, Attr, Val) ->
+    Fun = fun update_table_attr_fun/3,
+    case mnesia:transaction(Fun, [Name, Attr, Val]) of
 	{aborted, Reason} ->
 	    {error, Reason};
 	{atomic, ok} ->
 	    ok
     end.
 
-add_index(List, [{Field, IndexOptions} | Rest]) ->
-    case io_lib:printable_unicode_list(Field) of
-	true ->
-	    add_index([{Field, IndexOptions} | List], Rest);
-	false ->
-	    add_index(List, Rest)
-    end;
-add_index(List, [Field | Rest]) ->
-    add_index(List, [{Field, undefined} | Rest]);
-add_index(List, []) ->
-    lists:usort(List).
-
-remove_index(List, [{Field, _} | Rest]) ->
-    remove_index(lists:keydelete(Field, 1, List), Rest);
-remove_index(List, [Field | Rest]) ->
-    remove_index(lists:keydelete(Field, 1, List), Rest);
-remove_index(List, []) ->
-    List.
+update_shard_attrs(Shards, Attr,OldVal) ->
+    [begin
+	case mnesia:read(enterdb_stab, Shard) of
+	    [] ->
+		ok;
+	    [S = #enterdb_stab{map = M}] ->
+		mnesia:write(S#enterdb_stab{map = M#{Attr => OldVal}})
+	end
+     end || {Shard, _} <- Shards].
 
 update_ttl_register(Name, Tid, TTL, [], [_|_]) ->
     enterdb_index_update:register_ttl(Name, Tid, TTL);
