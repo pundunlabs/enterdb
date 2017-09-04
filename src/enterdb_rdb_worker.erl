@@ -442,7 +442,7 @@ init(Args) ->
                     {stop, {error, Reason}};
                 {ok, DB} ->
 		    Tid = ?TABLE_LOOKUP:lookup(Subdir),
-		    TTL = maps:get(ttl, Args, 0),
+		    TTL = maps:get(ttl, Args, undefined),
 		    IndexOn = maps:get(index_on, Args),
 		    handle_term_index(Subdir, Tid, TTL, IndexOn),
 		    ELR = #enterdb_ldb_resource{name = Shard, resource = DB},
