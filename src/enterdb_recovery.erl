@@ -28,7 +28,8 @@
 -export([check_ready_status/1,
 	 log_event/2,
 	 log_event/3,
-	 set_shard_ready_flag/2]).
+	 set_shard_ready_flag/2,
+	 start_recovery/3]).
 
 -export([do_backup/2]).
 
@@ -85,9 +86,19 @@ do_we_need_recovery({full, Node}, Shard) ->
     start_recovery(full, Node, Shard).
 
 start_recovery(Type, Node, Shard) ->
-    Pid = proc_lib:spawn(fun() -> do_start_recovery(Type, Node, Shard) end),
+    Pid = proc_lib:spawn(fun() -> init_start_recovery(Type, Node, Shard) end),
     ?info("started recovery process ~p for ~p (~p, ~p)", [Shard, Pid, Node, Type]),
     recovering.
+
+init_start_recovery(Type, Node, Shard) ->
+    case enterdb_recovery_srv:reg(Shard, self()) of
+	ok ->
+	    do_start_recovery(Type, Node, Shard);
+	{error, already_running} ->
+	    ?debug("recovery already running");
+	E ->
+	    ?info("could not register recovery process: ~p", [E])
+    end.
 
 do_start_recovery(log, Node, Shard) ->
     %% start local memlog while recovering
@@ -208,4 +219,25 @@ set_shard_ready_flag(Shard, Flag) ->
             ok;
         {aborted, Reason} ->
            {error, {aborted, Reason}}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% do_remote_call
+%% @end
+%%--------------------------------------------------------------------
+do_remote_call(Node, Mod, Fun, Args) ->
+    do_remote_call(Node, Mod, Fun, Args, 10).
+
+do_remote_call(Node, Mod, Fun, Args, 0) ->
+    ?warning("giving up ~p", [{Node, Mod, Fun, Args}]),
+    {badrpc, givingup};
+do_remote_call(Node, Mod, Fun, Args, RemAttempts) ->
+    case rpc:call(Node, Mod, Fun, Args) of
+	{badrpc, nodedown} ->
+	    ?info("node is down, will try again"),
+	    timer:sleep(timer:seconds(5)),
+	    do_remote_call(Node, Mod, Fun, Args, RemAttempts - 1);
+	Res ->
+	    Res
     end.
