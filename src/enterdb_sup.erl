@@ -114,8 +114,15 @@ init([]) ->
 			 type => supervisor,
 			 modules => [enterdb_shard_recovery_sup]},
 
+    EdbRSrv	    = #{id => enterdb_recovery_srv,
+			start => {enterdb_recovery_srv, start_link, []},
+			restart => permanent,
+			shutdown => 20000,
+			type => worker,
+			modules => [enterdb_recovery_srv]},
+
     {ok, {SupFlags, [EdbNS, EdbRS, EdbPTS, EdbItSup,
-		     EdbRdbSup, EdbShardRecovery,
+		     EdbRdbSup, EdbRSrv, EdbShardRecovery,
 		     EdbIndexUpdate]}}.
 
 %%%===================================================================
