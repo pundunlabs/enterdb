@@ -616,10 +616,10 @@ handle_call({restore_db, BackupId, FromPath}, _From,
 	    0 -> rocksdb:restore_db(FromPath, DbPath, DbPath);
 	    _ -> rocksdb:restore_db(FromPath, DbPath, DbPath, BackupId)
 	end,
-    IntOptionsPL = lists:keyreplace(error_if_exists, 1, OptionsPL,
-				    {error_if_exists, false}),
-    NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
-				    {create_if_missing, false}),
+    IntOptionsPL = lists:keyreplace("error_if_exists", 1, OptionsPL,
+				    {"error_if_exists", "false"}),
+    NewOptionsPL = lists:keyreplace("create_if_missing", 1, IntOptionsPL,
+				    {"create_if_missing", "false"}),
     {ok, NewOptions, ColumnFamiliyOpts} =
 	do_make_options(Name, [{"ttl", TTL} | NewOptionsPL]),
     {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
@@ -644,10 +644,10 @@ handle_call({restore_db, BackupId}, _From,
 	    0 -> rocksdb:restore_db(FromPath, DbPath, DbPath);
 	    _ -> rocksdb:restore_db(FromPath, DbPath, DbPath, BackupId)
 	end,
-    IntOptionsPL = lists:keyreplace(error_if_exists, 1, OptionsPL,
-				    {error_if_exists, false}),
-    NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
-				    {create_if_missing, false}),
+    IntOptionsPL = lists:keyreplace("error_if_exists", 1, OptionsPL,
+				    {"error_if_exists", "false"}),
+    NewOptionsPL = lists:keyreplace("create_if_missing", 1, IntOptionsPL,
+				    {"create_if_missing", "false"}),
     {ok, NewOptions, ColumnFamiliyOpts} =
 	do_make_options(Name, [{"ttl", TTL} | NewOptionsPL]),
     {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
@@ -714,10 +714,10 @@ handle_cast(recreate_shard, State = #state{shard = Shard,
     %% use the options including {create_if_missing, false}
     %% and {error_if_exists, false}
 
-    IntOptionsPL = lists:keyreplace(error_if_exists, 1, OptionsPL,
-				    {error_if_exists, true}),
-    NewOptionsPL = lists:keyreplace(create_if_missing, 1, IntOptionsPL,
-				    {create_if_missing, true}),
+    IntOptionsPL = lists:keyreplace("error_if_exists", 1, OptionsPL,
+				    {"error_if_exists", "true"}),
+    NewOptionsPL = lists:keyreplace("create_if_missing", 1, IntOptionsPL,
+				    {"create_if_missing", "true"}),
     {ok, NewOptions, ColumnFamiliyOpts} =
 	do_make_options(Name, [{"ttl", TTL} | NewOptionsPL]),
     {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
