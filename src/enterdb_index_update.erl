@@ -132,10 +132,12 @@ index_read(IxKey) ->
 
 -spec register_ttl(Name :: string(),
 		   Tid :: integer(),
-		   TTL :: integer()) ->
+		   TTL :: integer() | undefined) ->
     ok.
 register_ttl(?TERM_INDEX_TABLE, _, _) ->
     ok;
+register_ttl(Name, Tid, undefined) ->
+    register_ttl(Name, Tid, 0);
 register_ttl(_, Tid, TTL) ->
     case enterdb_lib:get_tab_def(?TERM_INDEX_TABLE) of
         #{shards := Shards} ->
