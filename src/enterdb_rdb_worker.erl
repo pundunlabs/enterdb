@@ -437,6 +437,7 @@ init(Args) ->
         {ok, Options, ColumnFamiliyOpts} ->
             [DbPath, WalPath, BackupPath, CheckpointPath] =
 		ensure_directories(Args, Subdir, Shard),
+	    ?debug("ColumnFamiliyOpts ~p", [ColumnFamiliyOpts]),
 	    case open_db(Options, DbPath, ColumnFamiliyOpts) of
                 {error, Reason} ->
                     {stop, {error, Reason}};
@@ -975,6 +976,8 @@ get_cl_opts([{"comparator", C} | Rest], AccO, AccC) ->
     get_cl_opts(Rest, AccO, [{"comparator", C} | AccC]);
 get_cl_opts([{"allow_concurrent_memtable_write", B} | Rest], AccO, AccC) ->
     get_cl_opts(Rest, [{"allow_concurrent_memtable_write", B} | AccO], AccC);
+get_cl_opts([{"cf_raw_opts", L} | Rest], AccO, AccC) ->
+    get_cl_opts(Rest, AccO, [{"cf_raw_opts", L} | AccC]);
 get_cl_opts([O | Rest], AccO, AccC)->
     get_cl_opts(Rest, [O | AccO], AccC);
 get_cl_opts([], AccO, AccC)->

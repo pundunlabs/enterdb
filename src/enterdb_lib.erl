@@ -154,7 +154,7 @@ verify_create_table_args([{options, Options} | Rest], #{} = EdbTab)
     when is_list(Options)->
     case verify_table_options(Options) of
         ok ->
-            verify_create_table_args(Rest,
+	    verify_create_table_args(Rest,
 		maps:merge(EdbTab, maps:from_list(Options)));
         {error, Reason} ->
             {error, Reason}
@@ -355,6 +355,11 @@ verify_table_options([{hashing_method, M}|Rest]) when M == virtual_nodes;
 						      M == uniform;
 						      M == rendezvous ->
     verify_table_options(Rest);
+
+%% Raw Rocksdb Options [{"option_name", "option_value"}]
+verify_table_options([{rdb_raw, List} | Rest]) when is_list(List) ->
+    verify_table_options(Rest);
+
 %% Bad Option
 verify_table_options([Elem|_])->
     {error, {Elem, "invalid_option"}};
@@ -1545,7 +1550,8 @@ ldb_open_options(Start) when Start == open; Start == delete ->
 			  Smap :: #{}) ->
     map().
 get_rdb_worker_args(Start, Smap = #{comparator := Comp}) ->
-    Options = [{"comparator", cmp_str(Comp)} | rdb_open_options(Start)],
+    RdbRawArgs = maps:get(rdb_raw, Smap, []),
+    Options = [{"comparator", cmp_str(Comp)} | rdb_open_options(Start) ++ RdbRawArgs],
     maps:put(options, Options, Smap).
 
 -spec rdb_open_options(Start :: create | open | delete) ->
