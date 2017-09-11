@@ -34,7 +34,9 @@
 	 read_range/4,
 	 write/1,
 	 write_loop/3,
-	 write_server/3]).
+	 write_server/3,
+	 ttl_test/2,
+	 ttl_test_worker/3]).
 
 -include("enterdb.hrl").
 
@@ -255,3 +257,61 @@ write_server(Name, N, Milliseconds) when N > 0 ->
 write_server(_,_,_) ->
     io:format("write_server done ~p~n", [self()]),
     ok.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Test data retention policy specified by ttl value for monotonically
+%% incremented keys.
+%% @end
+%%--------------------------------------------------------------------
+-spec ttl_test(DiskId :: string(), K :: pos_integer()) ->
+    ok | {error, Reason :: term()}.
+ttl_test(DiskId, K) ->
+    application:start(sasl),
+    application:start(os_sup),
+    case lists:keyfind(DiskId, 1, disksup:get_disk_data()) of
+	false ->
+	    erlang:error(badarg);
+	{DiskId, KByte, Cap} ->
+	    Available = trunc(KByte/100*(100-Cap)),
+	    Writes = trunc(Available / K),
+	    Data = [{"value", crypto:strong_rand_bytes(K * 1024)}],
+	    TableName = "my_ttl_test",
+	    Keys = ["i"],
+	    Options = [{type, rocksdb}, {ttl, 300}],
+	    enterdb:delete_table(TableName),
+	    enterdb:create_table(TableName, Keys, Options),
+	    {{YYYY,MM,DD},{H,M,S}} = calendar:local_time(),
+	    io:format("Start Time: ~w/~w/~w ~w:~w:~w~n",[YYYY, MM, DD, H, M, S]),
+	    io:format("Writing ~p entries.~n",[Writes*2]),
+	    ttl_test_start(TableName, Data, Writes*2)
+    end.
+
+ttl_test_start(Tab, Data, Writes) ->
+    List =
+	[{M, spawn_link(?MODULE, ttl_test_worker, [{self(), M}, Tab, Data])}
+	 || M <- lists:seq(0,7)],
+    Map = maps:from_list(List),
+    ttl_test_writer(Map, Writes, 0).
+
+ttl_test_writer(Map, Writes, Writes) ->
+    [Pid ! stop || Pid <- maps:values(Map)],
+    ok;
+ttl_test_writer(Map, Writes, I) ->
+    R = I rem 8,
+    receive
+	{ack, R} ->
+	    Pid = maps:get(R, Map),
+	    Pid ! {write, I}
+    end,
+    ttl_test_writer(Map, Writes, I+1).
+
+ttl_test_worker({Parent, ID}, TableName, Data) ->
+    Parent ! {ack, ID},
+    receive
+	{write, I} ->
+	    enterdb:write(TableName, [{"i", I}], Data),
+	    ttl_test_worker({Parent, ID}, TableName, Data);
+	stop ->
+	    ok
+    end.
