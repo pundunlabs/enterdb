@@ -621,8 +621,7 @@ handle_call({restore_db, BackupId, FromPath}, _From,
 				    {"error_if_exists", "false"}),
     NewOptionsPL = lists:keyreplace("create_if_missing", 1, IntOptionsPL,
 				    {"create_if_missing", "false"}),
-    {ok, NewOptions, ColumnFamiliyOpts} =
-	do_make_options(Name, [{"ttl", TTL} | NewOptionsPL]),
+    {ok, NewOptions, ColumnFamiliyOpts} = make_options(Name, TTL, NewOptionsPL),
     {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
     ELR = #enterdb_ldb_resource{name = Shard, resource = NewDB},
     ok = write_enterdb_ldb_resource(ELR),
@@ -649,8 +648,7 @@ handle_call({restore_db, BackupId}, _From,
 				    {"error_if_exists", "false"}),
     NewOptionsPL = lists:keyreplace("create_if_missing", 1, IntOptionsPL,
 				    {"create_if_missing", "false"}),
-    {ok, NewOptions, ColumnFamiliyOpts} =
-	do_make_options(Name, [{"ttl", TTL} | NewOptionsPL]),
+    {ok, NewOptions, ColumnFamiliyOpts} = make_options(Name, TTL, NewOptionsPL),
     {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
     ELR = #enterdb_ldb_resource{name = Shard, resource = NewDB},
     ok = write_enterdb_ldb_resource(ELR),
@@ -719,8 +717,7 @@ handle_cast(recreate_shard, State = #state{shard = Shard,
 				    {"error_if_exists", "true"}),
     NewOptionsPL = lists:keyreplace("create_if_missing", 1, IntOptionsPL,
 				    {"create_if_missing", "true"}),
-    {ok, NewOptions, ColumnFamiliyOpts} =
-	do_make_options(Name, [{"ttl", TTL} | NewOptionsPL]),
+    {ok, NewOptions, ColumnFamiliyOpts} = make_options(Name, TTL, NewOptionsPL),
     {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
     ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Shard,
 							  resource = NewDB}),
@@ -952,6 +949,14 @@ del_dir(Dir, [File | Rest]) ->
 make_options(Name, Args) ->
     OptionsPL = maps:get(options, Args),
     TTL = maps:get(ttl, Args, undefined),
+    make_options(Name, TTL, OptionsPL).
+
+-spec make_options(Name :: string(),
+		   TTL :: undefined | integer(),
+		   OptionsPL :: [{string(), term()}]) ->
+    {ok, Options :: binary(), CFOpts :: [term()]} |
+    {error, Reason :: term()}.
+make_options(Name, TTL, OptionsPL)->
     RawOptions = set_ttl_options(TTL, OptionsPL),
     do_make_options(Name, RawOptions).
 
