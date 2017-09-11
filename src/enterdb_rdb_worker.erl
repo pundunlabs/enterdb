@@ -952,35 +952,42 @@ del_dir(Dir, [File | Rest]) ->
 make_options(Name, Args) ->
     OptionsPL = maps:get(options, Args),
     TTL = maps:get(ttl, Args, undefined),
-    do_make_options(Name, [{"ttl", TTL} | OptionsPL]).
+    RawOptions = set_ttl_options(TTL, OptionsPL),
+    do_make_options(Name, RawOptions).
+
+-spec set_ttl_options(TTL :: undefined | integer(),
+		      OptionsPL :: [{string(), term()}]) ->
+    RawOptions :: [{string(), term()}].
+set_ttl_options(TTL, OptionsPL) when is_integer(TTL) ->
+    CfRawOpts = [{"compaction_style", "kCompactionStyleUniversal"}],
+    [{"ttl", TTL}, {"cf_raw_opts", CfRawOpts} | OptionsPL];
+set_ttl_options(_, OptionsPL) ->
+    OptionsPL.
 
 do_make_options(?TERM_INDEX_TABLE, OptionsPL)->
     {ok, Opts, COpts} = do_make_options("", [{"allow_concurrent_memtable_write", "false"} | OptionsPL]),
     {ok, KVL} = get_ttl_registry(),
     {ok, Opts,[{"term_index", KVL} | COpts]};
 do_make_options(_, OptionsPL)->
-    {ok, Rest, CLOpts} = get_cl_opts(OptionsPL),
+    {ok, Rest, CFOpts} = get_cf_opts(OptionsPL),
     {ok, Opts} = rocksdb:options(Rest),
-    {ok, Opts, CLOpts}.
+    {ok, Opts, CFOpts}.
 
-get_cl_opts(OptionsPL) ->
+get_cf_opts(OptionsPL) ->
     PidTuple = {"pid", enterdb_index_update:get_pid()},
-    get_cl_opts(OptionsPL, [], [PidTuple]).
+    get_cf_opts(OptionsPL, [], [PidTuple]).
 
-get_cl_opts([{"ttl", T} | Rest], AccO, AccC) ->
-    case is_integer(T) of
-	true -> get_cl_opts(Rest, AccO, [{"ttl", T} | AccC]);
-	false -> get_cl_opts(Rest, AccO, AccC)
-    end;
-get_cl_opts([{"comparator", C} | Rest], AccO, AccC) ->
-    get_cl_opts(Rest, AccO, [{"comparator", C} | AccC]);
-get_cl_opts([{"allow_concurrent_memtable_write", B} | Rest], AccO, AccC) ->
-    get_cl_opts(Rest, [{"allow_concurrent_memtable_write", B} | AccO], AccC);
-get_cl_opts([{"cf_raw_opts", L} | Rest], AccO, AccC) ->
-    get_cl_opts(Rest, AccO, [{"cf_raw_opts", L} | AccC]);
-get_cl_opts([O | Rest], AccO, AccC)->
-    get_cl_opts(Rest, [O | AccO], AccC);
-get_cl_opts([], AccO, AccC)->
+get_cf_opts([{"ttl", T} | Rest], AccO, AccC) ->
+    get_cf_opts(Rest, AccO, [{"ttl", T} | AccC]);
+get_cf_opts([{"comparator", C} | Rest], AccO, AccC) ->
+    get_cf_opts(Rest, AccO, [{"comparator", C} | AccC]);
+get_cf_opts([{"allow_concurrent_memtable_write", B} | Rest], AccO, AccC) ->
+    get_cf_opts(Rest, [{"allow_concurrent_memtable_write", B} | AccO], AccC);
+get_cf_opts([{"cf_raw_opts", L} | Rest], AccO, AccC) ->
+    get_cf_opts(Rest, AccO, [{"cf_raw_opts", L} | AccC]);
+get_cf_opts([O | Rest], AccO, AccC)->
+    get_cf_opts(Rest, [O | AccO], AccC);
+get_cf_opts([], AccO, AccC)->
     {ok, AccO, AccC}.
 
 get_empty_index(Mapper, IndexOn) ->
