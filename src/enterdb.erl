@@ -45,7 +45,8 @@
 	 index_read/3,
 	 index_read/4,
 	 add_index/2,
-	 remove_index/2
+	 remove_index/2,
+	 list_tables/0
 	 ]).
 
 -export([do_write/5,
@@ -759,3 +760,13 @@ sublist(List, Int) when is_integer(Int), Int > 0 ->
     lists:sublist(List, Int);
 sublist(List, _) ->
     List.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Return the list of tables on local node.
+%% @end
+%%--------------------------------------------------------------------
+-spec list_tables() ->
+    [string()].
+list_tables() ->
+    gb_hash:all_entries().
