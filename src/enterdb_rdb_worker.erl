@@ -45,7 +45,8 @@
 	 get_iterator/2,
 	 term_index/4,
 	 add_index_ttl/3,
-	 remove_index_ttl/2]).
+	 remove_index_ttl/2,
+	 remove_index_tid/2]).
 
 %% OAM callbacks
 -export([backup_db/2,
@@ -306,6 +307,19 @@ add_index_ttl(Shard, Tid, TTL) ->
 remove_index_ttl(Shard, Tid) ->
     Pid = enterdb_ns:get(Shard),
     gen_server:call(Pid, {remove_index_ttl, Tid}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Remove table entries that are identified by tid from term index
+%% table.
+%% @end
+%%--------------------------------------------------------------------
+-spec remove_index_tid(Shard :: string(),
+		       Tid :: binary()) ->
+    ok | {error,       Reason :: term()}.
+remove_index_tid(Shard, Tid) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, {remove_index_tid, Tid}, 20000).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -575,6 +589,12 @@ handle_call({add_index_ttl, Tid, TTL}, _From, State) ->
 handle_call({remove_index_ttl, Tid}, _From, State) ->
     #state{db_ref = DB} = State,
     Reply = rocksdb:remove_index_ttl(DB, Tid),
+    {reply, Reply, State};
+handle_call({remove_index_tid, Tid}, _From, State) ->
+    #state{db_ref = DB,
+	   readoptions = ReadOptions,
+	   writeoptions = WriteOptions} = State,
+    Reply = rocksdb:remove_index_tid(DB, Tid),
     {reply, Reply, State};
 handle_call({backup_db, BackupDir}, From,
             State = #state{db_ref = DB}) ->

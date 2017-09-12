@@ -489,7 +489,7 @@ create_table(ok, EnterdbTable) ->
     %% Create shards on nodes
     MFA = {?MODULE, do_create_shards, [EnterdbTable]},
     RMFA = {?MODULE, do_delete_table, [maps:get(name, EnterdbTable)]},
-    ?dyno:topo_call(MFA, [{timeout, 10000}, {revert, RMFA}]);
+    ?dyno:topo_call(MFA, [{timeout, 30000}, {revert, RMFA}]);
 create_table({error, Reason}, _EnterdbTable) ->
     ?debug("Create Table failed: ~p", [{error, Reason}]),
     {error, Reason}.
@@ -823,6 +823,8 @@ delete_shard_help({error, Reason}) ->
     {error, Reason}.
 
 cleanup_table(Name) ->
+    Tid = ?TABLE_LOOKUP:lookup(Name),
+    enterdb_index_update:remove_tid(Name, Tid),
     case get_tab_def(Name) of
 	{error,"no_table"} ->
 	    ok;

@@ -34,7 +34,8 @@
 	 index_read/1]).
 
 -export([register_ttl/3,
-	 unregister_ttl/2]).
+	 unregister_ttl/2,
+	 remove_tid/2]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -159,6 +160,21 @@ unregister_ttl(_, Tid) ->
 	    Req = {enterdb_rdb_worker, remove_index_ttl, [Tid]},
 	    enterdb_lib:map_shards(false, Req, Shards),
 	    ok;
+	_ ->
+	    ok
+    end.
+
+-spec remove_tid(Name :: string(),
+		 Tid :: integer()) ->
+    ok.
+remove_tid(?TERM_INDEX_TABLE, _) ->
+    ok;
+remove_tid(_, Tid) ->
+    case enterdb_lib:get_tab_def(?TERM_INDEX_TABLE) of
+        #{shards := Shards} ->
+	    TidBin = encode_unsigned(?TWO_BYTES, Tid),
+	    Req = {enterdb_rdb_worker, remove_index_tid, [TidBin]},
+	    enterdb_lib:map_shards(false, Req, Shards);
 	_ ->
 	    ok
     end.
