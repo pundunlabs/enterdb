@@ -53,8 +53,7 @@
 	 do_update/4,
 	 do_read/3,
 	 do_read_from_disk/3,
-	 do_delete/3,
-	 do_index_read/3]).
+	 do_delete/3]).
 
 -export([do_write_force/5,
 	 do_update_force/4,
@@ -657,43 +656,14 @@ index_read(Tab, Column, Term, MaxPostings) ->
 	TD = #{column_mapper := Mapper} ->
 	    case Mapper:lookup(Column) of
 		Cid when is_integer(Cid) ->
-		    Tid = ?TABLE_LOOKUP:lookup(Tab),
-		    IxKey = #{tid => Tid, cid => Cid, term => Term},
-		    do_index_read(TD, IxKey, MaxPostings);
+		    IxKey = #{cid => Cid, term => Term},
+		    enterdb_index_lib:read(TD, IxKey, MaxPostings);
 		_ ->
 		    {error, column_not_indexed}
 	    end;
 	{error, _} = R ->
 	    R
     end.
-
-do_index_read(#{key := KeyDef,
-		distributed := true,
-		nodes := Nodes}, IxKey, Limit) ->
-    Req = {enterdb_index_update, index_read, [IxKey]},
-    case ?dyno:call_nodes_minimal(Nodes, Req, [{timeout, 30000}]) of
-	{ok, #{resl := ResL,
-	       uncovered := Uncovered,
-	       unique := Unique}} when is_list(ResL) ->
-	    ?debug("call_nodes_minimal/3 -> uncovered shards: ~p", [Uncovered]),
-	    Postings = make_unique_postings(Unique, ResL),
-	    Sublist = sublist(Postings, Limit),
-	    {ok, [enterdb_lib:make_app_key(KeyDef, B) || {_, B} <- Sublist]};
-	{error, Reason} ->
-	    ?debug("do_index_read/3 -> ~p", [{error, Reason}]),
-	    {error, Reason}
-    end;
-do_index_read(#{key := KeyDef, distributed := false}, IxKey, Limit) ->
-    Postings = enterdb_index_update:index_read(IxKey),
-    {ok, [enterdb_lib:make_app_key(KeyDef, Bin)
-	    || {_, Bin} <- sublist(Postings, Limit)]}.
-
-make_unique_postings(true, ResL) ->
-    {ok, Postings} = enterdb_utils:merge_sorted_kvls(0, ResL),
-    Postings;
-make_unique_postings(false, ResL) ->
-    UniqueL = lists:usort(fun({_,X}, {_,Y}) -> X =< Y end, list:flatten(ResL)),
-    lists:sort(fun({A,_}, {B,_}) -> A >= B end, UniqueL).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -754,11 +724,6 @@ remove_index_fields([{Field, _} | Rest], List) ->
 remove_index_fields([Field | Rest], List) ->
     remove_index_fields(Rest, lists:keydelete(Field, 1, List));
 remove_index_fields([], List) ->
-    List.
-
-sublist(List, Int) when is_integer(Int), Int > 0 ->
-    lists:sublist(List, Int);
-sublist(List, _) ->
     List.
 
 %%--------------------------------------------------------------------

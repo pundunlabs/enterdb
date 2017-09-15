@@ -17,6 +17,3 @@
 -define(MAX_TABLE_NAME_LENGTH, 64).
 -define(ITERATOR_TIMEOUT, 30000).
 -define(dyno, gb_dyno_dist).
--define(TABLE_LOOKUP, '$entedb_table').
--define(TABLE_LOOKUP_STR, "entedb_table").
--define(TERM_INDEX_TABLE, "enterdb_term_index").

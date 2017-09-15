@@ -66,6 +66,7 @@ start_link() ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
+    term_prep:init(),
     SupFlags = #{strategy => one_for_one,
 		 intensity => 4,
 		 period => 3600},
@@ -76,36 +77,34 @@ init([]) ->
 			shutdown => infinity,
 			type => supervisor,
 			modules => [enterdb_simple_sup]},
+
     EdbItSup	    = #{id => enterdb_it_sup,
 			start => {enterdb_simple_sup, start_link,[enterdb_it]},
 			restart => permanent,
 			shutdown => infinity,
 			type => supervisor,
 			modules => [enterdb_simple_sup]},
+
     EdbNS	    = #{id => enterdb_ns,
 			start => {enterdb_ns, start_link, []},
 			restart => permanent,
 			shutdown => 20000,
 			type => worker,
 			modules => [enterdb_ns]},
+
     EdbRS	    = #{id => enterdb_rs,
 			start => {enterdb_rs, start_link, []},
 			restart => permanent,
 			shutdown => 20000,
 			type => worker,
 			modules => [enterdb_rs]},
+
     EdbPTS	    = #{id => enterdb_pts,
 			start => {enterdb_pts, start_link, []},
 			restart => permanent,
 			shutdown => 20000,
 			type => worker,
 			modules => [enterdb_pts]},
-    EdbIndexUpdate  = #{id => enterdb_index_update,
-			start => {enterdb_index_update, start_link, []},
-			restart => permanent,
-			shutdown => 20000,
-			type => worker,
-			modules => [enterdb_index_update]},
 
     EdbShardRecovery = #{id => enterdb_shard_recovery_sup,
 			 start => {enterdb_shard_recovery_sup, start_link, []},
@@ -122,9 +121,4 @@ init([]) ->
 			modules => [enterdb_recovery_srv]},
 
     {ok, {SupFlags, [EdbNS, EdbRS, EdbPTS, EdbItSup,
-		     EdbRdbSup, EdbRSrv, EdbShardRecovery,
-		     EdbIndexUpdate]}}.
-
-%%%===================================================================
-%%% Internal functions
-%%%===================================================================
+		     EdbRdbSup, EdbRSrv, EdbShardRecovery]}}.

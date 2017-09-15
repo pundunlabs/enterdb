@@ -45,6 +45,7 @@
 	 make_app_value/3,
 	 make_app_kvp/4,
 	 apply_update_op/3,
+	 encode_unsigned/2,
 	 get_hash_key_def/3,
 	 check_error_response/1,
 	 map_shards/3]).
@@ -505,7 +506,6 @@ do_create_shards(#{name := Name,
 		   data_model := DataModel,
 		   shards := Shards} = EDBT) ->
     LocalShards = find_local_shards(Shards),
-    gb_reg:add_keys(?TABLE_LOOKUP, [Name]),
     Mapper = get_column_mapper(Name, DataModel),
     NewEDBT = EDBT#{column_mapper => Mapper},
     write_enterdb_table(NewEDBT),
@@ -823,8 +823,6 @@ delete_shard_help({error, Reason}) ->
     {error, Reason}.
 
 cleanup_table(Name) ->
-    Tid = ?TABLE_LOOKUP:lookup(Name),
-    enterdb_index_update:remove_tid(Name, Tid),
     case get_tab_def(Name) of
 	{error,"no_table"} ->
 	    ok;
@@ -1573,9 +1571,10 @@ get_index_terms(Mapper, IndexOn, Columns) ->
 get_index_terms(Mapper, [{Col, IndexOptions} | Rest], Columns, Acc) ->
     case lists:keyfind(Col, 1, Columns) of
 	{_, Value} when is_list(Value)->
+	    Cid = encode_unsigned(2, Mapper:lookup(Col)),
 	    Terms = make_index_terms(Value, IndexOptions),
-	    Ref = Mapper:lookup(Col),
-	    get_index_terms(Mapper, Rest, Columns, [{Ref, Terms} | Acc]);
+	    BinTerms = string_to_binary_terms(Terms),
+	    get_index_terms(Mapper, Rest, Columns, [{Cid, BinTerms} | Acc]);
 	_ ->
 	    get_index_terms(Mapper, Rest, Columns, Acc)
     end;
@@ -1613,17 +1612,7 @@ update_table_attr_fun(Name, Attr, Val) ->
 	    New = set_attr(TD, Attr, Val),
 	    mnesia:write(#enterdb_table{name = Name, map = New}),
 	    ResL = update_shard_attrs(Shards, Attr, Val),
-	    UTR =
-		case Attr of
-		    index_on ->
-			CurrVal = maps:get(index_on, TD, []),
-			TTL = maps:get(ttl, TD, 0),
-			Tid = ?TABLE_LOOKUP:lookup(Name),
-			update_ttl_register(Name, Tid, TTL, CurrVal, Val);
-		    _ ->
-		        ok
-		end,
-        check_error_response(lists:usort([UTR | ResL]))
+	    check_error_response(lists:usort(ResL))
     end.
 
 do_update_table_attr(Name, Attr, Val) ->
@@ -1645,13 +1634,6 @@ update_shard_attrs(Shards, Attr,OldVal) ->
 	end
      end || {Shard, _} <- Shards].
 
-update_ttl_register(Name, Tid, TTL, [], [_|_]) ->
-    enterdb_index_update:register_ttl(Name, Tid, TTL);
-update_ttl_register(Name, Tid, _TTL, [_|_], []) ->
-    enterdb_index_update:unregister_ttl(Name, Tid);
-update_ttl_register(_Name, _Tid, _TTL, _, _) ->
-    ok.
-
 -spec make_index_terms(Value :: string(),
 		       IndexOptions :: index_options()) ->
     [unicode:charlist()].
@@ -1659,3 +1641,42 @@ make_index_terms(String, undefined) ->
     [String];
 make_index_terms(String, IndexOptions) ->
     term_prep:analyze(IndexOptions, String).
+
+-spec encode_unsigned(Size :: integer(), Int :: integer()) ->
+    binary().
+encode_unsigned(Size, Int) when is_integer(Int) ->
+    Unsigned = binary:encode_unsigned(Int, big),
+    case Size - size(Unsigned) of
+	Fill when Fill >= 0 ->
+	    << <<0:Fill/unit:8>>/binary, Unsigned/binary >>;
+	_ ->
+	    Unsigned
+    end.
+
+-spec string_to_binary_terms([Term :: {string(), integer(), integer()} |
+				      {string(), integer()} |
+				      string()]) ->
+    [binary()].
+string_to_binary_terms(Terms) ->
+    ?debug("~p:~p(~p)",[?MODULE,string_to_binary_terms,Terms]),
+    string_to_binary_terms(Terms, []).
+
+string_to_binary_terms([{Str, F, P} | Rest], Acc) ->
+    Bin = list_to_binary(Str),
+    FreqBin = encode_unsigned(4, F),
+    PosBin = encode_unsigned(4, P),
+    string_to_binary_terms(Rest, [<<Bin/binary,
+				    FreqBin/binary,
+				    PosBin/binary>> | Acc]);
+string_to_binary_terms([{Str, F} | Rest], Acc) ->
+    Bin = list_to_binary(Str),
+    FreqBin = encode_unsigned(4, F),
+    string_to_binary_terms(Rest, [<<Bin/binary,
+				    FreqBin/binary,
+				    <<0,0,0,0>>/binary>> | Acc]);
+string_to_binary_terms([Str | Rest], Acc) when is_list(Str) ->
+    Bin = list_to_binary(Str),
+    string_to_binary_terms(Rest, [<<Bin/binary,
+				    <<0,0,0,0,0,0,0,0>>/binary>> | Acc]);
+string_to_binary_terms([], Acc)  ->
+    lists:reverse(Acc).

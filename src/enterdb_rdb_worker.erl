@@ -43,10 +43,7 @@
 	 approximate_sizes/2,
 	 approximate_size/1,
 	 get_iterator/2,
-	 term_index/4,
-	 add_index_ttl/3,
-	 remove_index_ttl/2,
-	 remove_index_tid/2]).
+	 index_read/2]).
 
 %% OAM callbacks
 -export([backup_db/2,
@@ -60,7 +57,7 @@
 	 compact_index/1]).
 
 %% Internal Use
--export([update_empty_index/2]).
+-export([update_index_on/2]).
 
 -define(SERVER, ?MODULE).
 
@@ -68,15 +65,14 @@
 -include("enterdb_internal.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
 
--record(state, {table_id,
-		name,
+-record(state, {name,
 		db_ref,
                 options,
 		readoptions,
                 writeoptions,
                 shard,
 		column_mapper,
-		empty_index,
+		index_on,
 		db_path,
 		wal_path,
 		backup_path,
@@ -272,54 +268,17 @@ get_iterator(Shard, Caller) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Index (Reverse index) a term that points to db keys.
+%% Read Term from Reverse Index Column Family of the given shard.
 %% @end
 %%--------------------------------------------------------------------
--spec term_index(Shard :: string(),
-		 TidCid :: binary(),
-		 Terms :: [unicode:charlist()],
+-spec index_read(Shard :: string(),
 		 Key :: binary()) ->
-    ok | {error, Reason :: term()}.
-term_index(Shard, TidCid, Terms, Key) ->
-    Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, {term_index, TidCid, Terms, Key}).
+    {ok, Value :: term()} |
+    {error, Reason :: term()}.
+index_read(Shard, Key) ->
+    ServerRef = enterdb_ns:get(Shard),
+    gen_server:call(ServerRef, {index_read, Key}).
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Register index ttl for table with Tid.
-%% @end
-%%--------------------------------------------------------------------
--spec add_index_ttl(Shard :: string(),
-		    Tid :: integer(),
-		    TTL :: integer()) ->
-    ok | {error,    Reason :: term()}.
-add_index_ttl(Shard, Tid, TTL) ->
-    Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, {add_index_ttl, Tid, TTL}).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Unregister index ttl for table with Tid.
-%% @end
-%%--------------------------------------------------------------------
--spec remove_index_ttl(Shard :: string(), Tid :: integer()) ->
-    ok | {error,       Reason :: term()}.
-remove_index_ttl(Shard, Tid) ->
-    Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, {remove_index_ttl, Tid}).
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Remove table entries that are identified by tid from term index
-%% table.
-%% @end
-%%--------------------------------------------------------------------
--spec remove_index_tid(Shard :: string(),
-		       Tid :: binary()) ->
-    ok | {error,       Reason :: term()}.
-remove_index_tid(Shard, Tid) ->
-    Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, {remove_index_tid, Tid}, 20000).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -420,12 +379,12 @@ compact_index(Shard) ->
     Pid = enterdb_ns:get(Shard),
     gen_server:call(Pid, compact_index).
 
--spec update_empty_index(Shard :: string(),
-			 IndexOn :: [string()]) ->
+-spec update_index_on(Shard :: string(),
+		      IndexOn :: [string()]) ->
     ok.
-update_empty_index(Shard, IndexOn) ->
+update_index_on(Shard, IndexOn) ->
     Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, {update_empty_index, IndexOn}).
+    gen_server:call(Pid, {update_index_on, IndexOn}).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -445,21 +404,17 @@ init(Args) ->
     ok = ensure_closed(Shard),
     OptionsPL = maps:get(options, Args),
     ColumnMapper = maps:get(column_mapper, Args),
-    IndexOn = maps:get(index_on, Args),
-    EmptyIndex = get_empty_index(ColumnMapper, IndexOn),
+    IndexOn = get_cid_list(ColumnMapper, maps:get(index_on, Args)),
     case make_options(Subdir, Args) of
-        {ok, Options, ColumnFamiliyOpts} ->
+        {ok, Options, ColumnFamilyOpts} ->
             [DbPath, WalPath, BackupPath, CheckpointPath] =
 		ensure_directories(Args, Subdir, Shard),
-	    ?debug("ColumnFamiliyOpts ~p", [ColumnFamiliyOpts]),
-	    case open_db(Options, DbPath, ColumnFamiliyOpts) of
+	    ?debug("ColumnFamilyOpts ~p", [ColumnFamilyOpts]),
+	    case open_db(Options, DbPath, ColumnFamilyOpts) of
                 {error, Reason} ->
                     {stop, {error, Reason}};
                 {ok, DB} ->
-		    Tid = ?TABLE_LOOKUP:lookup(Subdir),
 		    TTL = maps:get(ttl, Args, undefined),
-		    IndexOn = maps:get(index_on, Args),
-		    handle_term_index(Subdir, Tid, TTL, IndexOn),
 		    ELR = #enterdb_ldb_resource{name = Shard, resource = DB},
                     ok = write_enterdb_ldb_resource(ELR),
 		    %%ReadOptionsRec = build_readoptions([{tailing,true}]),
@@ -468,15 +423,14 @@ init(Args) ->
                     WriteOptionsRec = build_writeoptions([]),
                     {ok, WriteOptions} = rocksdb:writeoptions(WriteOptionsRec),
                     process_flag(trap_exit, true),
-		    {ok, #state{table_id = Tid,
-				name = Subdir,
+		    {ok, #state{name = Subdir,
 				db_ref = DB,
                                 options = Options,
 				readoptions = ReadOptions,
                                 writeoptions = WriteOptions,
                                 shard = Shard,
 				column_mapper = ColumnMapper,
-				empty_index = EmptyIndex,
+				index_on = IndexOn,
                                 db_path = DbPath,
                                 wal_path = WalPath,
                                 backup_path = BackupPath,
@@ -509,15 +463,12 @@ handle_call({read, DBKey}, _From,
     Reply = rocksdb:get(DB, ReadOptions, DBKey),
     {reply, Reply, State};
 handle_call({write, DBKey, DBColumns, Terms}, _From, State) ->
-    #state{table_id = TableId,
-	   db_ref = DB,
+    #state{db_ref = DB,
            writeoptions = WriteOptions} = State,
-    Reply = rocksdb:put(DB, WriteOptions, DBKey, DBColumns),
-    index_on(DB, WriteOptions, TableId, DBKey, Terms),
+    Reply = rocksdb:put(DB, WriteOptions, DBKey, DBColumns, Terms),
     {reply, Reply, State};
 handle_call({update, DBKey, Op, TabSpecs}, _From, State) ->
-    #state{table_id = TableId,
-	   db_ref = DB,
+    #state{db_ref = DB,
 	   readoptions = ReadOptions,
            writeoptions = WriteOptions} = State,
     BinValue =
@@ -530,22 +481,25 @@ handle_call({update, DBKey, Op, TabSpecs}, _From, State) ->
 	    {reply, {ok, BinValue}, State};
 	{ok, DBColumns, Terms} ->
 	    Reply =
-		case rocksdb:put(DB, WriteOptions, DBKey, DBColumns) of
+		case rocksdb:put(DB, WriteOptions, DBKey, DBColumns, Terms) of
 		    ok ->
-			index_on(DB, WriteOptions, TableId, DBKey, Terms),
 			{ok, DBColumns};
 		    Else ->
 			Else
 		end,
 	    {reply, Reply, State}
     end;
-handle_call({delete, Key}, _From, State) ->
-    #state{table_id = TableId,
-	   db_ref = DB,
+handle_call({delete, DBKey}, _From, State) ->
+    #state{db_ref = DB,
            writeoptions = WriteOptions,
-	   empty_index = EmptyIndex} = State,
-    Reply = rocksdb:delete(DB, WriteOptions, Key),
-    index_on(DB, WriteOptions, TableId, Key, EmptyIndex),
+	   index_on = IndexOn} = State,
+    io:format("rdb delete binkey: ~p, index_on ~p~n",[DBKey, IndexOn]),
+    Reply = rocksdb:delete(DB, WriteOptions, DBKey, IndexOn),
+    {reply, Reply, State};
+handle_call({index_read, DBKey}, _From,
+            State = #state{db_ref = DB,
+                           readoptions = ReadOptions}) ->
+    Reply = rocksdb:index_get(DB, ReadOptions, DBKey),
     {reply, Reply, State};
 handle_call({read_range, Keys, Chunk, _Type}, _From, State) when Chunk > 0 ->
    #state{db_ref = DB,
@@ -574,28 +528,6 @@ handle_call({get_iterator, Caller}, _From, State) ->
     MonMap = State#state.it_mon,
     NewMonMap = maps:put(Mref, Caller, MonMap),
     {reply, R, State#state{it_mon = NewMonMap}};
-handle_call({term_index, TidCid, Terms, Key}, From, State) ->
-    #state{db_ref = DB,
-           writeoptions = WriteOptions} = State,
-    spawn(fun() ->
-	    Reply = rocksdb:term_index(DB, WriteOptions, TidCid, Terms, Key),
-	    gen_server:reply(From, Reply)
-	  end ),
-    {noreply, State};
-handle_call({add_index_ttl, Tid, TTL}, _From, State) ->
-    #state{db_ref = DB} = State,
-    Reply = rocksdb:add_index_ttl(DB, [{Tid, TTL}]),
-    {reply, Reply, State};
-handle_call({remove_index_ttl, Tid}, _From, State) ->
-    #state{db_ref = DB} = State,
-    Reply = rocksdb:remove_index_ttl(DB, Tid),
-    {reply, Reply, State};
-handle_call({remove_index_tid, Tid}, _From, State) ->
-    #state{db_ref = DB,
-	   readoptions = ReadOptions,
-	   writeoptions = WriteOptions} = State,
-    Reply = rocksdb:remove_index_tid(DB, Tid),
-    {reply, Reply, State};
 handle_call({backup_db, BackupDir}, From,
             State = #state{db_ref = DB}) ->
     spawn(fun() ->
@@ -698,10 +630,10 @@ handle_call(compact_index, From,
 	    gen_server:reply(From, Reply)
 	  end ),
     {noreply, State};
-handle_call({update_empty_index, IndexOn}, _From,
+handle_call({update_index_on, IndexOn}, _From,
 	    State = #state{column_mapper = Mapper}) ->
-    EmptyIndex = get_empty_index(Mapper, IndexOn),
-    {reply, ok, State#state{empty_index = EmptyIndex}};
+    DBIndexOn = get_cid_list(Mapper, IndexOn),
+    {reply, ok, State#state{index_on = DBIndexOn}};
 
 handle_call(Req, From, State) ->
     R = ?warning("unkown request:~p, from: ~p, state: ~p", [Req, From, State]),
@@ -777,12 +709,9 @@ handle_info(_Info, State) ->
 %%--------------------------------------------------------------------
 terminate(_Reason, _State = #state{db_ref = undefined}) ->
     ok;
-terminate(_Reason, _State = #state{table_id = Tid,
-				   name = Name,
-				   shard = Shard,
+terminate(_Reason, _State = #state{shard = Shard,
 				   it_mon = MonMap}) ->
     ?debug("Terminating worker for shard: ~p", [Shard]),
-    enterdb_index_update:unregister_ttl(Name, Tid),
     maps:fold(fun(Mref, Pid, _Acc) ->
 		erlang:demonitor(Mref, [flush]),
 		Res = (catch gen_server:stop(Pid)),
@@ -804,11 +733,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-index_on(_DB, _WriteOptions, _TableId, _Key, [])->
-    ok;
-index_on(DB, WriteOptions, TableId, Key, Terms)->
-    spawn(enterdb_index_update, index, [DB, WriteOptions, TableId, Key, Terms]).
-
 -spec ensure_directories(Args :: map(),
 			 Subdir :: string(),
 			 Shard :: string()) ->
@@ -989,18 +913,13 @@ set_ttl_options(TTL, OptionsPL) when is_integer(TTL) ->
 set_ttl_options(_, OptionsPL) ->
     OptionsPL.
 
-do_make_options(?TERM_INDEX_TABLE, OptionsPL)->
-    {ok, Opts, COpts} = do_make_options("", [{"allow_concurrent_memtable_write", "false"} | OptionsPL]),
-    {ok, KVL} = get_ttl_registry(),
-    {ok, Opts,[{"term_index", KVL} | COpts]};
 do_make_options(_, OptionsPL)->
     {ok, Rest, CFOpts} = get_cf_opts(OptionsPL),
     {ok, Opts} = rocksdb:options(Rest),
     {ok, Opts, CFOpts}.
 
 get_cf_opts(OptionsPL) ->
-    PidTuple = {"pid", enterdb_index_update:get_pid()},
-    get_cf_opts(OptionsPL, [], [PidTuple]).
+    get_cf_opts(OptionsPL, [], []).
 
 get_cf_opts([{"ttl", T} | Rest], AccO, AccC) ->
     get_cf_opts(Rest, AccO, [{"ttl", T} | AccC]);
@@ -1015,26 +934,5 @@ get_cf_opts([O | Rest], AccO, AccC)->
 get_cf_opts([], AccO, AccC)->
     {ok, AccO, AccC}.
 
-get_empty_index(Mapper, IndexOn) ->
-    [{Mapper:lookup(I), ""} || I <- IndexOn].
-
-get_ttl_registry() ->
-    Fun =
-	fun(#enterdb_table{name = Name, map = Map}, Acc) ->
-	    Tid = ?TABLE_LOOKUP:lookup(Name),
-	    TTL =  maps:get(ttl, Map, 0),
-	    [{Tid, TTL} | Acc]
-	end,
-    case enterdb_db:transaction(
-	fun() -> mnesia:foldl(Fun, [], enterdb_table) end) of
-	{atomic, KVL} ->
-	    {ok, KVL};
-	{error, Reason} ->
-	    {error, Reason}
-    end.
-
-%% empty IndexOn
-handle_term_index(_, _, _, []) ->
-    ok;
-handle_term_index(Subdir, Tid, TTL, _IndexOn) ->
-    enterdb_index_update:register_ttl(Subdir, Tid, TTL).
+get_cid_list(Mapper, IndexOn) ->
+    [enterdb_lib:encode_unsigned(2, Mapper:lookup(I)) || {I,_} <- IndexOn].
