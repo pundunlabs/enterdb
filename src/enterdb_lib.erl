@@ -38,6 +38,7 @@
 -export([make_db_key/2,
 	 make_db_key/3,
 	 make_key/2,
+	 make_key_cids/2,
 	 make_key_columns/3,
 	 make_db_value/4,
 	 make_app_key/2,
@@ -1009,6 +1010,28 @@ make_key(#{key := KeyDef, hash_key := HashKey}, Key) ->
 %%--------------------------------------------------------------------
 %% @doc
 %% Make key according to KeyDef defined in table configuration and also
+%% list of binary encoded cids(column ids) of indexed columns.
+%% @end
+%%--------------------------------------------------------------------
+-spec make_key_cids(TableDef :: #{},
+		    Key :: [{string(), term()}]) ->
+    {ok, DbKey :: binary(), HashKey :: binary(), Cids :: [binary()]} |
+    {error, Reason :: term()}.
+make_key_cids(#{key := KeyDef,
+		hash_key := HashKeyDef,
+		column_mapper := ColumnMapper,
+		index_on := IndexOn}, Key) ->
+    case make_db_key(KeyDef, HashKeyDef, Key) of
+	{ok, DBKey, HashKey} ->
+	    Cids = get_indexed_cids(ColumnMapper, IndexOn),
+	    {ok, DBKey, HashKey, Cids};
+	{error, E} ->
+	    {error, E}
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Make key according to KeyDef defined in table configuration and also
 %% columns according to DataModel and Column Mapper.
 %% @end
 %%--------------------------------------------------------------------
@@ -1565,6 +1588,20 @@ rdb_open_options(Start) when Start == open; Start == delete ->
 cmp_str(descending) -> "descending";
 cmp_str(ascending) -> "ascending".
 
+get_indexed_cids(Mapper, IndexOn) ->
+    get_indexed_cids(Mapper, IndexOn, []).
+
+get_indexed_cids(Mapper, [{Col, _} | Rest], Acc) ->
+    case Mapper:lookup(Col) of
+	undefined ->
+	    get_indexed_cids(Mapper, Rest, Acc);
+	Ref ->
+	    Cid = encode_unsigned(2, Ref),
+	    get_indexed_cids(Mapper, Rest, [Cid | Acc])
+    end;
+get_indexed_cids(_Mapper, [], Acc) ->
+    Acc.
+
 get_index_terms(Mapper, IndexOn, Columns) ->
     get_index_terms(Mapper, IndexOn, Columns, []).
 
@@ -1606,14 +1643,26 @@ set_attr(TD, Attr, Val) ->
 
 update_table_attr_fun(Name, Attr, Val) ->
     case get_tab_def(Name) of
-	#{Attr := Val}  ->
+	#{Attr := Val} ->
 	    ok;
 	#{name := Name, shards := Shards} = TD ->
 	    New = set_attr(TD, Attr, Val),
 	    mnesia:write(#enterdb_table{name = Name, map = New}),
 	    ResL = update_shard_attrs(Shards, Attr, Val),
-	    check_error_response(lists:usort(ResL))
+	    check_error_response(lists:usort(ResL));
+	{error, "no_table"} ->
+	    ok
     end.
+
+update_shard_attrs(Shards, Attr, Val) ->
+    [begin
+	case mnesia:read(enterdb_stab, Shard) of
+	    [] ->
+		ok;
+	    [S = #enterdb_stab{map = M}] ->
+		mnesia:write(S#enterdb_stab{map = M#{Attr => Val}})
+	end
+     end || {Shard, _} <- Shards].
 
 do_update_table_attr(Name, Attr, Val) ->
     Fun = fun update_table_attr_fun/3,
@@ -1623,16 +1672,6 @@ do_update_table_attr(Name, Attr, Val) ->
 	{atomic, ok} ->
 	    ok
     end.
-
-update_shard_attrs(Shards, Attr,OldVal) ->
-    [begin
-	case mnesia:read(enterdb_stab, Shard) of
-	    [] ->
-		ok;
-	    [S = #enterdb_stab{map = M}] ->
-		mnesia:write(S#enterdb_stab{map = M#{Attr => OldVal}})
-	end
-     end || {Shard, _} <- Shards].
 
 -spec make_index_terms(Value :: string(),
 		       IndexOptions :: index_options()) ->

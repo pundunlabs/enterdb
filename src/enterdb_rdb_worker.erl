@@ -34,7 +34,7 @@
          write/3,
          write/4,
          update/4,
-         delete/2,
+         delete/3,
 	 delete_db/1,
 	 read_range_binary/3,
 	 read_range_term/3,
@@ -56,9 +56,6 @@
 	 compact_db/1,
 	 compact_index/1]).
 
-%% Internal Use
--export([update_index_on/2]).
-
 -define(SERVER, ?MODULE).
 
 -include("enterdb.hrl").
@@ -72,7 +69,6 @@
                 writeoptions,
                 shard,
 		column_mapper,
-		index_on,
 		db_path,
 		wal_path,
 		backup_path,
@@ -156,10 +152,12 @@ update(Shard, Key, Op, TabSpecs) ->
 %% @end
 %%--------------------------------------------------------------------
 -spec delete(Shard :: string(),
-             Key :: key()) -> ok | {error, Reason :: term()}.
-delete(Shard, Key) ->
+             Key :: key(),
+	     Cids :: [binary()]) ->
+    ok | {error, Reason :: term()}.
+delete(Shard, Key, Cids) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {delete, Key}).
+    gen_server:call(ServerRef, {delete, Key, Cids}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -379,13 +377,6 @@ compact_index(Shard) ->
     Pid = enterdb_ns:get(Shard),
     gen_server:call(Pid, compact_index).
 
--spec update_index_on(Shard :: string(),
-		      IndexOn :: [string()]) ->
-    ok.
-update_index_on(Shard, IndexOn) ->
-    Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, {update_index_on, IndexOn}).
-
 %%--------------------------------------------------------------------
 %% @private
 %% @doc
@@ -404,7 +395,6 @@ init(Args) ->
     ok = ensure_closed(Shard),
     OptionsPL = maps:get(options, Args),
     ColumnMapper = maps:get(column_mapper, Args),
-    IndexOn = get_cid_list(ColumnMapper, maps:get(index_on, Args)),
     case make_options(Subdir, Args) of
         {ok, Options, ColumnFamilyOpts} ->
             [DbPath, WalPath, BackupPath, CheckpointPath] =
@@ -430,7 +420,6 @@ init(Args) ->
                                 writeoptions = WriteOptions,
                                 shard = Shard,
 				column_mapper = ColumnMapper,
-				index_on = IndexOn,
                                 db_path = DbPath,
                                 wal_path = WalPath,
                                 backup_path = BackupPath,
@@ -489,12 +478,10 @@ handle_call({update, DBKey, Op, TabSpecs}, _From, State) ->
 		end,
 	    {reply, Reply, State}
     end;
-handle_call({delete, DBKey}, _From, State) ->
+handle_call({delete, DBKey, Cids}, _From, State) ->
     #state{db_ref = DB,
-           writeoptions = WriteOptions,
-	   index_on = IndexOn} = State,
-    io:format("rdb delete binkey: ~p, index_on ~p~n",[DBKey, IndexOn]),
-    Reply = rocksdb:delete(DB, WriteOptions, DBKey, IndexOn),
+           writeoptions = WriteOptions} = State,
+    Reply = rocksdb:delete(DB, WriteOptions, DBKey, Cids),
     {reply, Reply, State};
 handle_call({index_read, DBKey}, _From,
             State = #state{db_ref = DB,
@@ -630,10 +617,6 @@ handle_call(compact_index, From,
 	    gen_server:reply(From, Reply)
 	  end ),
     {noreply, State};
-handle_call({update_index_on, IndexOn}, _From,
-	    State = #state{column_mapper = Mapper}) ->
-    DBIndexOn = get_cid_list(Mapper, IndexOn),
-    {reply, ok, State#state{index_on = DBIndexOn}};
 
 handle_call(Req, From, State) ->
     R = ?warning("unkown request:~p, from: ~p, state: ~p", [Req, From, State]),
@@ -933,6 +916,3 @@ get_cf_opts([O | Rest], AccO, AccC)->
     get_cf_opts(Rest, [O | AccO], AccC);
 get_cf_opts([], AccO, AccC)->
     {ok, AccO, AccC}.
-
-get_cid_list(Mapper, IndexOn) ->
-    [enterdb_lib:encode_unsigned(2, Mapper:lookup(I)) || {I,_} <- IndexOn].

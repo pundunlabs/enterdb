@@ -53,11 +53,11 @@
 	 do_update/4,
 	 do_read/3,
 	 do_read_from_disk/3,
-	 do_delete/3]).
+	 do_delete/4]).
 
 -export([do_write_force/5,
 	 do_update_force/4,
-	 do_delete_force/3]).
+	 do_delete_force/4]).
 
 -export([load_test/0,
 	 write_loop/1,
@@ -388,42 +388,42 @@ do_update(TD, Tab, Key, _DBKey, _Op) ->
 delete(Tab, Key) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #{distributed := Dist} ->
-	    DB_HashKey = enterdb_lib:make_key(TD, Key),
-	    delete_(Tab, Key, DB_HashKey, Dist);
+	    DB_HashKeyCids = enterdb_lib:make_key_cids(TD, Key),
+	    delete_(Tab, Key, DB_HashKeyCids, Dist);
 	{error, _} = R ->
 	    R
     end.
 
-delete_(Tab, Key, {ok, DBKey, HashKey}, true) ->
+delete_(Tab, Key, {ok, DBKey, HashKey, Cids}, true) ->
     {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
-    ?dyno:call(Ring, {?MODULE, do_delete, [Shard, Key, DBKey]}, write);
-delete_(Tab, Key, {ok, DBKey, HashKey}, false) ->
+    ?dyno:call(Ring, {?MODULE, do_delete, [Shard, Key, DBKey, Cids]}, write);
+delete_(Tab, Key, {ok, DBKey, HashKey, Cids}, false) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
-    do_delete(Shard, Key, DBKey);
+    do_delete(Shard, Key, DBKey, Cids);
 delete_(_Tab, _Key, {error, _} = E, _) ->
     E.
 
-do_delete(Shard, Key, DBKey) ->
+do_delete(Shard, Key, DBKey, Cids) ->
     TD = enterdb_lib:get_shard_def(Shard),
-    do_delete(TD, Shard, Key, DBKey).
+    do_delete(TD, Shard, Key, DBKey, Cids).
 
-do_delete_force(Shard, Key, DBKey) ->
+do_delete_force(Shard, Key, DBKey, Cids) ->
     TD = (enterdb_lib:get_shard_def(Shard))#{ready_status => ready},
-    do_delete(TD, Shard, Key, DBKey).
+    do_delete(TD, Shard, Key, DBKey, Cids).
 
-do_delete(#{ready_status := not_ready}, _, _, _) ->
+do_delete(#{ready_status := not_ready}, _, _, _, _) ->
     {error, not_ready};
-do_delete(#{ready_status := recovering}, Shard, Key, DBKey) ->
+do_delete(#{ready_status := recovering}, Shard, Key, DBKey, Cids) ->
     enterdb_shard_recovery:log_event_recover({Shard, node()},
 					     {?MODULE, do_delete_force,
-						[Shard, Key, DBKey]}),
+						[Shard, Key, DBKey, Cids]}),
     {error, {processed, recovering}};
 %% internal read based on table / shard type
-do_delete(_TD = #{type := rocksdb}, ShardTab, _Key, DBKey) ->
-    enterdb_rdb_worker:delete(ShardTab, DBKey);
-do_delete(_TD = #{type := Type}, _ShardTab, _Key, _DBKey) ->
+do_delete(_TD = #{type := rocksdb}, ShardTab, _Key, DBKey, Cids) ->
+    enterdb_rdb_worker:delete(ShardTab, DBKey, Cids);
+do_delete(_TD = #{type := Type}, _ShardTab, _Key, _DBKey, _Cids) ->
     {error, {delete_not_supported, Type}};
-do_delete({error, R}, _, _, _) ->
+do_delete({error, R}, _, _, _, _) ->
     {error, R}.
 
 %%--------------------------------------------------------------------
