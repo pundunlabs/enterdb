@@ -43,7 +43,8 @@
 	 approximate_sizes/2,
 	 approximate_size/1,
 	 get_iterator/2,
-	 index_read/2]).
+	 index_read/2,
+	 delete_indices/2]).
 
 %% OAM callbacks
 -export([backup_db/2,
@@ -271,12 +272,23 @@ get_iterator(Shard, Caller) ->
 %%--------------------------------------------------------------------
 -spec index_read(Shard :: string(),
 		 Key :: binary()) ->
-    {ok, Value :: term()} |
-    {error, Reason :: term()}.
+    {ok, Value :: term()} | {error, Reason :: term()}.
 index_read(Shard, Key) ->
     ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, {index_read, Key}).
 
+%%--------------------------------------------------------------------
+%% @doc
+%% Delete Indices from Reverse Index Column Family of the given shard,
+%% by given column names.
+%% @end
+%%--------------------------------------------------------------------
+-spec delete_indices(Shard :: string(),
+		     Cids :: [binary()]) ->
+    {ok, Value :: term()} | {error, Reason :: term()}.
+delete_indices(Shard, Cids) ->
+    ServerRef = enterdb_ns:get(Shard),
+    gen_server:call(ServerRef, {delete_indices, Cids}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -487,6 +499,10 @@ handle_call({index_read, DBKey}, _From,
             State = #state{db_ref = DB,
                            readoptions = ReadOptions}) ->
     Reply = rocksdb:index_get(DB, ReadOptions, DBKey),
+    {reply, Reply, State};
+handle_call({delete_indices, Cids}, _From,
+            State = #state{db_ref = DB}) ->
+    Reply = rocksdb:delete_indices(DB, Cids),
     {reply, Reply, State};
 handle_call({read_range, Keys, Chunk, _Type}, _From, State) when Chunk > 0 ->
    #state{db_ref = DB,

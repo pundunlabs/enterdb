@@ -380,7 +380,7 @@ get_args(Name) ->
     [{ok, pid()}] | {error, Reason :: term()}.
 init_iterators(Shards, Dist, CbMod) ->
     Req = {enterdb_it_resource, init_iterator, [self(), CbMod]},
-    enterdb_lib:map_shards(Dist, Req, Shards).
+    enterdb_lib:map_shards_seq(Dist, Req, Shards).
 
 -spec iterate(Iterators :: [it()],
 	      Op :: first | last | {seek, Key :: key()}) ->

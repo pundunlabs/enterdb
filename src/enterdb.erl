@@ -653,9 +653,11 @@ index_read(Tab, Column, Term) ->
     {ok, [key()]} | {error, Reason :: term()}.
 index_read(Tab, Column, Term, MaxPostings) ->
     case enterdb_lib:get_tab_def(Tab) of
-	TD = #{column_mapper := Mapper} ->
-	    case Mapper:lookup(Column) of
-		Cid when is_integer(Cid) ->
+	TD = #{column_mapper := Mapper,
+	       index_on := IndexOn} ->
+	    Tuple = lists:keyfind(Column, 1, IndexOn),
+	    case {Mapper:lookup(Column), Tuple} of
+		{Cid, {Column, _}} when is_integer(Cid) ->
 		    IxKey = #{cid => Cid, term => Term},
 		    enterdb_index_lib:read(TD, IxKey, MaxPostings);
 		_ ->
@@ -696,16 +698,24 @@ update_index(Op, Tab, Fields) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #{type := rocksdb,
 	       index_on := IndexOn} ->
-		UpdatedIndexOn =
+		NewIndexOn =
 		    case Op of
 			add_index -> add_index_fields(Fields, IndexOn);
 			remove_index -> remove_index_fields(Fields, IndexOn)
 		    end,
-		R = enterdb_lib:update_table_attr(TD, index_on, UpdatedIndexOn),
-		?debug("R: ~p",[R]),R;
+		R = enterdb_lib:update_table_attr(TD, index_on, NewIndexOn),
+		?debug("~p op returned -> ~p",[Op, R]),
+		Removed = find_removed(NewIndexOn, IndexOn),
+		enterdb_lib:delete_obsolete_indices(R, TD, Removed),
+		R;
 	_ ->
 	    {error, "backend_not_supported"}
     end.
+
+find_removed([{F,_} | Rest], List) ->
+    find_removed(Rest, lists:keydelete(F, 1, List));
+find_removed([], List) ->
+    List.
 
 add_index_fields([{Field, IndexOptions} | Rest], List) ->
     case io_lib:printable_unicode_list(Field) of

@@ -43,7 +43,7 @@ read(#{key := KeyDef,
        shards := Shards}, IxKey, Limit) ->
     {ok, DBKey} = make_index_key(IxKey),
     Req = {enterdb_rdb_worker, index_read, [DBKey]},
-    ResL = enterdb_lib:map_shards(Dist, Req, Shards),
+    ResL = enterdb_lib:map_shards_seq(Dist, Req, Shards),
     AllPostings = [parse_postings(R) || R <- ResL],
     {ok, Postings} = enterdb_utils:merge_sorted_kvls(0, AllPostings),
     Sublist = sublist(Postings, Limit),
@@ -60,7 +60,8 @@ make_index_key(#{cid := Cid, term := Term}) ->
 
 parse_postings({ok, Binary}) ->
     parse_postings(Binary, []);
-parse_postings({error, _Reason}) ->
+parse_postings(_E) ->
+    ?debug("index read got: ~p",[_E]),
     [].
 
 parse_postings(<< Length:?FOUR_BYTES/little-unsigned-integer-unit:8, Bin/binary>>, Acc) ->

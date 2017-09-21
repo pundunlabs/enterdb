@@ -49,7 +49,8 @@
 	 encode_unsigned/2,
 	 get_hash_key_def/3,
 	 check_error_response/1,
-	 map_shards/3]).
+	 map_shards_seq/3,
+	 map_shards/4]).
 
 
 -export([open_shard/1,
@@ -64,7 +65,8 @@
 	 cut_kvl_at/2,
 	 comparator_to_dir/1,
 	 get_ldb_worker_args/2,
-	 update_table_attr/3]).
+	 update_table_attr/3,
+	 delete_obsolete_indices/3]).
 
 %% Inter-Node API
 -export([do_create_shards/1,
@@ -861,20 +863,30 @@ read_range_on_shards({ok, Shards},
 	end,
     BaseArgs = [RangeDB, Chunk | TrailingArgs],
     Req = {CallbackMod, read_range_binary, BaseArgs},
-    ResL = map_shards(Dist, Req, Shards),
+    ResL = map_shards_seq(Dist, Req, Shards),
     {KVLs, Conts} =  unzip_range_result(ResL, []),
     ContKeys = [K || K <- Conts, K =/= complete],
     {ok, KVL, ContKey} = merge_and_cut_kvls(Dir, KeyDef, KVLs, ContKeys),
     {ok, ResultKVL} = make_app_kvp(Tab, KVL),
     {ok, ResultKVL, ContKey}.
 
+-spec map_shards_seq(Dist :: true | false,
+		     Req :: {module(), function(), [term()]},
+		     Shards :: shards()) ->
+    ResL :: [term()].
+map_shards_seq(true, Req, Shards) ->
+    ?dyno:map_shards_seq(Req, Shards);
+map_shards_seq(false, Req, Shards) ->
+    pmap(Req, Shards).
+
 -spec map_shards(Dist :: true | false,
 		 Req :: {module(), function(), [term()]},
+		 Mode :: write | read,
 		 Shards :: shards()) ->
     ResL :: [term()].
-map_shards(true, Req, Shards) ->
-    ?dyno:map_shards_seq(Req, Shards);
-map_shards(false, Req, Shards) ->
+map_shards(true, Req, Mode, Shards) ->
+    ?dyno:map_shards(Req, Mode, Shards);
+map_shards(false, Req, _Mode, Shards) ->
     pmap(Req, Shards).
 
 -spec unzip_range_result(ResL :: [{ok, KVL :: [kvp()], Cont :: term()}],
@@ -956,7 +968,7 @@ read_range_n_on_shards({ok, Shards},
     %%To be safe, currently we try to read N from each shard.
     BaseArgs = [DBStartKey, N | TrailingArgs],
     Req = {CallbackMod, read_range_n_binary, BaseArgs},
-    ResL = map_shards(Dist, Req, Shards),
+    ResL = map_shards_seq(Dist, Req, Shards),
     KVLs = [begin {ok, R} = Res, R end || Res <- ResL],
     {ok, MergedKVL} = enterdb_utils:merge_sorted_kvls(Dir, KVLs),
     N_KVP = lists:sublist(MergedKVL, N),
@@ -1719,3 +1731,18 @@ string_to_binary_terms([Str | Rest], Acc) when is_list(Str) ->
 				    <<0,0,0,0,0,0,0,0>>/binary>> | Acc]);
 string_to_binary_terms([], Acc)  ->
     lists:reverse(Acc).
+
+-spec delete_obsolete_indices(Res :: ok | {error, Reason :: term()},
+			      TD :: #{},
+			      IndexOn :: [{string(), term()}]) ->
+    ok | {error, term()}.
+delete_obsolete_indices(ok, TD, IndexOn) ->
+    Mapper = maps:get(column_mapper, TD),
+    Cids = get_indexed_cids(Mapper, IndexOn),
+    Req = {enterdb_rdb_worker, delete_indices, [Cids]},
+    Dist = maps:get(distributed, TD),
+    Shards = maps:get(shards, TD),
+    map_shards(Dist, Req, write, Shards);
+delete_obsolete_indices(Err, _TD, _IndexOn) ->
+    ?debug("Not performing delete on term indices due to: ~p", [Err]),
+    ok.
