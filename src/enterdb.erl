@@ -642,7 +642,7 @@ prev(Ref) ->
 -spec index_read(Tab :: string(),
 		 Column :: string(),
 		 Term :: string()) ->
-    {ok, [term()]} | {error, Reason :: term()}.
+    {ok, [map()]} | {error, Reason :: term()}.
 index_read(Tab, Column, Term) ->
     index_read(Tab, Column, Term, undefined).
 
@@ -650,7 +650,7 @@ index_read(Tab, Column, Term) ->
 		 Column :: string(),
 		 Term :: string(),
 		 MaxPostings :: pos_integer() | undefined) ->
-    {ok, [key()]} | {error, Reason :: term()}.
+    {ok, [map()]} | {error, Reason :: term()}.
 index_read(Tab, Column, Term, MaxPostings) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #{column_mapper := Mapper,
