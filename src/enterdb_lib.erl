@@ -1687,7 +1687,9 @@ do_update_table_attr(Name, Attr, Val) ->
 
 -spec make_index_terms(Value :: string(),
 		       IndexOptions :: index_options()) ->
-    [unicode:charlist()].
+    [Term :: {unicode:charlist(), integer(), integer()} |
+	     {unicode:charlist(), integer()} |
+	     unicode:charlist()].
 make_index_terms(String, undefined) ->
     [String];
 make_index_terms(String, IndexOptions) ->

@@ -24,9 +24,6 @@
 
 -export([read/3]).
 
--define(TWO_BYTES, 2).
--define(FOUR_BYTES, 4).
-
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
 
@@ -47,14 +44,13 @@ read(#{key := KeyDef,
     AllPostings = [parse_postings(R) || R <- ResL],
     {ok, Postings} = enterdb_utils:merge_sorted_kvls(0, AllPostings),
     Sublist = sublist(Postings, Limit),
-    {ok, [enterdb_lib:make_app_key(KeyDef, B) || {_, B} <- Sublist]}.
+    {ok, [make_post(KeyDef, S, B) || {S, B} <- Sublist]}.
     
-
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
 make_index_key(#{cid := Cid, term := Term}) ->
-    CidBin = enterdb_lib:encode_unsigned(?TWO_BYTES, Cid),
+    CidBin = enterdb_lib:encode_unsigned(2, Cid),
     TermBin = unicode:characters_to_binary(Term, unicode, utf8),
     {ok, << CidBin/binary, TermBin/binary >>}.
 
@@ -64,10 +60,10 @@ parse_postings(_E) ->
     ?debug("index read got: ~p",[_E]),
     [].
 
-parse_postings(<< Length:?FOUR_BYTES/little-unsigned-integer-unit:8, Bin/binary>>, Acc) ->
-    %% Len = Length - 4 Bytes (Length) - 8 Bytes (Stats) - 4 Bytes (Ts)
+parse_postings(<< Length:4/little-unsigned-integer-unit:8, Bin/binary>>, Acc) ->
+    %% Len = Length - 4 Bytes (Length) - 12 Bytes (Stats)
     Len = Length-16,
-    << Key:Len/bytes, Stats:8/bytes, _Ts:4/bytes, Rest/binary >> = Bin,
+    << Key:Len/bytes, Stats:12/bytes, Rest/binary >> = Bin,
     Posting = {Stats, Key},
     parse_postings(Rest, [Posting | Acc]);
 parse_postings(<<>>, Acc) ->
@@ -77,3 +73,9 @@ sublist(List, Int) when is_integer(Int), Int > 0 ->
     lists:sublist(List, Int);
 sublist(List, _) ->
     List.
+
+make_post(KeyDef, <<Freq:4/big-unsigned-integer-unit:8,
+		    Pos:4/big-unsigned-integer-unit:8,
+		    Ts:4/little-unsigned-integer-unit:8>>, BinKey) ->
+    Key = enterdb_lib:make_app_key(KeyDef, BinKey),
+    #{key => Key, ts => Ts, freq => Freq, pos => Pos}.
