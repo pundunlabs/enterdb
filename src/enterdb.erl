@@ -642,16 +642,16 @@ prev(Ref) ->
 -spec index_read(Tab :: string(),
 		 Column :: string(),
 		 Term :: string()) ->
-    {ok, [map()]} | {error, Reason :: term()}.
+    {ok, [posting()]} | {error, Reason :: term()}.
 index_read(Tab, Column, Term) ->
-    index_read(Tab, Column, Term, undefined).
+    index_read(Tab, Column, Term, #{}).
 
 -spec index_read(Tab :: string(),
 		 Column :: string(),
 		 Term :: string(),
-		 MaxPostings :: pos_integer() | undefined) ->
-    {ok, [map()]} | {error, Reason :: term()}.
-index_read(Tab, Column, Term, MaxPostings) ->
+		 Filter :: posting_filter()) ->
+    {ok, [posting()]} | {error, Reason :: term()}.
+index_read(Tab, Column, Term, Filter) ->
     case enterdb_lib:get_tab_def(Tab) of
 	TD = #{column_mapper := Mapper,
 	       index_on := IndexOn} ->
@@ -659,7 +659,7 @@ index_read(Tab, Column, Term, MaxPostings) ->
 	    case {Mapper:lookup(Column), Tuple} of
 		{Cid, {Column, _}} when is_integer(Cid) ->
 		    IxKey = #{cid => Cid, term => Term},
-		    enterdb_index_lib:read(TD, IxKey, MaxPostings);
+		    enterdb_index_lib:read(TD, IxKey, Filter);
 		_ ->
 		    {error, column_not_indexed}
 	    end;

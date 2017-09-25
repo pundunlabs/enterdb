@@ -33,19 +33,40 @@
 
 -spec read(TD :: #{},
 	   IxKey :: #{},
-	   Limit :: pos_integer() | undefined) ->
-    {ok, [key()]} | {error, Reason :: term()}.
+	   Filter :: posting_filter()) ->
+    {ok, [posting()]} | {error, Reason :: term()}.
 read(#{key := KeyDef,
        distributed := Dist,
-       shards := Shards}, IxKey, Limit) ->
+       shards := Shards}, IxKey, Filter) ->
     {ok, DBKey} = make_index_key(IxKey),
     Req = {enterdb_rdb_worker, index_read, [DBKey]},
     ResL = enterdb_lib:map_shards_seq(Dist, Req, Shards),
     AllPostings = [parse_postings(R) || R <- ResL],
-    {ok, Postings} = enterdb_utils:merge_sorted_kvls(0, AllPostings),
-    Sublist = sublist(Postings, Limit),
-    {ok, [make_post(KeyDef, S, B) || {S, B} <- Sublist]}.
-    
+    {ok, RawPostingsList} = enterdb_utils:merge_sorted_kvls(0, AllPostings),
+    {ok, filter(KeyDef, RawPostingsList, Filter)}.
+
+-spec filter(Keydef :: [term()] | used,
+	     List :: [binary()] | [map()],
+	     Filter :: posting_filter()) ->
+    {ok, [posting()]}.
+filter(KeyDef, List, #{sort_by := timestamp} = Filter) ->
+    PostingsList = make_postings_list(KeyDef, List),
+    Acc = lists:sort(fun (#{ts := A}, #{ts := B}) -> A >= B end, PostingsList),
+    filter(used, Acc, maps:remove(sort_by, Filter));
+filter(KeyDef, List, #{start_ts := Ts} = Filter) ->
+    PostingsList = make_postings_list(KeyDef, List),
+    Acc = lists:filter(fun (#{ts := A}) -> A >= Ts end, PostingsList),
+    filter(used, Acc, maps:remove(start_ts, Filter));
+filter(KeyDef, List, #{end_ts := Ts} = Filter) ->
+    PostingsList = make_postings_list(KeyDef, List),
+    Acc = lists:filter(fun (#{ts := A}) -> Ts >= A end, PostingsList),
+    filter(used, Acc, maps:remove(end_ts, Filter));
+filter(KeyDef, List, #{max_postings := Max} = Filter) ->
+    Acc = sublist(List, Max),
+    filter(KeyDef, Acc, maps:remove(max_postings, Filter));
+filter(KeyDef, List, _Filter) ->
+    make_postings_list(KeyDef, List).
+
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
@@ -73,6 +94,11 @@ sublist(List, Int) when is_integer(Int), Int > 0 ->
     lists:sublist(List, Int);
 sublist(List, _) ->
     List.
+
+make_postings_list(used, Postings) ->
+    Postings;
+make_postings_list(KeyDef, Postings) ->
+    [make_post(KeyDef, S, B) || {S, B} <- Postings].
 
 make_post(KeyDef, <<Freq:4/big-unsigned-integer-unit:8,
 		    Pos:4/big-unsigned-integer-unit:8,

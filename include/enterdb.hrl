@@ -138,6 +138,18 @@
 
 %% End Term indexer related types
 
+%% Start index_read related types
+-type posting() :: #{key := key(),
+		     ts := integer(),
+		     freq := integer(),
+		     pos := integer()}.
+
+-type posting_filter() :: #{sort_by := timestamp,
+			    start_ts := integer(),
+			    end_ts := integer(),
+			    max_postings := integer()}.
+%% End index_read  related types
+
 -record(enterdb_table, {name :: string(),
 			map :: #{}}).
 
