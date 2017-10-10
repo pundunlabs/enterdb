@@ -1715,7 +1715,7 @@ string_to_binary_terms(Terms) ->
     string_to_binary_terms(Terms, []).
 
 string_to_binary_terms([{Str, F, P} | Rest], Acc) ->
-    Bin = list_to_binary(Str),
+    Bin = unicode:characters_to_binary(Str, unicode, unicode),
     FreqBin = encode_unsigned(4, F),
     PosBin = encode_unsigned(4, P),
     string_to_binary_terms(Rest, [<<Bin/binary,
