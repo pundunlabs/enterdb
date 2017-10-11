@@ -117,19 +117,19 @@ make_index_key(Cid, Term) ->
     {ok, << CidBin/binary, TermBin/binary >>}.
 
 parse_postings({ok, Binary}) ->
-    parse_postings(Binary, []);
+    parse_postings_(Binary);
 parse_postings(_E) ->
     ?debug("index read got: ~p",[_E]),
     [].
 
-parse_postings(<< Length:4/little-unsigned-integer-unit:8, Bin/binary>>, Acc) ->
+parse_postings_(<< Length:4/little-unsigned-integer-unit:8, Bin/binary>>) ->
     %% Len = Length - 4 Bytes (Length) - 12 Bytes (Stats)
     Len = Length-16,
     << Key:Len/bytes, Stats:12/bytes, Rest/binary >> = Bin,
     Posting = {Stats, Key},
-    parse_postings(Rest, [Posting | Acc]);
-parse_postings(<<>>, Acc) ->
-    lists:reverse(Acc).
+    [Posting | parse_postings_(Rest)];
+parse_postings_(<<>>) ->
+    [].
 
 sublist(List, Int) when is_integer(Int), Int > 0 ->
     lists:sublist(List, Int);
