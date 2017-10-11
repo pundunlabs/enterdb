@@ -1722,13 +1722,13 @@ string_to_binary_terms([{Str, F, P} | Rest], Acc) ->
 				    FreqBin/binary,
 				    PosBin/binary>> | Acc]);
 string_to_binary_terms([{Str, F} | Rest], Acc) ->
-    Bin = list_to_binary(Str),
+    Bin = unicode:characters_to_binary(Str, unicode, unicode),
     FreqBin = encode_unsigned(4, F),
     string_to_binary_terms(Rest, [<<Bin/binary,
 				    FreqBin/binary,
 				    <<0,0,0,0>>/binary>> | Acc]);
 string_to_binary_terms([Str | Rest], Acc) when is_list(Str) ->
-    Bin = list_to_binary(Str),
+    Bin = unicode:characters_to_binary(Str, unicode, unicode),
     string_to_binary_terms(Rest, [<<Bin/binary,
 				    <<0,0,0,0,0,0,0,0>>/binary>> | Acc]);
 string_to_binary_terms([], Acc)  ->
