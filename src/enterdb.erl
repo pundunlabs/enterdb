@@ -657,9 +657,9 @@ index_read(Tab, Column, Term, Filter) ->
 	       index_on := IndexOn} ->
 	    Tuple = lists:keyfind(Column, 1, IndexOn),
 	    case {Mapper:lookup(Column), Tuple} of
-		{Cid, {Column, _}} when is_integer(Cid) ->
-		    IxKey = #{cid => Cid, term => Term},
-		    enterdb_index_lib:read(TD, IxKey, Filter);
+		{Cid, {Column, IndexOptions}} when is_integer(Cid) ->
+		    Terms = enterdb_index_lib:make_lookup_terms(IndexOptions, Term),
+		    enterdb_index_lib:read(TD, Cid, Terms, Filter);
 		_ ->
 		    {error, column_not_indexed}
 	    end;
