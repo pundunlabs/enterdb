@@ -220,24 +220,3 @@ set_shard_ready_flag(Shard, Flag) ->
         {aborted, Reason} ->
            {error, {aborted, Reason}}
     end.
-
-%%--------------------------------------------------------------------
-%% @doc
-%% do_remote_call
-%% @end
-%%--------------------------------------------------------------------
-do_remote_call(Node, Mod, Fun, Args) ->
-    do_remote_call(Node, Mod, Fun, Args, 10).
-
-do_remote_call(Node, Mod, Fun, Args, 0) ->
-    ?warning("giving up ~p", [{Node, Mod, Fun, Args}]),
-    {badrpc, givingup};
-do_remote_call(Node, Mod, Fun, Args, RemAttempts) ->
-    case rpc:call(Node, Mod, Fun, Args) of
-	{badrpc, nodedown} ->
-	    ?info("node is down, will try again"),
-	    timer:sleep(timer:seconds(5)),
-	    do_remote_call(Node, Mod, Fun, Args, RemAttempts - 1);
-	Res ->
-	    Res
-    end.

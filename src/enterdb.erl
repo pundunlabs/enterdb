@@ -569,6 +569,8 @@ get_size_param(Parameters, Type, Shards, Dist) ->
 	    []
     end.
 
+get_columns_param(_, undefined) ->
+    [];
 get_columns_param(Parameters, ColumnsMapper) ->
     case lists:member(columns, Parameters) of
 	true ->
