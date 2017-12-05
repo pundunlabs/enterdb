@@ -550,8 +550,8 @@ table_info(Name, Parameters) ->
 	    ColumnsMapper = maps:get(column_mapper, Map),
 	    ColumnsPL = get_columns_param(Parameters, ColumnsMapper),
 	    List = SizePL ++ ColumnsPL ++ maps:to_list(Map),
-	    Info = [ proplists:lookup(P, List) || P <- Parameters],
-	    {ok, lists:keysort(1, Info)};
+	    Info = [ lists:keyfind(P, 1, List) || P <- Parameters],
+	    {ok, lists:keysort(1, [ {A, B} || {A, B} <- Info])};
 	[] ->
 	    {error, "no_table"}
     end.
