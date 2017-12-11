@@ -31,9 +31,11 @@
 %%%===================================================================
 %%% API functions
 %%%===================================================================
--spec make_lookup_terms(IndexOptions :: map(),
+-spec make_lookup_terms(IndexOptions :: map() | undefined,
 			Term :: string()) ->
     [unicode:charlist()].
+make_lookup_terms(undefined, Term) ->
+    term_prep:analyze(#{}, Term);
 make_lookup_terms(IndexOptions, Term) ->
     TokenFilter = maps:get(token_filter, IndexOptions, #{}),
     ReadTokenFilter = maps:merge(TokenFilter, #{add => [], stats => unique}),
