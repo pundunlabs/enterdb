@@ -65,6 +65,7 @@
 	 cut_kvl_at/2,
 	 comparator_to_dir/1,
 	 get_ldb_worker_args/2,
+	 update_table_attrs/2,
 	 update_table_attr/3,
 	 delete_obsolete_indices/3]).
 
@@ -739,31 +740,7 @@ close_table(Name, false) ->
 -spec do_close_table(Name :: string()) ->
     ok | {error, Reason :: term()}.
 do_close_table(Name) ->
-    case gb_hash:get_nodes(Name) of
-	{ok, Shards} ->
-	    LocalShards = find_local_shards(Shards),
-	    close_shards(LocalShards);
-	undefined ->
-	    {error, "no_table"}
-    end.
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Close database table shards on defined node.
-%% @end
-%%--------------------------------------------------------------------
--spec close_shards(ShardList :: [string()]) ->
-    ok | {error, Reason :: term()}.
-close_shards([]) ->
-    ok;
-close_shards([Shard | Rest]) ->
-    ?debug("Closing Shard: ~p",[Shard]),
-    case close_shard(Shard) of
-	ok ->
-	    close_shards(Rest);
-	{error, Reason} ->
-	    {error, Reason}
-    end.
+    do_on_local_shards(Name, fun close_shard/1).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1508,6 +1485,35 @@ find_local_shards([], _Node, _DC, Acc) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Do run fun on local shards
+%%
+%% @end
+%%--------------------------------------------------------------------
+-spec do_on_local_shards(TableName :: string(), Fun :: fun()) ->
+    ok | {error, Reason :: term()}.
+do_on_local_shards(TableName, Fun) ->
+    case gb_hash:get_nodes(TableName) of
+	{ok, Shards} ->
+	    LocalShards = find_local_shards(Shards),
+	    ?info("Applying fun ~p on Local Shards: ~p",[Fun, LocalShards]),
+	    do_on_local_shards_seq(LocalShards, Fun);
+	undefined ->
+	    {error, "no_table"}
+    end.
+
+do_on_local_shards_seq([], _F) ->
+    ok;
+do_on_local_shards_seq([Shard| R], Fun) ->
+    case Fun(Shard) of
+	ok ->
+	    do_on_local_shards_seq(R, Fun);
+	E ->
+	    E
+    end.
+
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Parallel map requests on local node. Args will be constructed by
 %% Adding Elements from List to BaseArgs. apply(Mod, Fun, Args)
 %% will be called on local node. Result list will be in respective
@@ -1630,6 +1636,15 @@ get_index_terms(Mapper, [{Col, IndexOptions} | Rest], Columns, Acc) ->
 get_index_terms(_Mapper, [], _Columns, Acc) ->
     Acc.
 
+-spec update_table_attrs(TD :: map(),
+			[{Attr :: atom(), Val :: term()}]) ->
+    ok.
+update_table_attrs(_TD, []) ->
+    ok;
+update_table_attrs(TD, [{Attr, Val} | R]) ->
+    update_table_attr(TD, Attr, Val),
+    update_table_attrs(TD, R).
+
 -spec update_table_attr(TD :: map(),
 			Attr :: atom(),
 			Val :: term()) ->
@@ -1682,8 +1697,20 @@ do_update_table_attr(Name, Attr, Val) ->
 	{aborted, Reason} ->
 	    {error, Reason};
 	{atomic, ok} ->
-	    ok
+	    do_handle_attr_change(Name, Attr, Val)
     end.
+
+-spec do_handle_attr_change(Name :: string(),
+			    Attr :: atom(),
+			    Val :: term()) ->
+    ok | {error, Reason :: term()}.
+do_handle_attr_change(Name, ttl, Val) ->
+    Fun =
+	fun(Shard) -> enterdb_rdb_worker:set_ttl(Shard, Val) end,
+    do_on_local_shards(Name, Fun);
+do_handle_attr_change(_Name, _Attr, _Val) ->
+    ok.
+
 
 -spec make_index_terms(Value :: string(),
 		       IndexOptions :: index_options()) ->
