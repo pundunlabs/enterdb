@@ -765,7 +765,7 @@ ensure_directories(_Args, Subdir, Shard) ->
 	      ColumnFamiliyOpts :: [{string(), term()}]) ->
     {ok, DB :: term()} | {error, Reason :: term()}.
 open_db(Options, DbPath, ColumnFamiliyOpts) ->
-    rocksdb:open_db(Options, DbPath, ColumnFamiliyOpts).
+    rocksdb:open_db(Options, DbPath, ColumnFamiliyOpts, erlang:system_info(schedulers)).
 
 %%--------------------------------------------------------------------
 %% @doc
