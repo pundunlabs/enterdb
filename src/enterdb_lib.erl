@@ -29,7 +29,6 @@
 -export([verify_create_table_args/1,
 	 create_table/1,
          open_table/2,
-         open_shards/1,
 	 close_table/2,
 	 read_range_on_shards/4,
 	 read_range_n_on_shards/4,
@@ -689,31 +688,7 @@ open_table(Name, false) ->
     ok | {error, Reason :: term()}.
 do_open_table(Name) ->
     ?info("Opening table: ~p", [Name]),
-    case gb_hash:get_nodes(Name) of
-	{ok, Shards} ->
-	    LocalShards = find_local_shards(Shards),
-	    open_shards(LocalShards);
-	undefined ->
-	    {error, "no_table"}
-    end.
-
-%%--------------------------------------------------------------------
-%% @doc
-%% Open database table shards on defined node.
-%% @end
-%%--------------------------------------------------------------------
--spec open_shards(ShardList :: [string()]) ->
-    ok | {error, Reason :: term()}.
-open_shards([]) ->
-    ok;
-open_shards([Shard | Rest]) ->
-    ?debug("Opening Shard: ~p",[Shard]),
-    case open_shard(Shard) of
-	ok ->
-	    open_shards(Rest);
-	{error, Reason} ->
-	    {error, Reason}
-    end.
+    do_on_local_shards(Name, fun open_shard/1).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -760,14 +735,11 @@ delete_table(Name, false) ->
 -spec do_delete_table(Name :: string()) ->
 ok | {error, Reason :: term()}.
 do_delete_table(Name) ->
-    case gb_hash:get_nodes(Name) of
-	{ok, Shards} ->
-	    LocalShards = find_local_shards(Shards),
-	    ?info("Deleting ~p, Local Shards: ~p",[Name, LocalShards]),
-	    delete_shards(LocalShards),
+    case do_on_local_shards(Name, fun delete_shard/1) of
+	ok ->
 	    cleanup_table(Name);
-	undefined ->
-	    {error, "no_table"}
+	E ->
+	    E
     end.
 
 %%--------------------------------------------------------------------
