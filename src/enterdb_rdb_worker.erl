@@ -55,7 +55,8 @@
 	 restore_db/3,
 	 create_checkpoint/1,
 	 compact_db/1,
-	 compact_index/1]).
+	 compact_index/1,
+	 set_ttl/2]).
 
 -define(SERVER, ?MODULE).
 
@@ -390,6 +391,17 @@ compact_index(Shard) ->
     gen_server:call(Pid, compact_index).
 
 %%--------------------------------------------------------------------
+%% @doc
+%% Set ttl of db.
+%% @end
+%%--------------------------------------------------------------------
+-spec set_ttl(Shard :: string(), TTL :: pos_integer()) ->
+    ok | {error, Reason :: term()}.
+set_ttl(Shard, TTL) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, {set_ttl, TTL}).
+
+%%--------------------------------------------------------------------
 %% @private
 %% @doc
 %% Initializes the server
@@ -633,6 +645,10 @@ handle_call(compact_index, From,
 	    gen_server:reply(From, Reply)
 	  end ),
     {noreply, State};
+handle_call({set_ttl, TTL}, _From,
+            State = #state{db_ref = DB}) ->
+    Reply = rocksdb:set_ttl(DB, TTL),
+    {reply, Reply, State#state{ttl=TTL}};
 
 handle_call(Req, From, State) ->
     R = ?warning("unkown request:~p, from: ~p, state: ~p", [Req, From, State]),

@@ -46,7 +46,8 @@
 	 index_read/4,
 	 add_index/2,
 	 remove_index/2,
-	 list_tables/0
+	 list_tables/0,
+	 alter_table/2
 	 ]).
 
 -export([do_write/5,
@@ -747,3 +748,13 @@ remove_index_fields([], List) ->
     [string()].
 list_tables() ->
     gb_hash:all_entries().
+
+-spec alter_table(TableName :: string(), Options :: [table_option()])->
+    ok | {error, Reason :: term()}.
+alter_table(TableName, Options) ->
+    case enterdb_lib:get_tab_def(TableName) of
+	TD = #{} ->
+	    enterdb_lib:update_table_attrs(TD, Options);
+	_ ->
+            {error, "no_table"}
+    end.
