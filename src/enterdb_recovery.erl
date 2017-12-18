@@ -106,8 +106,8 @@ do_start_recovery(log, Node, Shard) ->
     enterdb_shard_recovery:start({node(), Shard}, mem_log),
     ?info("set status recovering"),
     set_shard_ready_flag(Shard, recovering),
-    {ok, Log} = rpc:call(Node, enterdb_shard_recovery, get_log, [{node(), Shard}]),
-    ?info("got log ~p", [Log]),
+    Log = rpc:call(Node, enterdb_shard_recovery, get_log, [{node(), Shard}]),
+    ?info("remote log ~p", [Log]),
     update_local_shard(Node, Shard, Log),
     update_column_mapper(Node, Shard),
     enterdb_shard_recovery:dump_mem_log({node(), Shard}),
@@ -131,10 +131,7 @@ do_start_recovery(full, Node, Shard) ->
     gb_dyno_metadata:node_rem_prop(node(), {Shard, oos}),
     ?info("recovery done for shard ~p", [Shard]).
 
-update_local_shard(Node, Shard, need_full_recovery) ->
-    copy_shard(Node, Shard);
-
-update_local_shard(Node, Shard, Log) ->
+update_local_shard(Node, Shard, {ok, Log}) ->
     try
 	R = rpc:call(Node, disk_log, chunk, [Log, start]),
 	done = loop_through_data(Node, Log, R),
@@ -144,7 +141,9 @@ update_local_shard(Node, Shard, Log) ->
 	?warning("falling back to full recover of shard"),
 	%% fallback to full recovery
 	copy_shard(Node, Shard)
-    end.
+    end;
+update_local_shard(Node, Shard, _RemoteLogStatus) ->
+    copy_shard(Node, Shard).
 
 loop_through_data(_Node, _Log, eof) ->
     done;
