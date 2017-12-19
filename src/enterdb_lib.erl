@@ -1644,14 +1644,20 @@ update_table_attr_fun(Name, Attr, Val) ->
     case get_tab_def(Name) of
 	#{Attr := Val} ->
 	    ok;
-	#{name := Name, shards := Shards} = TD ->
+	#{name := Name, shards := Shards, distributed := Dist} = TD ->
 	    New = set_attr(TD, Attr, Val),
 	    mnesia:write(#enterdb_table{name = Name, map = New}),
-	    ResL = update_shard_attrs(Shards, Attr, Val),
+	    ResL = update_shard_attrs(Shards, Dist, Attr, Val),
 	    check_error_response(lists:usort(ResL));
 	{error, "no_table"} ->
 	    ok
     end.
+
+update_shard_attrs(Shards, false, Attr, Val) ->
+    update_shard_attrs(Shards, Attr, Val);
+update_shard_attrs(Shards, true, Attr, Val) ->
+    List = [Shard || {Shard, _} <- Shards],
+    update_shard_attrs(List, Attr, Val).
 
 update_shard_attrs(Shards, Attr, Val) ->
     [begin
@@ -1661,7 +1667,7 @@ update_shard_attrs(Shards, Attr, Val) ->
 	    [S = #enterdb_stab{map = M}] ->
 		mnesia:write(S#enterdb_stab{map = M#{Attr => Val}})
 	end
-     end || {Shard, _} <- Shards].
+     end || Shard <- Shards].
 
 do_update_table_attr(Name, Attr, Val) ->
     Fun = fun update_table_attr_fun/3,
@@ -1690,7 +1696,7 @@ do_handle_attr_change(_Name, _Attr, _Val) ->
 	     {unicode:charlist(), integer()} |
 	     unicode:charlist()].
 make_index_terms(String, undefined) ->
-    [String];
+    term_prep:analyze(#{}, String);
 make_index_terms(String, IndexOptions) ->
     term_prep:analyze(IndexOptions, String).
 
