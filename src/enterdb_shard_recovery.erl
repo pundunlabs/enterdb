@@ -142,6 +142,7 @@ init([{Node, Shard} = Name]) ->
     gb_dyno_metadata:node_add_prop(Node, {{Shard, oos}, {log, node()}}),
 
     Path = filename:join([enterdb_lib:get_path(hh_path), atom_to_list(Node), Shard ++ ".log"]),
+    file:delete(Path),
     ok = filelib:ensure_dir(Path),
     SizeMb = gb_conf:get_param("enterdb.yaml", hh_log_size, 100),
     {ok, Log} =
