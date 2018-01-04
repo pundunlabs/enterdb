@@ -169,6 +169,14 @@ copy_shard(Node, Shard) ->
     ?info("about to restore from ~p", [RestorePath]),
     Res = enterdb_rdb_worker:restore_db(Shard, 0, RestorePath),
     ?info("restore_db returned ~p", [Res]),
+    case Res of
+	{error, no_ns_entry} ->
+	   OpenRes = enterdb_lib:open_shard(Shard),
+	   ?info("open shard returned ~p", [OpenRes]),
+	   ?info("trying to restore db again"),
+	   ok = enterdb_rdb_worker:restore_db(Shard, 0, RestorePath);
+	_ -> ok
+    end,
     ?info("deleting restore dir ~p", [RestorePath]),
     os:cmd("rm -rf " ++ RestorePath),
     ok.

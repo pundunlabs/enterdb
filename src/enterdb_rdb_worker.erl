@@ -342,8 +342,11 @@ restore_db(Shard) ->
 -spec restore_db(Shard :: string(), BackupId :: integer()) ->
     ok | {error, Reason :: term()}.
 restore_db(Shard, BackupId) when is_integer(BackupId) ->
-    Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, {restore_db, BackupId}).
+    case enterdb_ns:get(Shard) of
+	Pid when is_pid(Pid) ->
+	    gen_server:call(Pid, {restore_db, BackupId});
+	E -> E
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -353,8 +356,11 @@ restore_db(Shard, BackupId) when is_integer(BackupId) ->
 -spec restore_db(Shard :: string(), BackupId :: integer(), FromPath :: string()) ->
     ok | {error, Reason :: term()}.
 restore_db(Shard, BackupId, FromPath) when is_integer(BackupId) ->
-    Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, {restore_db, BackupId, FromPath}).
+    case enterdb_ns:get(Shard) of
+	Pid when is_pid(Pid) ->
+	    gen_server:call(Pid, {restore_db, BackupId, FromPath});
+	E -> E
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
