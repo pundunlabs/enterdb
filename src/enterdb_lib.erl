@@ -546,8 +546,8 @@ do_create_shard_type(#{type := rocksdb} = ESTAB) ->
 
 recreate_shard(Shard) ->
     SD = get_shard_def(Shard),
-    delete_shard_help(Shard),
-    do_create_shard_type(Shard).
+    delete_shard_help(SD),
+    do_create_shard_type(SD).
 
 %%--------------------------------------------------------------------
 %% @doc
