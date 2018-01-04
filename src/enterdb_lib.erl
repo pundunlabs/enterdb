@@ -75,6 +75,9 @@
 	 do_delete_table/1,
 	 do_update_table_attr/3]).
 
+%%
+-export([recreate_shard/1]).
+
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
 -include("enterdb_internal.hrl").
@@ -540,6 +543,11 @@ do_create_shard(Shard, EDBT) ->
 
 do_create_shard_type(#{type := rocksdb} = ESTAB) ->
     create_rocksdb_shard(ESTAB).
+
+recreate_shard(Shard) ->
+    SD = get_shard_def(Shard),
+    delete_shard_help(Shard),
+    do_create_shard_type(Shard).
 
 %%--------------------------------------------------------------------
 %% @doc

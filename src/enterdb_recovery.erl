@@ -166,15 +166,16 @@ copy_shard(Node, Shard) ->
     RestorePath = filename:join([RestoreDir, Shard]),
     ?info("cleaning out any lingering data in ~p", [RestorePath]),
     ok = copy_backup(Node, Shard, RestorePath, RemPath),
-    ?info("about to restore from ~p", [RestorePath]),
+    ?info("about to restore ~p from ~p", [Shard, RestorePath]),
     Res = enterdb_rdb_worker:restore_db(Shard, 0, RestorePath),
-    ?info("restore_db returned ~p", [Res]),
+    ?info("restore_db ~p returned ~p", [Shard, Res]),
     case Res of
 	{error, no_ns_entry} ->
-	   OpenRes = enterdb_lib:open_shard(Shard),
-	   ?info("open shard returned ~p", [OpenRes]),
-	   ?info("trying to restore db again"),
-	   ok = enterdb_rdb_worker:restore_db(Shard, 0, RestorePath);
+	    enterdb_lib:recreate_shard(Shard),
+	    OpenRes = enterdb_lib:open_shard(Shard),
+	    ?info("open shard ~p returned ~p", [Shard, OpenRes]),
+	    ?info("trying to restore db again"),
+	    ok = enterdb_rdb_worker:restore_db(Shard, 0, RestorePath);
 	_ -> ok
     end,
     ?info("deleting restore dir ~p", [RestorePath]),
