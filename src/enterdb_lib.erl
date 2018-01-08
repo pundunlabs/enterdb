@@ -1518,34 +1518,39 @@ pmap({Mod, Fun, BaseArgs}, List) ->
     ResL :: [term()].
 peval(Reqs) ->
     ReplyTo = self(),
-    Pids = [async_eval(ReplyTo, Req) || Req <- Reqs],
-    [yield(P) || P <- Pids].
+    PidRefs = [async_eval(ReplyTo, Req) || Req <- Reqs],
+    [yield(PidRef) || PidRef <- PidRefs].
 
 -spec async_eval(ReplyTo :: pid(),
 		 Req :: {module(), function(), [term()]}) ->
     Pid :: pid().
 async_eval(ReplyTo, {Mod, Fun, Args}) ->
-    spawn(
+    erlang:spawn_monitor(
       fun() ->
 	      R = apply(Mod, Fun, Args),
 	      ReplyTo ! {self(), {promise_reply, R}}
       end).
 
--spec yield(Pid :: pid()) ->
+-spec yield({Pid :: pid(), Ref :: reference()}) ->
     term().
-yield(Pid) when is_pid(Pid) ->
-    {value, R} = do_yield(Pid, infinity),
+yield({Pid, Ref}) when is_pid(Pid) ->
+    {value, R} = do_yield(Pid, Ref, infinity),
+    erlang:demonitor(Ref, [flush]),
     R.
 
--spec do_yield(Pid :: pid,
+-spec do_yield(Pid :: pid(),
+	       Ref :: reference(),
 	       Timeout :: non_neg_integer() | infinity) ->
     {value, R :: term()} | timeout.
-do_yield(Pid, Timeout) ->
+do_yield(Pid, Ref, Timeout) ->
     receive
         {Pid, {promise_reply,R}} ->
-            {value, R}
+            {value, R};
+	{'DOWN', Ref, process, Pid, Reason} ->
+	    ?error("Pid: ~p 'DOWN' with Reason: ~p", [Pid, Reason]),
+	    {value, {error, Reason}}
         after Timeout ->
-            timeout
+            {value, {error, timeout}}
     end.
 
 -spec get_ldb_worker_args(Start :: create | open | delete,
