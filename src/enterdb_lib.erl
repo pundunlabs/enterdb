@@ -791,7 +791,10 @@ cleanup_table(Name) ->
 	    Path = get_path(db_path),
 	    FullPath = filename:join([Path, Name]),
 	    file:del_dir(FullPath),
-	    gb_reg:purge(ColumnMapper),
+	    case ColumnMapper of
+		undefined -> ok;
+		_ -> gb_reg:purge(ColumnMapper)
+	    end,
 	    mnesia:dirty_delete(enterdb_table, Name)
     end,
     gb_hash:delete_ring(Name).
