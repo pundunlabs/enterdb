@@ -24,7 +24,8 @@
 
 %% API
 -export([get_path/1,
-	 get_num_of_local_shards/0]).
+	 get_num_of_local_shards/0,
+	 get_num_of_background_threads/0]).
 
 -export([verify_create_table_args/1,
 	 create_table/1,
@@ -114,20 +115,18 @@ get_path(Path, Default) ->
 %%--------------------------------------------------------------------
 -spec get_num_of_local_shards() -> string().
 get_num_of_local_shards() ->
-    case gb_conf:get_param("enterdb.yaml", num_of_local_shards) of
-	undefined ->
-	    ?debug("num_of_local_shards not configured!", []),
-            erlang:system_info(schedulers);
-	Int when is_integer(Int) ->
-	    Int;
-	IntStr ->
-            case catch list_to_integer(IntStr) of
-                Int when is_integer(Int) ->
-                    Int;
-                _ ->
-                    erlang:system_info(schedulers)
-            end
-    end.
+    Default = erlang:system_info(schedulers),
+    gb_conf:get_param("enterdb.yaml", num_of_local_shards, Default).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Get the configured default for number of background threads.
+%% @end
+%%--------------------------------------------------------------------
+-spec get_num_of_background_threads() -> string().
+get_num_of_background_threads() ->
+    Default = erlang:system_info(schedulers),
+    gb_conf:get_param("enterdb.yaml", num_of_background_threads, Default).
 
 %%--------------------------------------------------------------------
 %% @doc

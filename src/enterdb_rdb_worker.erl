@@ -771,7 +771,8 @@ ensure_directories(_Args, Subdir, Shard) ->
 	      ColumnFamiliyOpts :: [{string(), term()}]) ->
     {ok, DB :: term()} | {error, Reason :: term()}.
 open_db(Options, DbPath, ColumnFamiliyOpts) ->
-    rocksdb:open_db(Options, DbPath, ColumnFamiliyOpts, erlang:system_info(schedulers)).
+    Threads = enterdb_lib:get_num_of_background_threads(),
+    rocksdb:open_db(Options, DbPath, ColumnFamiliyOpts, Threads).
 
 %%--------------------------------------------------------------------
 %% @doc
