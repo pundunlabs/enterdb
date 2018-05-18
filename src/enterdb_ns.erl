@@ -133,8 +133,13 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({'DOWN', _Ref, process, Pid, _Info}, State) ->
-    delete_pid(State#state.ns_table, Pid),
+handle_info({'DOWN', _Ref, process, Pid, Info}, State) ->
+    Name = delete_pid(State#state.ns_table, Pid),
+    if Info =/= normal ->
+	?error("registerd pid ~p (~p) went down with reason ~p", [Pid, Name, Info]);
+	true ->
+	    ok
+    end,
     {noreply, State};
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -173,7 +178,8 @@ delete_pid(Tab, Pid) ->
     case ets:lookup(Tab, Pid) of
 	[#ns_entry{value = Name}] ->
 	    ets:delete(Tab, Pid),
-	    ets:delete(Tab, Name);
+	    ets:delete(Tab, Name),
+	    Name;
 	_ ->
 	    true
     end.
