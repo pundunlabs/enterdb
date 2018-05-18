@@ -135,7 +135,7 @@ handle_cast(_Msg, State) ->
 %%--------------------------------------------------------------------
 handle_info({'DOWN', _Ref, process, Pid, Info}, State) ->
     Name = delete_pid(State#state.ns_table, Pid),
-    if Info =/= normal ->
+    if Info =/= normal, Info =/= shutdown ->
 	?error("registerd pid ~p (~p) went down with reason ~p", [Pid, Name, Info]);
 	true ->
 	    ok
