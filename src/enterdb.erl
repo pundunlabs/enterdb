@@ -26,6 +26,7 @@
 -export([create_table/3,
          open_table/1,
 	 close_table/1,
+	 redistribute_table/1,
 	 read/2,
          read_from_disk/2,
 	 write/1,
@@ -147,6 +148,28 @@ close_table(Name) ->
             {error, "no_table"};
 	Dist ->
 	    enterdb_lib:close_table(Name, Dist)
+    end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Redistribute an existing enterdb database table on current cluster
+%% topology.
+%% @end
+%%--------------------------------------------------------------------
+-spec redistribute_table(Name :: string())-> ok | {error, Reason :: term()}.
+redistribute_table(Name) ->
+    case gb_hash:is_distributed(Name) of
+	undefined ->
+            {error, "no_table"};
+	false ->
+	    {error, "local_table"};
+	true ->
+	    case enterdb_lib:get_tab_def(Name) of
+		TD = #{hashing_method := rendezvous} ->
+		    enterdb_lib:redistribute_table(TD);
+		#{} ->
+		    {error, "hashing_method_not_supported"}
+	    end
     end.
 
 %%--------------------------------------------------------------------

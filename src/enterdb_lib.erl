@@ -31,6 +31,7 @@
 	 create_table/1,
          open_table/2,
 	 close_table/2,
+	 redistribute_table/1,
 	 read_range_on_shards/4,
 	 read_range_n_on_shards/4,
 	 approximate_size/3]).
@@ -712,6 +713,19 @@ close_table(Name, true) ->
     ?dyno:topo_call(MFA, [{timeout, 10000}]);
 close_table(Name, false) ->
     do_close_table(Name).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Redistribute an existing enterdb database table on current cluster
+%% topology.
+%% @end
+%%--------------------------------------------------------------------
+-spec redistribute_table(Tab :: #{}) -> ok | {error, Reason :: term()}.
+redistribute_table(#{distributed := true,
+		     hashing_method := rendezvous,
+		     num_of_shards := NoS,
+		     replication_factor := RF}) ->
+    ok.
 
 %%--------------------------------------------------------------------
 %% @doc

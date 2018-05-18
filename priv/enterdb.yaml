@@ -12,5 +12,5 @@ params	 :
     systab_path : "data/systab" # Relative or Absolute path to db
     hh_path : "data/hinted_handoff"
     hh_log_size : 100 # max size in MB
-    num_of_local_shards : 16 # Number of local shards per db table
+    num_of_local_shards : 1 # Number of local shards per db table
     num_of_background_threads : 6 # Number of background threads set in rocksdb
