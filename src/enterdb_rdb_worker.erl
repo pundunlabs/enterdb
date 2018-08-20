@@ -58,6 +58,8 @@
 	 compact_index/1,
 	 set_ttl/2]).
 
+-export([memory_usage/1]).
+
 -define(SERVER, ?MODULE).
 
 -include("enterdb.hrl").
@@ -323,6 +325,17 @@ backup_db(Shard, BackupDir, Timeout) ->
 get_backup_info(Shard) ->
     Pid = enterdb_ns:get(Shard),
     gen_server:call(Pid, get_backup_info).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Retrieve memory usage for shard
+%% @end
+%%--------------------------------------------------------------------
+-spec memory_usage(Shard :: string()) ->
+    ok | {error, Reason :: term()}.
+memory_usage(Shard) ->
+    Pid = enterdb_ns:get(Shard),
+    gen_server:call(Pid, memory_usage).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -656,6 +669,11 @@ handle_call({set_ttl, TTL}, _From,
     Reply = rocksdb:set_ttl(DB, TTL),
     {reply, Reply, State#state{ttl=TTL}};
 
+handle_call(memory_usage, _From,
+            State = #state{db_ref = DB}) ->
+    Reply = rocksdb:memory_usage(DB),
+    {reply, Reply, State};
+
 handle_call(Req, From, State) ->
     R = ?warning("unkown request:~p, from: ~p, state: ~p", [Req, From, State]),
     {reply, R, State}.
@@ -951,6 +969,10 @@ get_cf_opts([{"allow_concurrent_memtable_write", B} | Rest], AccO, AccC) ->
     get_cf_opts(Rest, [{"allow_concurrent_memtable_write", B} | AccO], AccC);
 get_cf_opts([{"cf_raw_opts", L} | Rest], AccO, AccC) ->
     get_cf_opts(Rest, AccO, [{"cf_raw_opts", L} | AccC]);
+get_cf_opts([{"cache_size", S} | Rest], AccO, AccC) ->
+    get_cf_opts(Rest, AccO, [{"cache_size", S} | AccC]);
+get_cf_opts([{"write_buffer_size", S} | Rest], AccO, AccC) ->
+    get_cf_opts(Rest, AccO, [{"write_buffer_size", S} | AccC]);
 get_cf_opts([O | Rest], AccO, AccC)->
     get_cf_opts(Rest, [O | AccO], AccC);
 get_cf_opts([], AccO, AccC)->

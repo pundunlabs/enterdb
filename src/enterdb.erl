@@ -525,9 +525,10 @@ table_info(Name) ->
 	    Dist = maps:get(distributed, Map),
 	    Shards = maps:get(shards, Map),
 	    SizePL = get_size_param([size], Type, Shards, Dist),
+	    MemoryUsage = get_memory_usage([memory_usage], Type, Shards, Dist),
 	    ColumnsMapper = maps:get(column_mapper, Map),
 	    ColumnsPL = get_columns_param([columns], ColumnsMapper),
-	    Info = SizePL ++ ColumnsPL ++ maps:to_list(Map),
+	    Info = SizePL ++ ColumnsPL ++ MemoryUsage ++ maps:to_list(Map),
 	    {ok, lists:keysort(1, Info)};
 	[] ->
 	    {error, "no_table"}
@@ -548,9 +549,10 @@ table_info(Name, Parameters) ->
 	    Dist = maps:get(distributed, Map),
 	    Shards = maps:get(shards, Map),
 	    SizePL = get_size_param(Parameters, Type, Shards, Dist),
+	    MemoryUsage = get_memory_usage(Parameters, Type, Shards, Dist),
 	    ColumnsMapper = maps:get(column_mapper, Map),
 	    ColumnsPL = get_columns_param(Parameters, ColumnsMapper),
-	    List = SizePL ++ ColumnsPL ++ maps:to_list(Map),
+	    List = SizePL ++ ColumnsPL ++ MemoryUsage ++ maps:to_list(Map),
 	    Info = [ lists:keyfind(P, 1, List) || P <- Parameters],
 	    {ok, lists:keysort(1, [ {A, B} || {A, B} <- Info])};
 	[] ->
@@ -565,6 +567,19 @@ get_size_param(Parameters, Type, Shards, Dist) ->
 		    [];
 		{ok, S} ->
 		    [{size, S}]
+	    end;
+	false ->
+	    []
+    end.
+
+get_memory_usage(Parameters, Type, Shards, Dist) ->
+    case lists:member(memory_usage, Parameters) of
+	true ->
+	    case enterdb_lib:memory_usage(Type, Shards, Dist) of
+		{error, _Reason} ->
+		    [];
+		{ok, MemoryUsage} ->
+		    [{memory_usage, MemoryUsage}]
 	    end;
 	false ->
 	    []
