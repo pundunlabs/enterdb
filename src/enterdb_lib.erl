@@ -1737,6 +1737,11 @@ update_table_attr_fun(Name, Attr, Val) ->
 	    ok
     end.
 
+update_map(Map, Attr, undefined) ->
+    maps:remove(Attr, Map);
+update_map(Map, Attr, Val) ->
+    Map#{Attr => Val}.
+
 update_shard_attrs(Shards, false, Attr, Val) ->
     update_shard_attrs(Shards, Attr, Val);
 update_shard_attrs(Shards, true, Attr, Val) ->
@@ -1749,7 +1754,7 @@ update_shard_attrs(Shards, Attr, Val) ->
 	    [] ->
 		ok;
 	    [S = #enterdb_stab{map = M}] ->
-		mnesia:write(S#enterdb_stab{map = M#{Attr => Val}})
+		mnesia:write(S#enterdb_stab{map = update_map(M, Attr,Val)})
 	end
      end || Shard <- Shards].
 
