@@ -346,6 +346,10 @@ verify_table_options([{cache_size, Size} | Rest]) when is_integer(Size) ->
 verify_table_options([{write_buffer_size, Size} | Rest]) when is_integer(Size) ->
     verify_table_options(Rest);
 
+%% Write buffer Size (used by rocksdb)
+verify_table_options([{fifo_ttl, {Ttl, Size}} | Rest]) when is_integer(Ttl), is_integer(Size) ->
+    verify_table_options(Rest);
+
 %% comparator defines how the keys will be sorted
 verify_table_options([{comparator, C}|Rest]) when C == descending;
 						  C == ascending ->
@@ -1634,6 +1638,8 @@ get_args_from_map(#{write_buffer_size := Size} = ArgMap, [write_buffer_size|Args
     get_args_from_map(ArgMap, Args, [{"write_buffer_size", Size} | Aux]);
 get_args_from_map(#{cache_size := Size} = ArgMap, [cache_size|Args], Aux) ->
     get_args_from_map(ArgMap, Args, [{"cache_size", Size} | Aux]);
+get_args_from_map(#{fifo_ttl := FifoTtlArgs} = ArgMap, [fifo_ttl|Args], Aux) ->
+    get_args_from_map(ArgMap, Args, [{"fifo_ttl", FifoTtlArgs} | Aux]);
 get_args_from_map(ArgMap, [_|Args], Aux) ->
     get_args_from_map(ArgMap, Args, Aux);
 get_args_from_map(_, [], Aux) ->
@@ -1644,7 +1650,9 @@ get_args_from_map(_, [], Aux) ->
     map().
 get_rdb_worker_args(Start, Smap = #{comparator := Comp}) ->
     RdbRawArgs = maps:get(rdb_raw, Smap, []),
-    OtherRdbArgs = get_args_from_map(Smap, [write_buffer_size, cache_size]),
+    OtherRdbArgs = get_args_from_map(Smap, [write_buffer_size,
+					    cache_size,
+					    fifo_ttl]),
     Options = [{"comparator", cmp_str(Comp)} |
 	       rdb_open_options(Start) ++
 	       RdbRawArgs ++

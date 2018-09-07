@@ -978,6 +978,8 @@ get_cf_opts([{"cache_size", S} | Rest], AccO, AccC) ->
     get_cf_opts(Rest, AccO, [{"cache_size", S} | AccC]);
 get_cf_opts([{"write_buffer_size", S} | Rest], AccO, AccC) ->
     get_cf_opts(Rest, AccO, [{"write_buffer_size", S} | AccC]);
+get_cf_opts([{"fifo_ttl", {_ttl, _size}} = FifoTtl| Rest], AccO, AccC) ->
+    get_cf_opts(Rest, AccO, [FifoTtl | AccC]);
 get_cf_opts([O | Rest], AccO, AccC)->
     get_cf_opts(Rest, [O | AccO], AccC);
 get_cf_opts([], AccO, AccC)->
