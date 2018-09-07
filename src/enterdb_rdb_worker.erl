@@ -790,7 +790,12 @@ ensure_directories(_Args, Subdir, Shard) ->
     {ok, DB :: term()} | {error, Reason :: term()}.
 open_db(Options, DbPath, ColumnFamiliyOpts) ->
     Threads = enterdb_lib:get_num_of_background_threads(),
-    rocksdb:open_db(Options, DbPath, ColumnFamiliyOpts, Threads).
+    case enterdb_resources:get_shared_cache() of
+	{ok, undefined} ->
+	    rocksdb:open_db(Options, DbPath, ColumnFamiliyOpts, Threads);
+	{ok, Cache} ->
+	    rocksdb:open_db(Options, DbPath, ColumnFamiliyOpts, Threads, Cache)
+    end.
 
 %%--------------------------------------------------------------------
 %% @doc
