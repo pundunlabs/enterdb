@@ -1636,10 +1636,14 @@ get_args_from_map(ArgMap, Args) ->
 
 get_args_from_map(#{write_buffer_size := Size} = ArgMap, [write_buffer_size|Args], Aux) ->
     get_args_from_map(ArgMap, Args, [{"write_buffer_size", Size} | Aux]);
+
 get_args_from_map(#{cache_size := Size} = ArgMap, [cache_size|Args], Aux) ->
     get_args_from_map(ArgMap, Args, [{"cache_size", Size} | Aux]);
-get_args_from_map(#{fifo_ttl := FifoTtlArgs} = ArgMap, [fifo_ttl|Args], Aux) ->
-    get_args_from_map(ArgMap, Args, [{"fifo_ttl", FifoTtlArgs} | Aux]);
+
+get_args_from_map(#{fifo_ttl := {TTL, Size}} = ArgMap, [fifo_ttl|Args], Aux) ->
+    NShards = maps:get(num_of_shards, ArgMap, 1),
+    get_args_from_map(ArgMap, Args, [{"fifo_ttl", {TTL, round(Size/NShards)}} | Aux]);
+
 get_args_from_map(ArgMap, [_|Args], Aux) ->
     get_args_from_map(ArgMap, Args, Aux);
 get_args_from_map(_, [], Aux) ->
