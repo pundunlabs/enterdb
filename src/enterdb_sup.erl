@@ -120,5 +120,13 @@ init([]) ->
 			type => worker,
 			modules => [enterdb_recovery_srv]},
 
+    EdbResource	    = #{id => enterdb_resources,
+			start => {enterdb_resources, start_link, []},
+			restart => permanent,
+			shutdown => 20000,
+			type => worker,
+			modules => [enterdb_resources]},
+
     {ok, {SupFlags, [EdbNS, EdbRS, EdbPTS, EdbItSup,
-		     EdbRdbSup, EdbRSrv, EdbShardRecovery]}}.
+		     EdbRdbSup, EdbRSrv, EdbShardRecovery,
+		     EdbResource]}}.

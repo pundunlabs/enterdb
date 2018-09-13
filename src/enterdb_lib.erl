@@ -33,7 +33,8 @@
 	 close_table/2,
 	 read_range_on_shards/4,
 	 read_range_n_on_shards/4,
-	 approximate_size/3]).
+	 approximate_size/3,
+	 memory_usage/3]).
 
 -export([make_db_key/2,
 	 make_db_key/3,
@@ -335,6 +336,18 @@ verify_table_options([{data_model, DM}|Rest])
 
 %% TTL details for rocksds parts
 verify_table_options([{ttl, TTL} | Rest]) when is_integer(TTL) ->
+    verify_table_options(Rest);
+
+%% Cache Size (used by rocksdb block cache)
+verify_table_options([{cache_size, Size} | Rest]) when is_integer(Size) ->
+    verify_table_options(Rest);
+
+%% Write buffer Size (used by rocksdb)
+verify_table_options([{write_buffer_size, Size} | Rest]) when is_integer(Size) ->
+    verify_table_options(Rest);
+
+%% Write buffer Size (used by rocksdb)
+verify_table_options([{fifo_ttl, {Ttl, Size}} | Rest]) when is_integer(Ttl), is_integer(Size) ->
     verify_table_options(Rest);
 
 %% comparator defines how the keys will be sorted
@@ -968,6 +981,48 @@ sum_up_sizes([_ | Rest], Sum) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Get bytes of memory usage from each shard of a table and return the sum.
+%% @end
+%%--------------------------------------------------------------------
+-spec memory_usage(Backend :: string(),
+		   Shards :: shards(),
+		   Dist :: boolean()) ->
+    {ok, [{mem_total, integer()} |
+	  {mem_unflushed, integer()} |
+	  {mem_cached, integer()}] } |
+    {error, Reason :: term()}.
+memory_usage(rocksdb, Shards, true)  ->
+    Req = {enterdb_rdb_worker, memory_usage, []},
+    Sizes = ?dyno:map_shards_seq(Req, Shards),
+    ?debug("Memory usage of all shards: ~p", [Sizes]),
+    sum_up_memory_usage(Sizes);
+memory_usage(rocksdb, Shards, false) ->
+    Req = {enterdb_rdb_worker, memory_usage, []},
+    Sizes = pmap(Req, Shards),
+    ?debug("Memory usage of all shards: ~p", [Sizes]),
+    sum_up_memory_usage(Sizes);
+memory_usage(Type, _, _) ->
+    ?debug("Memory usage is not supported for type: ~p", [Type]),
+    {error, "type_not_supported"}.
+
+sum_up_memory_usage(MemUsage) ->
+    sum_up_memory_usage(MemUsage, #{}).
+sum_up_memory_usage([], MemoryUsage) ->
+    {ok, maps:to_list(MemoryUsage)};
+sum_up_memory_usage([MemUsage | Rest], SumMem) ->
+    MemTotal	 = proplists:get_value(mem_total, MemUsage),
+    MemUnflushed = proplists:get_value(mem_unflushed, MemUsage),
+    MemCached    = proplists:get_value(mem_cached, MemUsage),
+
+    AuxMemTotal     = maps:get(mem_total, SumMem, 0),
+    AuxMemUnflushed = maps:get(mem_unflushed, SumMem, 0),
+    AuxMemCached    = maps:get(mem_cached, SumMem, 0),
+    UpSumMem = #{mem_total => AuxMemTotal + MemTotal,
+                 mem_unflushed => AuxMemUnflushed + MemUnflushed,
+		 mem_cached => AuxMemCached + MemCached},
+    sum_up_memory_usage(Rest, UpSumMem).
+%%--------------------------------------------------------------------
+%% @doc
 %% Make key according to KeyDef defined in table configuration.
 %% @end
 %%--------------------------------------------------------------------
@@ -1574,12 +1629,38 @@ ldb_open_options(create) ->
 ldb_open_options(Start) when Start == open; Start == delete ->
     [{create_if_missing, false}, {error_if_exists, false}].
 
+
+-spec get_args_from_map(map(), [atom()]) -> [{string(), term()}] | [].
+get_args_from_map(ArgMap, Args) ->
+    get_args_from_map(ArgMap, Args, []).
+
+get_args_from_map(#{write_buffer_size := Size} = ArgMap, [write_buffer_size|Args], Aux) ->
+    get_args_from_map(ArgMap, Args, [{"write_buffer_size", Size} | Aux]);
+
+get_args_from_map(#{cache_size := Size} = ArgMap, [cache_size|Args], Aux) ->
+    get_args_from_map(ArgMap, Args, [{"cache_size", Size} | Aux]);
+
+get_args_from_map(#{fifo_ttl := {TTL, Size}} = ArgMap, [fifo_ttl|Args], Aux) ->
+    NShards = maps:get(num_of_shards, ArgMap, 1),
+    get_args_from_map(ArgMap, Args, [{"fifo_ttl", {TTL, round(Size/NShards)}} | Aux]);
+
+get_args_from_map(ArgMap, [_|Args], Aux) ->
+    get_args_from_map(ArgMap, Args, Aux);
+get_args_from_map(_, [], Aux) ->
+    Aux.
+
 -spec get_rdb_worker_args(Start :: create | open | delete,
 			  Smap :: #{}) ->
     map().
 get_rdb_worker_args(Start, Smap = #{comparator := Comp}) ->
     RdbRawArgs = maps:get(rdb_raw, Smap, []),
-    Options = [{"comparator", cmp_str(Comp)} | rdb_open_options(Start) ++ RdbRawArgs],
+    OtherRdbArgs = get_args_from_map(Smap, [write_buffer_size,
+					    cache_size,
+					    fifo_ttl]),
+    Options = [{"comparator", cmp_str(Comp)} |
+	       rdb_open_options(Start) ++
+	       RdbRawArgs ++
+	       OtherRdbArgs],
     maps:put(options, Options, Smap).
 
 -spec rdb_open_options(Start :: create | open | delete) ->
@@ -1668,6 +1749,11 @@ update_table_attr_fun(Name, Attr, Val) ->
 	    ok
     end.
 
+update_map(Map, Attr, undefined) ->
+    maps:remove(Attr, Map);
+update_map(Map, Attr, Val) ->
+    Map#{Attr => Val}.
+
 update_shard_attrs(Shards, false, Attr, Val) ->
     update_shard_attrs(Shards, Attr, Val);
 update_shard_attrs(Shards, true, Attr, Val) ->
@@ -1680,7 +1766,7 @@ update_shard_attrs(Shards, Attr, Val) ->
 	    [] ->
 		ok;
 	    [S = #enterdb_stab{map = M}] ->
-		mnesia:write(S#enterdb_stab{map = M#{Attr => Val}})
+		mnesia:write(S#enterdb_stab{map = update_map(M, Attr,Val)})
 	end
      end || Shard <- Shards].
 
