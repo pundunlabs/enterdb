@@ -39,6 +39,7 @@
 	 read_range_binary/3,
 	 read_range_term/3,
 	 read_range_n_binary/3,
+	 read_range_n_prefix_binary/4,
 	 recreate_shard/1,
 	 approximate_sizes/2,
 	 approximate_size/1,
@@ -223,6 +224,22 @@ read_range_term(Shard, Range, Chunk) ->
 read_range_n_binary(Shard, StartKey, N) ->
     ServerRef = enterdb_ns:get(Shard),
     gen_server:call(ServerRef, {read_range_n, StartKey, N, binary}).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Read N number of keys from a given shard and return read
+%% items in binary format.
+%% @end
+%%--------------------------------------------------------------------
+-spec read_range_n_prefix_binary(
+			  Shard :: string(),
+			  PrefixKey :: key(),
+			  StartKey :: key(),
+			  N :: pos_integer()) ->
+    {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
+read_range_n_prefix_binary(Shard, PrefixKey, StartKey, N) ->
+    ServerRef = enterdb_ns:get(Shard),
+    gen_server:call(ServerRef, {read_range_prefix_n, PrefixKey, StartKey, N, binary}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -545,6 +562,11 @@ handle_call({read_range_n, StartKey, N, _Type}, _From, State) when N >= 0 ->
     #state{db_ref = DB,
 	   readoptions = ReadOptions} = State,
     Reply = rocksdb:read_range_n(DB, ReadOptions, StartKey, N),
+    {reply, Reply, State};
+handle_call({read_range_prefix_n, PKey, StartKey, N, _Type}, _From, State) when N >= 0 ->
+    #state{db_ref = DB,
+	   readoptions = ReadOptions} = State,
+    Reply = rocksdb:read_range_prefix_n(DB, ReadOptions, PKey, StartKey, N),
     {reply, Reply, State};
 handle_call({approximate_sizes, Ranges}, _From, #state{db_ref = DB} = State) ->
     R = rocksdb:approximate_sizes(DB, Ranges),
@@ -952,11 +974,23 @@ make_options(Name, TTL, OptionsPL)->
 -spec set_ttl_options(TTL :: undefined | integer(),
 		      OptionsPL :: [{string(), term()}]) ->
     RawOptions :: [{string(), term()}].
-set_ttl_options(TTL, OptionsPL) when is_integer(TTL) ->
+set_ttl_options(TTL, OptionsPL0) when is_integer(TTL) ->
     CfRawOpts = [{"compaction_style", "kCompactionStyleUniversal"}],
+    OptionsPL  = add_cf_raw_opts(CfRawOpts, OptionsPL0),
     [{"ttl", TTL}, {"cf_raw_opts", CfRawOpts} | OptionsPL];
 set_ttl_options(_, OptionsPL) ->
     OptionsPL.
+
+-spec add_cf_raw_opts(CFRawOpts :: [{string(), term()}],
+		      OptionsPL :: [{string(), term()}]) ->
+    CFOpts :: [{string(), term()}].
+add_cf_raw_opts(CFRawOpts, OptionsPL) ->
+    case lists:keytake("cf_raw_opts", 1, OptionsPL) of
+	{value, {"cf_raw_opts", RawOpts}, OptionsPLRest} ->
+	    [{"cf_raw_opts", CFRawOpts ++ RawOpts} | OptionsPLRest];
+	_ ->
+	    [{"cf_raw_opts", CFRawOpts} | OptionsPL]
+    end.
 
 do_make_options(_, OptionsPL)->
     {ok, Rest, CFOpts} = get_cf_opts(OptionsPL),

@@ -34,6 +34,7 @@
 	 delete/2,
 	 read_range/3,
 	 read_range_n/3,
+	 read_range_n_ts/3,
 	 delete_table/1,
 	 table_info/1,
 	 table_info/2,
@@ -492,6 +493,40 @@ read_range_n_(TD, {ok, DBKey, _}, N) ->
     Shards = gb_hash:get_nodes(maps:get(name, TD)),
     enterdb_lib:read_range_n_on_shards(Shards, TD, DBKey, N);
 read_range_n_(_TD, {error, _} = E, _N) ->
+    E.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Reads N number of Keys from table time_series table
+%% with name Name starting form StartKey.
+%% @end
+%%--------------------------------------------------------------------
+-spec read_range_n_ts(Name :: string(),
+		      StartKey :: key(),
+		   N :: pos_integer()) ->
+    {ok, [kvp()]} | {error, Reason :: term()}.
+read_range_n_ts(Name, StartKey, N) ->
+    case enterdb_lib:get_tab_def(Name) of
+	TD = #{distributed := Dist}->
+	    DBKey = enterdb_lib:make_key(TD, StartKey),
+	    read_range_n_ts_(Name, TD, DBKey, N, Dist);
+	{error, _} = R ->
+	    R
+    end.
+
+-spec read_range_n_ts_(Name :: string(),
+		       TD :: #{},
+		       {ok, DBKey :: binary(), binary()},
+		       N :: pos_integer(),
+		       Dist :: true | false) ->
+    {ok, [kvp()]} | {error, Reason :: term()}.
+read_range_n_ts_(Tab, TD, {ok, DBKey, HashKey}, N, true) ->
+    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
+    ?dyno:call(Ring, {enterdb_lib, read_range_n_on_shard_ts, [Shard, TD, HashKey, DBKey, N]}, read_range_n_ts_);
+read_range_n_ts_(Tab, TD, {ok, DBKey, HashKey}, N, false) ->
+    {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
+    enterdb_lib:read_range_n_on_shard_ts(Shard, TD, HashKey, DBKey, N);
+read_range_n_ts_(_Tab, _TD, {error, _} = E, _N, _) ->
     E.
 
 %%--------------------------------------------------------------------
