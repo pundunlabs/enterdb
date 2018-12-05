@@ -541,7 +541,7 @@ make_db_key(KeyDef, Key) ->
 
 make_app_kvp({ok, {BK, BV}}, DataModel, Key, Mapper) ->
     {ok,
-     {enterdb_lib:make_app_key(Key, BK),
+     {sext:decode(BK),
       enterdb_lib:make_app_value(DataModel, Mapper, BV)}};
 make_app_kvp(Else, _, _, _) ->
     Else.

@@ -43,10 +43,9 @@
 	 make_key_cids/2,
 	 make_key_columns/3,
 	 make_db_value/4,
-	 make_app_key/2,
 	 make_app_value/2,
 	 make_app_value/3,
-	 make_app_kvp/4,
+	 make_app_kvp/3,
 	 apply_update_op/3,
 	 encode_unsigned/2,
 	 get_hash_key_def/3,
@@ -824,8 +823,7 @@ cleanup_table(Name) ->
 			   Chunk :: pos_integer()) ->
     {ok, [kvp()], Cont :: complete | key()} | {error, Reason :: term()}.
 read_range_on_shards({ok, Shards},
-		     Tab = #{key := KeyDef,
-			     type := Type,
+		     Tab = #{type := Type,
 			     comparator := Comp,
 			     distributed := Dist},
 		     RangeDB, Chunk)->
@@ -839,7 +837,7 @@ read_range_on_shards({ok, Shards},
     ResL = map_shards_seq(Dist, Req, Shards),
     {KVLs, Conts} =  unzip_range_result(ResL, []),
     ContKeys = [K || K <- Conts, K =/= complete],
-    {ok, KVL, ContKey} = merge_and_cut_kvls(Dir, KeyDef, KVLs, ContKeys),
+    {ok, KVL, ContKey} = merge_and_cut_kvls(Dir, KVLs, ContKeys),
     {ok, ResultKVL} = make_app_kvp(Tab, KVL),
     {ok, ResultKVL, ContKey}.
 
@@ -876,17 +874,16 @@ unzip_range_result([], Acc) ->
 
 
 -spec merge_and_cut_kvls(Dir :: 0 | 1,
-			 KeyDef :: [string()],
 			 KVLs :: [[kvp()]],
 			 ContKeys :: [binary()]) ->
     {ok, KVL :: [kvp()]}.
-merge_and_cut_kvls(Dir, _KeyDef, KVLs, []) ->
+merge_and_cut_kvls(Dir, KVLs, []) ->
    {ok, KVL} = enterdb_utils:merge_sorted_kvls(Dir, KVLs),
    {ok, KVL, complete};
-merge_and_cut_kvls(Dir, KeyDef, KVLs, ContKeys) ->
+merge_and_cut_kvls(Dir, KVLs, ContKeys) ->
     {Cont, _} = ContKVP = reduce_cont(Dir, ContKeys),
     {ok, MergedKVL} = enterdb_utils:merge_sorted_kvls(Dir, [[ContKVP]|KVLs]),
-    ContKey =  make_app_key(KeyDef, Cont),
+    ContKey =  sext:decode(Cont),
     {ok, cut_kvl_at(Cont, MergedKVL), ContKey}.
 
 -spec reduce_cont(Comparator :: comparator(),
@@ -926,11 +923,9 @@ cut_kvl_at(Bin, [KVP | Rest], Acc) ->
 read_range_n_on_shard_ts(undefined, _Tab, _HashKey, _DBStartKey, _N) ->
      {error, "no_table"};
 read_range_n_on_shard_ts(Shard,
-			 Tab = #{type := Type,
-				 key := KeyDef},
+			 Tab = #{type := Type},
 		         HashKey,
 			 DBStartKey, N) ->
-    ?debug("DBStartKey: ~p, Shard: ~p",[DBStartKey, Shard]),
     CallbackMod =
 	case Type of
 	    rocksdb -> enterdb_rdb_worker
@@ -943,7 +938,7 @@ read_range_n_on_shard_ts(Shard,
 	    complete ->
 		Cont;
 	    _ ->
-		make_app_key(KeyDef, Cont)
+		sext:decode(Cont)
 	end,
 
     {ok, ResultKVLs} = make_app_kvp(Tab, KVLs),
@@ -1177,21 +1172,22 @@ make_db_key(KeyDef, HashKeyDef, Key) ->
     {error, Reason::term()}.
 make_db_key([Field | RestD], [Field | RestH], Key, DBKeyList, HashKeyList) ->
     case lists:keyfind(Field, 1, Key) of
-        {_, Val} ->
-            make_db_key(RestD, RestH, Key, [Val|DBKeyList], [Val|HashKeyList]);
+        {Field, Val} ->
+            make_db_key(RestD, RestH, Key, [{Field,Val}|DBKeyList], [{Field,Val}|HashKeyList]);
         false ->
             {error, "key_mismatch"}
     end;
 make_db_key([Field | RestD], RestH, Key, DBKeyList, HashKeyList) ->
     case lists:keyfind(Field, 1, Key) of
-        {_, Val} ->
-            make_db_key(RestD, RestH, Key, [Val|DBKeyList], HashKeyList);
+        {Field, Val} ->
+            make_db_key(RestD, RestH, Key, [{Field,Val}|DBKeyList], HashKeyList);
         false ->
             {error, "key_mismatch"}
     end;
 make_db_key([], _, _, DBKeyList, HashKeyList) ->
-    TupleD = list_to_tuple(lists:reverse(DBKeyList)),
-    {ok, sext:encode(TupleD), sext:encode(HashKeyList)}.
+    DBKeys  = lists:reverse(DBKeyList),
+    HashKey = lists:reverse(HashKeyList),
+    {ok, sext:encode(DBKeys), sext:encode(HashKey)}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1303,19 +1299,7 @@ map_columns(Mapper, Distributed, [], Acc) ->
     end.
 
 %%--------------------------------------------------------------------
-%% @doc
-%% Make app key according to Key Definition defined in table
-%% configuration and provided value DBKey.
-%% @end
-%%--------------------------------------------------------------------
--spec make_app_key(KeyDef :: [string()],
-		   DbKey :: binary()) ->
-    AppKey :: key().
-make_app_key(KeyDef, DbKey)->
-    lists:zip(KeyDef, tuple_to_list(sext:decode(DbKey))).
-
-%%--------------------------------------------------------------------
-%% @doc
+% @doc
 %% Make application value according to Columns Definition defined in
 %% table configuration and DB Value.
 %% Takes internal record #enterdb_stab{} as argument carrying model and
@@ -1392,10 +1376,9 @@ converse_columns(_, [], Acc) ->
 		   KVP :: {binary(), binary()} |
 			  [{binary(), binary()}]) ->
     {ok, [{key(), value()}]} | {error, Reason :: term()}.
-make_app_kvp(#{key := KeyDef,
-	       column_mapper := ColumnMapper,
+make_app_kvp(#{column_mapper := ColumnMapper,
 	       data_model := DataModel}, KVP) ->
-    make_app_kvp(DataModel, KeyDef, ColumnMapper, KVP).
+    make_app_kvp(DataModel, ColumnMapper, KVP).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1404,22 +1387,21 @@ make_app_kvp(#{key := KeyDef,
 %% @end
 %%--------------------------------------------------------------------
 -spec make_app_kvp(DataModel :: data_model(),
-		   KeyDef :: [string()],
 		   ColumnMapper :: module(),
 		   KVP :: {binary(), binary()} |
 			  [{binary(), binary()}]) ->
     {ok, [{key(), value()}]} | {error, Reason :: term()}.
-make_app_kvp(DataModel, KeyDef, Mapper, KVP) ->
+make_app_kvp(DataModel, Mapper, KVP) ->
     AppKVP =
 	case KVP of
 	    [_|_] ->
 		[begin
-		    K = make_app_key(KeyDef, BK),
+		    K = sext:decode(BK),
 		    V = make_app_value(DataModel, Mapper, BV),
 		    {K, V}
 		 end || {BK, BV} <- KVP];
 	    {BinKey, BinValue} ->
-		{make_app_key(KeyDef, BinKey),
+		{sext:decode(BinKey),
 		 make_app_value(DataModel, Mapper, BinValue)};
 	    [] ->
 		[];

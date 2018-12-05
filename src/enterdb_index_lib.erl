@@ -144,7 +144,7 @@ make_postings_list(KeyDef, Postings) ->
     [make_post(KeyDef, S, B) || {S, B} <- Postings].
 
 make_post(KeyDef, BinStats, BinKey) ->
-    Key = enterdb_lib:make_app_key(KeyDef, BinKey),
+    Key = sext:decode(BinKey),
     maps:put(key, Key, make_stats(BinStats)).
 
 make_stats(<<Freq:4/big-unsigned-integer-unit:8,
