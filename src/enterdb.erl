@@ -35,6 +35,7 @@
 	 read_range/3,
 	 read_range_n/3,
 	 read_range_n_ts/3,
+	 read_range_n_ts/4,
 	 delete_table/1,
 	 table_info/1,
 	 table_info/2,
@@ -77,7 +78,7 @@ write_loop(0) ->
     ok;
 write_loop(N) when N > 0 ->
     Bin = [162,129,179,128,1,59,129,1,3,130,8,0,0,1,75,222,153,109,169,131,8,0,0,1,75,222,53,246,124,132,8,1,0,83,0,161,14,50,239,133,129,140,191,129,10,129,135,160,51,128,8,66,0,146,8,19,16,54,245,129,6,100,103,64,55,104,248,131,8,83,150,151,80,85,68,40,144,132,1,0,133,11,100,97,116,97,46,116,114,101,46,115,101,134,2,66,240,135,1,32,162,80,160,6,128,4,80,251,194,177,161,6,128,4,80,251,193,37,130,1,0,164,59,128,8,0,0,1,75,222,153,39,80,129,8,0,0,1,75,222,153,62,192,131,8,0,0,0,0,0,0,1,189,132,1,7,133,8,0,0,0,0,0,0,0,0,134,1,0,135,1,6,136,1,1,137,1,5,138,2,0,131],
-    enterdb:write("test_range", [{"ts", os:timestamp()}],[{"value", Bin}]),
+    enterdb:write("test_range", [{"key", rand:uniform(10000)}, {"ts", erlang:system_time()}],[{"value",123}, {"incs", 23}]),
     write_loop(N-1).
 
 
@@ -527,6 +528,55 @@ read_range_n_ts_(Tab, TD, {ok, DBKey, HashKey}, N, false) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
     enterdb_lib:read_range_n_on_shard_ts(Shard, TD, HashKey, DBKey, N);
 read_range_n_ts_(_Tab, _TD, {error, _} = E, _N, _) ->
+    E.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Reads N number of Keys from table time_series table
+%% with name Name starting form StartKey.
+%% Stop if we hit StopKey before N number of results are returned.
+%% @end
+%%--------------------------------------------------------------------
+-spec read_range_n_ts(Name :: string(),
+		      StartKey :: key(),
+		      StopTs  :: {string(), term()},
+		   N :: pos_integer()) ->
+    {ok, [kvp()]} | {error, Reason :: term()}.
+read_range_n_ts(Name, StartKey, StopTs, N) ->
+    case enterdb_lib:get_tab_def(Name) of
+	TD = #{distributed := Dist}->
+	    DBKey = enterdb_lib:make_key(TD, StartKey),
+	    SKey = lists:keyreplace("ts", 1, StartKey, StopTs),
+	    SDBKey = enterdb_lib:make_key(TD, SKey),
+	    read_range_stop_n_ts_(Name, TD, DBKey, SDBKey, N, Dist);
+	{error, _} = R ->
+	    R
+    end.
+
+-spec read_range_stop_n_ts_(
+	Name :: string(),
+	TD :: #{},
+	{ok, DBKey :: binary(), binary()},
+	{ok, SDBKey :: binary(), binary()},
+	N :: pos_integer(),
+	Dist :: true | false) ->
+    {ok, [kvp()]} | {error, Reason :: term()}.
+read_range_stop_n_ts_(Tab, TD,
+		{ok, DBKey, HashKey},
+		{ok, SDBKey, _},
+		N, true) ->
+    {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
+    ?dyno:call(Ring,
+	       {enterdb_lib, read_range_n_on_shard_ts,
+		[Shard, TD, HashKey, DBKey, SDBKey, N]}, read_range_stop_n_ts_);
+read_range_stop_n_ts_(Tab, TD,
+		{ok, DBKey, HashKey},
+		{ok, SDBKey, _}, N, false) ->
+    {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
+    enterdb_lib:read_range_n_on_shard_ts(Shard, TD, HashKey, DBKey, SDBKey, N);
+read_range_stop_n_ts_(_Tab, _TD, {error, _} = E, _, _N, _) ->
+    E;
+read_range_stop_n_ts_(_Tab, _TD, _, {error, _} = E, _N, _) ->
     E.
 
 %%--------------------------------------------------------------------

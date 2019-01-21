@@ -34,6 +34,7 @@
 	 read_range_on_shards/4,
 	 read_range_n_on_shards/4,
 	 read_range_n_on_shard_ts/5,
+	 read_range_n_on_shard_ts/6,
 	 approximate_size/3,
 	 memory_usage/3]).
 
@@ -932,6 +933,47 @@ read_range_n_on_shard_ts(Shard,
 	end,
 
     {ok, KVLs, Cont} = CallbackMod:read_range_n_prefix_binary(Shard, HashKey, DBStartKey, N),
+
+    ContKey =
+	case Cont of
+	    complete ->
+		Cont;
+	    _ ->
+		sext:decode(Cont)
+	end,
+
+    {ok, ResultKVLs} = make_app_kvp(Tab, KVLs),
+    {ok, ResultKVLs, ContKey}.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Reads a N number of Keys starting from DBStartKey from shard
+%% that is given by Ring and merges collected key/value lists.
+%% @end
+%%--------------------------------------------------------------------
+-spec read_range_n_on_shard_ts(Shard :: string() | undefined,
+			       Tab :: #{},
+			       HashKey :: binary(),
+			       DBStartKey :: binary(),
+			       DBStopKey :: binary(),
+			       N :: pos_integer()) ->
+    {ok, [kvp()]} | {error, Reason :: term()}.
+read_range_n_on_shard_ts(undefined, _Tab, _HashKey,
+			 _DBStartKey, _DBStopKey, _N) ->
+     {error, "no_table"};
+read_range_n_on_shard_ts(Shard,
+			 Tab = #{type := Type},
+		         HashKey,
+			 DBStartKey,
+			 DBStopKey,
+			 N) ->
+    CallbackMod =
+	case Type of
+	    rocksdb -> enterdb_rdb_worker
+	end,
+
+    DBKeys = {DBStartKey, DBStopKey},
+    {ok, KVLs, Cont} = CallbackMod:read_range_n_prefix_binary(Shard, HashKey, DBKeys, N),
 
     ContKey =
 	case Cont of
