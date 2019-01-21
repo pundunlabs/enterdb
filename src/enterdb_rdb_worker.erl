@@ -253,12 +253,12 @@ read_range_n_binary(Shard, StartKey, N) ->
 -spec read_range_n_prefix_binary(
 			  Shard :: string(),
 			  PrefixKey :: key(),
-			  StartKey :: key(),
+			  StartKey :: key() | {key(), key()},
 			  N :: pos_integer()) ->
     {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
-read_range_n_prefix_binary(Shard, PrefixKey, StartKey, N) ->
+read_range_n_prefix_binary(Shard, PrefixKey, DBKey, N) ->
     ServerRef = enterdb_ns:get({Shard, reader}),
-    call(ServerRef, {read_range_prefix_n, PrefixKey, StartKey, N, binary}).
+    call(ServerRef, {read_range_prefix_n, PrefixKey, DBKey, N}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -594,7 +594,12 @@ handle_call({read_range_n, StartKey, N, _Type}, _From, State) when N >= 0 ->
 	   readoptions = ReadOptions} = State,
     Reply = rocksdb:read_range_n(DB, ReadOptions, StartKey, N),
     {reply, Reply, State};
-handle_call({read_range_prefix_n, PKey, StartKey, N, _Type}, _From, State) when N >= 0 ->
+handle_call({read_range_prefix_n, PKey, {StartKey, StopKey}, N}, _From, State) when N >= 0 ->
+    #state{db_ref = DB,
+	   readoptions = ReadOptions} = State,
+    Reply = rocksdb:read_range_prefix_stop_n(DB, ReadOptions, PKey, StartKey, StopKey, N),
+    {reply, Reply, State};
+handle_call({read_range_prefix_n, PKey, StartKey, N}, _From, State) when N >= 0 ->
     #state{db_ref = DB,
 	   readoptions = ReadOptions} = State,
     Reply = rocksdb:read_range_prefix_n(DB, ReadOptions, PKey, StartKey, N),
