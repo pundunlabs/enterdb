@@ -33,7 +33,8 @@
 	 close_table/2,
 	 read_range_on_shards/4,
 	 read_range_n_on_shards/4,
-	 read_range_n_on_shard_ts/5,
+	 read_range_n_on_shard/5,
+	 read_range_n_on_shard/6,
 	 approximate_size/3,
 	 memory_usage/3]).
 
@@ -913,30 +914,78 @@ cut_kvl_at(Bin, [KVP | Rest], Acc) ->
 
 %%--------------------------------------------------------------------
 %% @doc
-%% Reads a N number of Keys starting from DBStartKey from shard
-%% that is given by Ring and merges collected key/value lists.
+%% Reads a N entries starting from DBStartKey from shard Shard.
 %% @end
 %%--------------------------------------------------------------------
--spec read_range_n_on_shard_ts(Shard :: string() | undefined,
-			       Tab :: #{},
-			       HashKey :: binary(),
-			       DBStartKey :: binary(),
-			       N :: pos_integer()) ->
+-spec read_range_n_on_shard(Shard :: string() | undefined,
+			    Tab :: #{},
+			    HashKey :: binary(),
+			    DBStartKey :: binary(),
+			    N :: pos_integer()) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
-read_range_n_on_shard_ts(undefined, _Tab, _HashKey, _DBStartKey, _N) ->
+read_range_n_on_shard(undefined, _Tab, _HashKey, _DBStartKey, _N) ->
      {error, "no_table"};
-read_range_n_on_shard_ts(Shard,
-			 Tab = #{type := Type,
-				 key := KeyDef},
-		         HashKey,
-			 DBStartKey, N) ->
+read_range_n_on_shard(Shard,
+		      Tab = #{type := Type,
+			      key := KeyDef},
+		      HashKey,
+		      DBStartKey, N) ->
     ?debug("DBStartKey: ~p, Shard: ~p",[DBStartKey, Shard]),
     CallbackMod =
 	case Type of
 	    rocksdb -> enterdb_rdb_worker
 	end,
 
-    {ok, KVLs, Cont} = CallbackMod:read_range_n_prefix_binary(Shard, HashKey, DBStartKey, N),
+    %% for backwars compatability.
+    %% since we hash the shard on the reverse sext encoded list
+    %% will change when we can break backward compatability
+    PrefixKey = sext:encode(list_to_tuple(lists:reverse(sext:decode(HashKey)))),
+    {ok, KVLs, Cont} = CallbackMod:read_range_n_prefix_binary(Shard, PrefixKey, DBStartKey, N),
+
+    ContKey =
+	case Cont of
+	    complete ->
+		Cont;
+	    _ ->
+		make_app_key(KeyDef, Cont)
+	end,
+
+    {ok, ResultKVLs} = make_app_kvp(Tab, KVLs),
+    {ok, ResultKVLs, ContKey}.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Reads a N entries starting from DBStartKey from shard Shard
+%% @end
+%%--------------------------------------------------------------------
+-spec read_range_n_on_shard(Shard :: string() | undefined,
+			       Tab :: #{},
+			       HashKey :: binary(),
+			       DBStartKey :: binary(),
+			       DBStopKey :: binary(),
+			       N :: pos_integer()) ->
+    {ok, [kvp()]} | {error, Reason :: term()}.
+read_range_n_on_shard(undefined, _Tab, _HashKey,
+			 _DBStartKey, _DBStopKey, _N) ->
+     {error, "no_table"};
+read_range_n_on_shard(Shard,
+		      Tab = #{type := Type,
+			      key := KeyDef},
+		      HashKey,
+		      DBStartKey,
+		      DBStopKey,
+		      N) ->
+    CallbackMod =
+	case Type of
+	    rocksdb -> enterdb_rdb_worker
+	end,
+
+    DBKeys = {DBStartKey, DBStopKey},
+    %% for backwars compatability.
+    %% since we hash the shard on the reverse sext encoded list
+    %% will change when we can break backward compatability
+    PrefixKey = sext:encode(list_to_tuple(lists:reverse(sext:decode(HashKey)))),
+    {ok, KVLs, Cont} = CallbackMod:read_range_n_prefix_binary(Shard, PrefixKey, DBKeys, N),
 
     ContKey =
 	case Cont of

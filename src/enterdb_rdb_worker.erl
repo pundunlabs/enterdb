@@ -80,7 +80,8 @@
 		checkpoint_path,
 		options_pl,
 		ttl,
-		it_mon}).
+		it_mon,
+		reader}).
 
 %%%===================================================================
 %%% API
@@ -97,6 +98,24 @@ start_link(Args) ->
     gen_server:start_link(?MODULE, Args, []).
 
 %%%===================================================================
+%%% Internal wrapper to handle errors
+%%%===================================================================
+call({error, _} = E, _Args) ->
+    E;
+call(Pid, Args) ->
+    gen_server:call(Pid, Args).
+
+call({error, _} = E, _Args, _Timeout) ->
+    E;
+call(Pid, Args, Timeout) ->
+    gen_server:call(Pid, Args, Timeout).
+
+cast({error, _} = E, _Args) ->
+    E;
+cast(Pid, Args) ->
+    gen_server:cast(Pid, Args).
+
+%%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
@@ -109,8 +128,8 @@ start_link(Args) ->
            Key :: key()) -> {ok, Value :: term()} |
                             {error, Reason :: term()}.
 read(Shard, Key) ->
-    ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {read, Key}).
+    ServerRef = enterdb_ns:get({Shard, reader}),
+    call(ServerRef, {read, Key}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -122,7 +141,7 @@ read(Shard, Key) ->
             Columns :: [column()]) -> ok | {error, Reason :: term()}.
 write(Shard, Key, Columns) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {write, Key, Columns, []}).
+    call(ServerRef, {write, Key, Columns, []}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -135,7 +154,7 @@ write(Shard, Key, Columns) ->
 	    Terms :: [string()]) -> ok | {error, Reason :: term()}.
 write(Shard, Key, Columns, Terms) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {write, Key, Columns, Terms}).
+    call(ServerRef, {write, Key, Columns, Terms}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -148,7 +167,7 @@ write(Shard, Key, Columns, Terms) ->
 	     TabSpecs :: map()) -> ok | {error, Reason :: term()}.
 update(Shard, Key, Op, TabSpecs) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {update, Key, Op, TabSpecs}).
+    call(ServerRef, {update, Key, Op, TabSpecs}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -162,7 +181,7 @@ update(Shard, Key, Op, TabSpecs) ->
     ok | {error, Reason :: term()}.
 delete(Shard, Key, Cids) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {delete, Key, Cids}).
+    call(ServerRef, {delete, Key, Cids}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -194,7 +213,7 @@ delete_db(Args) ->
     {error, Reason :: term()}.
 read_range_binary(Shard, Range, Chunk) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {read_range, Range, Chunk, binary}).
+    call(ServerRef, {read_range, Range, Chunk, binary}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -209,7 +228,7 @@ read_range_binary(Shard, Range, Chunk) ->
     {error, Reason :: term()}.
 read_range_term(Shard, Range, Chunk) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {read_range, Range, Chunk, term}).
+    call(ServerRef, {read_range, Range, Chunk, term}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -222,8 +241,8 @@ read_range_term(Shard, Range, Chunk) ->
 			  N :: pos_integer()) ->
     {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
 read_range_n_binary(Shard, StartKey, N) ->
-    ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {read_range_n, StartKey, N, binary}).
+    ServerRef = enterdb_ns:get({Shard,reader}),
+    call(ServerRef, {read_range_n, StartKey, N, binary}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -234,12 +253,12 @@ read_range_n_binary(Shard, StartKey, N) ->
 -spec read_range_n_prefix_binary(
 			  Shard :: string(),
 			  PrefixKey :: key(),
-			  StartKey :: key(),
+			  StartKey :: key() | {key(), key()},
 			  N :: pos_integer()) ->
     {ok, [{binary(), binary()}]} | {error, Reason :: term()}.
-read_range_n_prefix_binary(Shard, PrefixKey, StartKey, N) ->
-    ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {read_range_prefix_n, PrefixKey, StartKey, N, binary}).
+read_range_n_prefix_binary(Shard, PrefixKey, DBKey, N) ->
+    ServerRef = enterdb_ns:get({Shard, reader}),
+    call(ServerRef, {read_range_prefix_n, PrefixKey, DBKey, N}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -260,8 +279,8 @@ recreate_shard(Shard) ->
 -spec approximate_sizes(Shard :: string(), Ranges :: key_range()) ->
     {ok, Sizes :: [pos_integer()]} | {error, Reason :: term()}.
 approximate_sizes(Shard, Ranges) ->
-    ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {approximate_sizes, Ranges}).
+    ServerRef = enterdb_ns:get({Shard,reader}),
+    call(ServerRef, {approximate_sizes, Ranges}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -271,8 +290,8 @@ approximate_sizes(Shard, Ranges) ->
 -spec approximate_size(Shard :: string()) ->
     {ok, Size :: pos_integer()} | {error, Reason :: term()}.
 approximate_size(Shard) ->
-    ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, approximate_size).
+    ServerRef = enterdb_ns:get({Shard, reader}),
+    call(ServerRef, approximate_size).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -282,8 +301,8 @@ approximate_size(Shard) ->
 -spec get_iterator(Shard :: string(), Caller :: pid()) ->
     {ok, It :: it()} | {error, Reason :: term()}.
 get_iterator(Shard, Caller) ->
-    Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, {get_iterator, Caller}).
+    Pid = enterdb_ns:get({Shard, reader}),
+    call(Pid, {get_iterator, Caller}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -294,8 +313,8 @@ get_iterator(Shard, Caller) ->
 		 Key :: binary()) ->
     {ok, Value :: term()} | {error, Reason :: term()}.
 index_read(Shard, Key) ->
-    ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {index_read, Key}).
+    ServerRef = enterdb_ns:get({Shard, reader}),
+    call(ServerRef, {index_read, Key}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -308,7 +327,7 @@ index_read(Shard, Key) ->
     {ok, Value :: term()} | {error, Reason :: term()}.
 delete_indices(Shard, Cids) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:call(ServerRef, {delete_indices, Cids}).
+    call(ServerRef, {delete_indices, Cids}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -319,7 +338,7 @@ delete_indices(Shard, Cids) ->
     ok | {error, Reason :: term()}.
 backup_db(Shard, Timeout) ->
     Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, backup_db, Timeout).
+    call(Pid, backup_db, Timeout).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -330,7 +349,7 @@ backup_db(Shard, Timeout) ->
     ok | {error, Reason :: term()}.
 backup_db(Shard, BackupDir, Timeout) ->
     Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, {backup_db, BackupDir}, Timeout).
+    call(Pid, {backup_db, BackupDir}, Timeout).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -341,7 +360,7 @@ backup_db(Shard, BackupDir, Timeout) ->
     {ok, map()} | {error, Reason :: term()}.
 get_backup_info(Shard) ->
     Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, get_backup_info).
+    call(Pid, get_backup_info).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -351,8 +370,8 @@ get_backup_info(Shard) ->
 -spec memory_usage(Shard :: string()) ->
     ok | {error, Reason :: term()}.
 memory_usage(Shard) ->
-    Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, memory_usage).
+    Pid = enterdb_ns:get({Shard, reader}),
+    call(Pid, memory_usage).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -374,7 +393,7 @@ restore_db(Shard) ->
 restore_db(Shard, BackupId) when is_integer(BackupId) ->
     case enterdb_ns:get(Shard) of
 	Pid when is_pid(Pid) ->
-	    gen_server:call(Pid, {restore_db, BackupId});
+	    call(Pid, {restore_db, BackupId});
 	E -> E
     end.
 
@@ -388,7 +407,7 @@ restore_db(Shard, BackupId) when is_integer(BackupId) ->
 restore_db(Shard, BackupId, FromPath) when is_integer(BackupId) ->
     case enterdb_ns:get(Shard) of
 	Pid when is_pid(Pid) ->
-	    gen_server:call(Pid, {restore_db, BackupId, FromPath});
+	    call(Pid, {restore_db, BackupId, FromPath});
 	E -> E
     end.
 
@@ -401,7 +420,7 @@ restore_db(Shard, BackupId, FromPath) when is_integer(BackupId) ->
     ok | {error, Reason :: term()}.
 create_checkpoint(Shard) ->
     Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, create_checkpoint).
+    call(Pid, create_checkpoint).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -412,7 +431,7 @@ create_checkpoint(Shard) ->
     ok | {error, Reason :: term()}.
 compact_db(Shard) ->
     Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, compact_db).
+    call(Pid, compact_db).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -424,7 +443,7 @@ compact_db(Shard) ->
     ok | {error, Reason :: term()}.
 compact_index(Shard) ->
     Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, compact_index).
+    call(Pid, compact_index).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -435,7 +454,7 @@ compact_index(Shard) ->
     ok | {error, Reason :: term()}.
 set_ttl(Shard, TTL) ->
     Pid = enterdb_ns:get(Shard),
-    gen_server:call(Pid, {set_ttl, TTL}).
+    call(Pid, {set_ttl, TTL}).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -448,6 +467,14 @@ set_ttl(Shard, TTL) ->
     {ok, State :: #state{}, Timeout :: pos_integer() | infinity} |
     ignore |
     {stop, Reason :: term()}.
+
+init(Args = #{type := reader, master_pid:= MasterPid}) ->
+    State = maps:get(state, Args),
+    Shard = State#state.shard,
+    enterdb_ns:register_pid(self(), {Shard, reader}),
+    erlang:link(MasterPid),
+    {ok, State#state{reader = self()}};
+
 init(Args) ->
     Shard = maps:get(shard, Args),
     enterdb_ns:register_pid(self(), Shard),
@@ -473,20 +500,24 @@ init(Args) ->
                     WriteOptionsRec = build_writeoptions([]),
                     {ok, WriteOptions} = rocksdb:writeoptions(WriteOptionsRec),
                     process_flag(trap_exit, true),
-		    {ok, #state{name = Subdir,
-				db_ref = DB,
-                                options = Options,
-				readoptions = ReadOptions,
-                                writeoptions = WriteOptions,
-                                shard = Shard,
-				column_mapper = ColumnMapper,
-                                db_path = DbPath,
-                                wal_path = WalPath,
-                                backup_path = BackupPath,
-                                checkpoint_path = CheckpointPath,
-				options_pl = OptionsPL,
-				ttl = TTL,
-				it_mon = maps:new()}}
+		    State =
+			#state{name = Subdir,
+			       db_ref = DB,
+			       options = Options,
+			       readoptions = ReadOptions,
+			       writeoptions = WriteOptions,
+			       shard = Shard,
+			       column_mapper = ColumnMapper,
+			       db_path = DbPath,
+			       wal_path = WalPath,
+			       backup_path = BackupPath,
+			       checkpoint_path = CheckpointPath,
+			       options_pl = OptionsPL,
+			       ttl = TTL,
+			       it_mon = maps:new()},
+		    %% start a reader version of our self
+		    gen_server:cast(self(), start_reader),
+		    {ok, State}
             end;
         {error, Reason} ->
             {stop, {error, Reason}}
@@ -563,7 +594,12 @@ handle_call({read_range_n, StartKey, N, _Type}, _From, State) when N >= 0 ->
 	   readoptions = ReadOptions} = State,
     Reply = rocksdb:read_range_n(DB, ReadOptions, StartKey, N),
     {reply, Reply, State};
-handle_call({read_range_prefix_n, PKey, StartKey, N, _Type}, _From, State) when N >= 0 ->
+handle_call({read_range_prefix_n, PKey, {StartKey, StopKey}, N}, _From, State) when N >= 0 ->
+    #state{db_ref = DB,
+	   readoptions = ReadOptions} = State,
+    Reply = rocksdb:read_range_prefix_stop_n(DB, ReadOptions, PKey, StartKey, StopKey, N),
+    {reply, Reply, State};
+handle_call({read_range_prefix_n, PKey, StartKey, N}, _From, State) when N >= 0 ->
     #state{db_ref = DB,
 	   readoptions = ReadOptions} = State,
     Reply = rocksdb:read_range_prefix_n(DB, ReadOptions, PKey, StartKey, N),
@@ -696,6 +732,10 @@ handle_call(memory_usage, _From,
     Reply = rocksdb:memory_usage(DB),
     {reply, Reply, State};
 
+handle_call(stop, From, State) ->
+    ?debug("stopping"),
+    {stop, normal, ok, State};
+
 handle_call(Req, From, State) ->
     R = ?warning("unkown request:~p, from: ~p, state: ~p", [Req, From, State]),
     {reply, R, State}.
@@ -710,6 +750,12 @@ handle_call(Req, From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_cast(start_reader, State) ->
+    Args = [#{type => reader, state => State,
+	      master_pid => self()}],
+    {ok, Pid} =
+	supervisor:start_child(enterdb_rdb_sup, Args),
+    {noreply, State#state{reader = Pid}};
 handle_cast(recreate_shard, State = #state{shard = Shard,
 					   name = Name,
 					   db_ref = DB,
@@ -768,17 +814,18 @@ handle_info(_Info, State) ->
 %% @spec terminate(Reason, State) -> void()
 %% @end
 %%--------------------------------------------------------------------
+%% reader instance
+
 terminate(_Reason, _State = #state{db_ref = undefined}) ->
     ok;
 terminate(_Reason, _State = #state{shard = Shard,
-				   it_mon = MonMap}) ->
+				   it_mon = MonMap,
+				   reader = ReaderPid}) ->
     ?debug("Terminating worker for shard: ~p", [Shard]),
-    maps:fold(fun(Mref, Pid, _Acc) ->
-		erlang:demonitor(Mref, [flush]),
-		Res = (catch gen_server:stop(Pid)),
-		?debug("Stop iterator: ~p", [Res])
-	      end, ok, MonMap),
-    ensure_closed(Shard).
+    terminate_iterators(MonMap),
+    ?debug("done terminate iterators"),
+    TerminateReader = ReaderPid =/= self(),
+    terminate_reader(TerminateReader, ReaderPid, Shard).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -794,6 +841,20 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+terminate_iterators(MonMap) ->
+    maps:fold(fun(Mref, Pid, _Acc) ->
+		erlang:demonitor(Mref, [flush]),
+		Res = (catch gen_server:stop(Pid)),
+		?debug("Stop iterator: ~p", [Res])
+	      end, ok, MonMap).
+
+terminate_reader(true, ReaderPid, Shard) ->
+    gen_server:call(ReaderPid, stop),
+    ensure_closed(Shard);
+terminate_reader(_false, _ReaderPid, _Shard) ->
+    ?debug("closing reader process"),
+    ok.
+
 -spec ensure_directories(Args :: map(),
 			 Subdir :: string(),
 			 Shard :: string()) ->
