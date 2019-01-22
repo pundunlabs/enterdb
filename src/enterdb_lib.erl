@@ -937,7 +937,11 @@ read_range_n_on_shard_ts(Shard,
 	    rocksdb -> enterdb_rdb_worker
 	end,
 
-    {ok, KVLs, Cont} = CallbackMod:read_range_n_prefix_binary(Shard, HashKey, DBStartKey, N),
+    %% for backwars compatability.
+    %% since we hash the shard on the reverse sext encoded list
+    %% will change when we can break backward compatability
+    PrefixKey = sext:encode(list_to_tuple(lists:reverse(sext:decode(HashKey)))),
+    {ok, KVLs, Cont} = CallbackMod:read_range_n_prefix_binary(Shard, PrefixKey, DBStartKey, N),
 
     ContKey =
 	case Cont of
@@ -986,7 +990,11 @@ read_range_n_on_shard(Shard,
 	end,
 
     DBKeys = {DBStartKey, DBStopKey},
-    {ok, KVLs, Cont} = CallbackMod:read_range_n_prefix_binary(Shard, HashKey, DBKeys, N),
+    %% for backwars compatability.
+    %% since we hash the shard on the reverse sext encoded list
+    %% will change when we can break backward compatability
+    PrefixKey = sext:encode(list_to_tuple(lists:reverse(sext:decode(HashKey)))),
+    {ok, KVLs, Cont} = CallbackMod:read_range_n_prefix_binary(Shard, PrefixKey, DBKeys, N),
 
     ContKey =
 	case Cont of
