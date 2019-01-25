@@ -23,7 +23,7 @@
 -module(enterdb_index_lib).
 
 -export([make_lookup_terms/2,
-	 read/4]).
+	 read/5]).
 
 -include("enterdb.hrl").
 -include_lib("gb_log/include/gb_log.hrl").
@@ -36,6 +36,8 @@
     [unicode:charlist()].
 make_lookup_terms(undefined, Term) ->
     term_prep:analyze(#{}, Term);
+make_lookup_terms(erl_term, Term) ->
+    [Term];
 make_lookup_terms(IndexOptions, Term) ->
     TokenFilter = maps:get(token_filter, IndexOptions, #{}),
     ReadTokenFilter = maps:merge(TokenFilter, #{add => [], stats => unique}),
@@ -45,42 +47,43 @@ make_lookup_terms(IndexOptions, Term) ->
 -spec read(TD :: #{},
 	   Cid :: binary(),
 	   Terms :: [unicode:charlist()],
-	   Filter :: posting_filter()) ->
+	   Filter :: posting_filter(),
+	   IndexOptions :: term()) ->
     {ok, [posting()]} | {error, Reason :: term()}.
 read(#{key := KeyDef,
        distributed := Dist,
-       shards := Shards}, Cid, [Term], Filter) ->
-    RawPostingsList = read_term(Cid, Term, Dist, Shards),
+       shards := Shards}, Cid, [Term], Filter, Options) ->
+    RawPostingsList = read_term(Cid, Term, Dist, Shards, Options),
     {ok, filter(KeyDef, RawPostingsList, Filter)};
 read(#{key := KeyDef,
        distributed := Dist,
-       shards := Shards}, Cid, Terms, Filter) ->
-    RawPostingsList = pl_intersection(Terms, Cid, Dist, Shards),
+       shards := Shards}, Cid, Terms, Filter, Options) ->
+    RawPostingsList = pl_intersection(Terms, Cid, Dist, Shards, Options),
     {ok, filter(KeyDef, RawPostingsList, Filter)}.
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
 
-read_term(Cid, Term, Dist, Shards) ->
-    {ok, DBKey} = make_index_key(Cid, Term),
+read_term(Cid, Term, Dist, Shards, Options) ->
+    {ok, DBKey} = make_index_key(Cid, Term, Options),
     Req = {enterdb_rdb_worker, index_read, [DBKey]},
     ResL = enterdb_lib:map_shards_seq(Dist, Req, Shards),
     AllPostings = [parse_postings(R) || R <- ResL],
     {ok, RawPostingsList} = enterdb_utils:merge_sorted_kvls(0, AllPostings),
     RawPostingsList.
 
-pl_intersection(Terms, Cid, Dist, Shards)->
+pl_intersection(Terms, Cid, Dist, Shards, Options)->
     Count = length(Terms),
-    Map = pl_union(Terms, Cid, Dist, Shards, #{}),
+    Map = pl_union(Terms, Cid, Dist, Shards, Options, #{}),
     maps:fold(fun(K, V, Acc) when length(V) == Count -> [{least(V), K} | Acc];
 		 (_, _, Acc) -> Acc
 	      end, [], Map).
 
-pl_union([Term | Rest], Cid, Dist, Shards, Acc) ->
-    PostingList = read_term(Cid, Term, Dist, Shards),
-    pl_union(Rest, Cid, Dist, Shards, pl_update(PostingList, Acc));
-pl_union([], _Cid, _Dist, _Shards, Acc) ->
+pl_union([Term | Rest], Cid, Dist, Shards, Options, Acc) ->
+    PostingList = read_term(Cid, Term, Dist, Shards, Options),
+    pl_union(Rest, Cid, Dist, Shards, Options, pl_update(PostingList, Acc));
+pl_union([], _Cid, _Dist, _Shards, _Options, Acc) ->
     Acc.
 
 pl_update([{S, P} | Rest], Acc) ->
@@ -118,6 +121,15 @@ make_index_key(Cid, Term) ->
     TermBin = unicode:characters_to_binary(Term, unicode, utf8),
     {ok, << CidBin/binary, TermBin/binary >>}.
 
+make_index_key(Cid, Term, undefined) ->
+    CidBin = enterdb_lib:encode_unsigned(2, Cid),
+    TermBin = unicode:characters_to_binary(Term, unicode, utf8),
+    {ok, << CidBin/binary, TermBin/binary >>};
+make_index_key(Cid, Term, erl_term) ->
+    CidBin = enterdb_lib:encode_unsigned(2, Cid),
+    TermBin = erlang:term_to_binary(Term),
+    {ok, << CidBin/binary, TermBin/binary >>}.
+
 parse_postings({ok, Binary}) ->
     parse_postings_(Binary);
 parse_postings(_E) ->
@@ -147,6 +159,10 @@ make_post(KeyDef, BinStats, BinKey) ->
     Key = enterdb_lib:make_app_key(KeyDef, BinKey),
     maps:put(key, Key, make_stats(BinStats)).
 
+make_stats(<<0:4/big-unsigned-integer-unit:8,
+	     0:4/big-unsigned-integer-unit:8,
+	     Ts:4/little-unsigned-integer-unit:8>>) ->
+    #{ts => Ts};
 make_stats(<<Freq:4/big-unsigned-integer-unit:8,
 	     Pos:4/big-unsigned-integer-unit:8,
 	     Ts:4/little-unsigned-integer-unit:8>>) ->

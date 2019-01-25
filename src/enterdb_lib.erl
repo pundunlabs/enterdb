@@ -1779,6 +1779,15 @@ get_indexed_cids(_Mapper, [], Acc) ->
 get_index_terms(Mapper, IndexOn, Columns) ->
     get_index_terms(Mapper, IndexOn, Columns, []).
 
+get_index_terms(Mapper, [{Col, erl_term} | Rest], Columns, Acc) ->
+    case lists:keyfind(Col, 1, Columns) of
+	{_, Value} ->
+	    Cid = encode_unsigned(2, Mapper:lookup(Col)),
+	    BinTerms = encode_erlang_term(Value),
+	    get_index_terms(Mapper, Rest, Columns, [{Cid, BinTerms} | Acc]);
+	_ ->
+	    get_index_terms(Mapper, Rest, Columns, Acc)
+    end;
 get_index_terms(Mapper, [{Col, IndexOptions} | Rest], Columns, Acc) ->
     case lists:keyfind(Col, 1, Columns) of
 	{_, Value} when is_list(Value)->
@@ -1899,6 +1908,10 @@ encode_unsigned(Size, Int) when is_integer(Int) ->
 	_ ->
 	    Unsigned
     end.
+
+-spec encode_erlang_term(Term :: term()) -> [binary()].
+encode_erlang_term(Term) ->
+    [<< (term_to_binary(Term))/binary, <<0,0,0,0,0,0,0,0>>/binary>>].
 
 -spec string_to_binary_terms([Term :: {string(), integer(), integer()} |
 				      {string(), integer()} |

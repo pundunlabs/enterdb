@@ -780,7 +780,7 @@ index_read(Tab, Column, Term, Filter) ->
 	    case {Mapper:lookup(Column), Tuple} of
 		{Cid, {Column, IndexOptions}} when is_integer(Cid) ->
 		    Terms = enterdb_index_lib:make_lookup_terms(IndexOptions, Term),
-		    enterdb_index_lib:read(TD, Cid, Terms, Filter);
+		    enterdb_index_lib:read(TD, Cid, Terms, Filter, IndexOptions);
 		_ ->
 		    {error, column_not_indexed}
 	    end;
