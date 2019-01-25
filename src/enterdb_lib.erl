@@ -1498,7 +1498,7 @@ apply_update_op(Op, DBValue, #{data_model := DataModel,
 	{ok, DBValue} ->
 	    {ok, DBValue, []};
 	{ok, UpdatedDBValue} ->
-	    IndexTerms = get_index_terms(Mapper, IndexOn, Columns),
+	    IndexTerms = get_index_terms(Mapper, IndexOn, UpdatedColumns),
 	    {ok, UpdatedDBValue, IndexTerms};
 	{error, E} ->
 	    {error, E}
