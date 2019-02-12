@@ -116,18 +116,13 @@ filter(KeyDef, List, _Filter) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-make_index_key(Cid, Term) ->
-    CidBin = enterdb_lib:encode_unsigned(2, Cid),
-    TermBin = unicode:characters_to_binary(Term, unicode, utf8),
-    {ok, << CidBin/binary, TermBin/binary >>}.
-
-make_index_key(Cid, Term, undefined) ->
-    CidBin = enterdb_lib:encode_unsigned(2, Cid),
-    TermBin = unicode:characters_to_binary(Term, unicode, utf8),
-    {ok, << CidBin/binary, TermBin/binary >>};
 make_index_key(Cid, Term, erl_term) ->
     CidBin = enterdb_lib:encode_unsigned(2, Cid),
     TermBin = erlang:term_to_binary(Term),
+    {ok, << CidBin/binary, TermBin/binary >>};
+make_index_key(Cid, Term, _) ->
+    CidBin = enterdb_lib:encode_unsigned(2, Cid),
+    TermBin = unicode:characters_to_binary(Term, unicode, utf8),
     {ok, << CidBin/binary, TermBin/binary >>}.
 
 parse_postings({ok, Binary}) ->
