@@ -247,11 +247,11 @@ write([], Res) ->
             Key :: key(),
             Columns :: [column()]) -> ok | {error, Reason :: term()}.
 write(Tab, Key, Columns) ->
-    case enterdb_lib:get_tab_def(Tab) of
-	TD = #{distributed := Dist} ->
+    case ets:lookup(enterdb_table, Tab) of
+	[#enterdb_table{map = TD = #{distributed := Dist}}] ->
 	    DB_HashKeyAndCols = enterdb_lib:make_key_columns(TD, Key, Columns),
 	    write_(Tab, Key, DB_HashKeyAndCols, Dist);
-	{error, _} = R ->
+	{error, "no_table"} = R ->
 	    R
     end.
 
@@ -275,8 +275,12 @@ write_(_Tab, _, {error, _} = E, _) ->
     E.
 
 do_write(Shard, Key, DBKey, DBColumns, IndexTerms) ->
-    TD = enterdb_lib:get_shard_def(Shard),
-    do_write(TD, Shard, Key, DBKey, DBColumns, IndexTerms).
+    case ets:lookup(enterdb_stab, Shard) of
+	[#enterdb_stab{map=ST}] ->
+	    do_write(ST, Shard, Key, DBKey, DBColumns, IndexTerms);
+	_ ->
+	    {error, "no_table"}
+    end.
 
 do_write_force(Shard, Key, DBKey, DBColumns, IndexTerms) ->
     TD = (enterdb_lib:get_shard_def(Shard))#{ready_status => forced},
@@ -653,9 +657,14 @@ table_info(Name, Parameters) ->
 	    Shards = maps:get(shards, Map),
 	    SizePL = get_size_param(Parameters, Type, Shards, Dist),
 	    MemoryUsage = get_memory_usage(Parameters, Type, Shards, Dist),
+	    ApproxKeys  = get_approx_num_keys(Parameters, Type, Shards, Dist),
 	    ColumnsMapper = maps:get(column_mapper, Map),
 	    ColumnsPL = get_columns_param(Parameters, ColumnsMapper),
-	    List = SizePL ++ ColumnsPL ++ MemoryUsage ++ maps:to_list(Map),
+	    List = SizePL ++
+		   ColumnsPL ++
+		   MemoryUsage ++
+		   ApproxKeys ++
+		   maps:to_list(Map),
 	    Info = [ lists:keyfind(P, 1, List) || P <- Parameters],
 	    {ok, lists:keysort(1, [ {A, B} || {A, B} <- Info])};
 	[] ->
@@ -700,6 +709,19 @@ get_columns_param(Parameters, ColumnsMapper) ->
 		    Filtered = lists:filter(Fun, List),
 		    Sorted = lists:keysort(2, Filtered),
 		    [{columns, [C || {C, _} <- Sorted]}]
+	    end;
+	false ->
+	    []
+    end.
+
+get_approx_num_keys(Parameters, Type, Shards, Dist) ->
+    case lists:member(approx_num_keys, Parameters) of
+	true ->
+	    case enterdb_lib:get_property(Type, Shards, Dist, approx_num_keys) of
+		{error, _Reason} ->
+		    [];
+		{ok, ApproxKeys} ->
+		    [{approx_num_keys, ApproxKeys}]
 	    end;
 	false ->
 	    []

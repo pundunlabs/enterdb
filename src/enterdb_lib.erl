@@ -36,7 +36,8 @@
 	 read_range_n_on_shard/5,
 	 read_range_n_on_shard/6,
 	 approximate_size/3,
-	 memory_usage/3]).
+	 memory_usage/3,
+	 get_property/4]).
 
 -export([make_db_key/2,
 	 make_db_key/3,
@@ -1109,6 +1110,27 @@ sum_up_memory_usage([MemUsage | Rest], SumMem) ->
                  mem_unflushed => AuxMemUnflushed + MemUnflushed,
 		 mem_cached => AuxMemCached + MemCached},
     sum_up_memory_usage(Rest, UpSumMem).
+
+get_property(rocksdb, Shards, true = _Dist, approx_num_keys) ->
+    Req = {enterdb_rdb_worker, get_property, ["rocksdb.estimate-num-keys"]},
+    ShardKeys = ?dyno:map_shards_seq(Req, Shards),
+    ?debug("Approx num keys for all shards: ~p", [ShardKeys]),
+    sum_up_all_approx_keys(ShardKeys, 0);
+get_property(rocksdb, Shards, false = _Dist, approx_num_keys) ->
+    Req = {enterdb_rdb_worker, get_property, ["rocksdb.estimate-num-keys"]},
+    ShardKeys = pmap(Req, Shards),
+    ?debug("Approx num keys for all shards: ~p", [ShardKeys]),
+    sum_up_all_approx_keys(ShardKeys, 0);
+
+get_property(Type, _Shards, _Dist, Prop) ->
+    ?debug("Get property (~p) not supported for type (~p)", [Prop, Type]),
+    {error, "type_not_supported"}.
+
+sum_up_all_approx_keys([{ok, NumKeys} | Rest], Aux) when is_list(NumKeys) ->
+    IntKeys = list_to_integer(NumKeys),
+    sum_up_all_approx_keys(Rest, Aux + IntKeys);
+sum_up_all_approx_keys([], Aux) ->
+    {ok, Aux}.
 %%--------------------------------------------------------------------
 %% @doc
 %% Make key according to KeyDef defined in table configuration.
@@ -1212,7 +1234,7 @@ make_db_key(KeyDef, HashKeyDef, Key) ->
     KeyDefLen = length(KeyDef),
     KeyLen = length(Key),
     if KeyDefLen == KeyLen ->
-	make_db_key(KeyDef, HashKeyDef, Key, [], []);
+	make_db_key(KeyDef, HashKeyDef, Key, {1, {}}, []);
        true ->
         {error, "key_mismatch"}
     end.
@@ -1224,23 +1246,24 @@ make_db_key(KeyDef, HashKeyDef, Key) ->
 		  HashKeyList :: [term()]) ->
     {ok, DBKey :: binary(), HashKey :: binary()} |
     {error, Reason::term()}.
-make_db_key([Field | RestD], [Field | RestH], Key, DBKeyList, HashKeyList) ->
+make_db_key([Field | RestD], [Field | RestH], Key, {Pos, DBKey}, HashKeyList) ->
     case lists:keyfind(Field, 1, Key) of
         {_, Val} ->
-            make_db_key(RestD, RestH, Key, [Val|DBKeyList], [Val|HashKeyList]);
+            make_db_key(RestD, RestH, Key, {Pos+1, erlang:insert_element(Pos, DBKey, Val)}, [Val|HashKeyList]);
         false ->
             {error, "key_mismatch"}
     end;
-make_db_key([Field | RestD], RestH, Key, DBKeyList, HashKeyList) ->
+make_db_key([Field | RestD], RestH, Key, {Pos, DBKey}, HashKeyList) ->
     case lists:keyfind(Field, 1, Key) of
         {_, Val} ->
-            make_db_key(RestD, RestH, Key, [Val|DBKeyList], HashKeyList);
+            make_db_key(RestD, RestH, Key, {Pos+1, erlang:insert_element(Pos, DBKey,Val)} , HashKeyList);
         false ->
             {error, "key_mismatch"}
     end;
-make_db_key([], _, _, DBKeyList, HashKeyList) ->
-    TupleD = list_to_tuple(lists:reverse(DBKeyList)),
-    {ok, sext:encode(TupleD), sext:encode(HashKeyList)}.
+make_db_key([], _, _, {_, DBKey}, HashKeyList) ->
+    %TupleD = list_to_tuple(lists:reverse(DBKeyList)),
+% {ok, sext:encode(DBKey), sext:encode(HashKeyList)}.
+     {ok, sext:encode(DBKey), erlang:term_to_binary(HashKeyList)}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1776,6 +1799,8 @@ get_indexed_cids(Mapper, [{Col, _} | Rest], Acc) ->
 get_indexed_cids(_Mapper, [], Acc) ->
     Acc.
 
+get_index_terms(_Mapper, [], _Columns) ->
+    [];
 get_index_terms(Mapper, IndexOn, Columns) ->
     get_index_terms(Mapper, IndexOn, Columns, []).
 

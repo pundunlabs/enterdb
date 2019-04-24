@@ -59,7 +59,8 @@
 	 compact_index/1,
 	 set_ttl/2]).
 
--export([memory_usage/1]).
+-export([memory_usage/1,
+	 get_property/2]).
 
 -define(SERVER, ?MODULE).
 
@@ -269,7 +270,7 @@ read_range_n_prefix_binary(Shard, PrefixKey, DBKey, N) ->
 -spec recreate_shard(Shard :: string()) -> ok.
 recreate_shard(Shard) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:cast(ServerRef, recreate_shard).
+    cast(ServerRef, recreate_shard).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -372,6 +373,18 @@ get_backup_info(Shard) ->
 memory_usage(Shard) ->
     Pid = enterdb_ns:get({Shard, reader}),
     call(Pid, memory_usage).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Retrieve property for shard
+%% @end
+%%--------------------------------------------------------------------
+-spec get_property(Shard :: string(), Prop :: string()) ->
+    {ok, PropDetails :: string()} |
+    {error, Reason :: term()}.
+get_property(Shard, Prop) ->
+    Pid = enterdb_ns:get({Shard, reader}),
+    call(Pid, {get_property, Prop}).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -732,7 +745,12 @@ handle_call(memory_usage, _From,
     Reply = rocksdb:memory_usage(DB),
     {reply, Reply, State};
 
-handle_call(stop, From, State) ->
+handle_call({get_property, Prop}, _From,
+            State = #state{db_ref = DB}) ->
+    Reply = rocksdb:get_property(DB, Prop),
+    {reply, Reply, State};
+
+handle_call(stop, _From, State) ->
     ?debug("stopping"),
     {stop, normal, ok, State};
 
@@ -849,7 +867,8 @@ terminate_iterators(MonMap) ->
 	      end, ok, MonMap).
 
 terminate_reader(true, ReaderPid, Shard) ->
-    gen_server:call(ReaderPid, stop),
+    %% true means we are the first/write process
+    catch gen_server:call(ReaderPid, stop),
     ensure_closed(Shard);
 terminate_reader(_false, _ReaderPid, _Shard) ->
     ?debug("closing reader process"),
