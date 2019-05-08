@@ -26,6 +26,7 @@
 -export([create_table/3,
          open_table/1,
 	 close_table/1,
+	 read_multi/2,
 	 read/2,
          read_from_disk/2,
 	 write/1,
@@ -150,6 +151,23 @@ close_table(Name) ->
 	Dist ->
 	    enterdb_lib:close_table(Name, Dist)
     end.
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Reads Key from table with name Tab
+%% @end
+%%--------------------------------------------------------------------
+-spec read_multi(Tab :: string(), [Key :: key()]) ->
+	[{ok, value()} |
+	 {error, Reason :: term()}].
+
+read_multi(T, L) when is_list(L) ->
+    read_multi_(T, L, []).
+read_multi_(T, [K | Ks], Res) ->
+    R = read(T,K),
+    read_multi_(T, Ks, [R|Res]);
+read_multi_(_T, [], Res) ->
+    lists:reverse(Res).
 
 %%--------------------------------------------------------------------
 %% @doc
