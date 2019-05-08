@@ -136,8 +136,8 @@ update_local_shard(Node, Shard, {ok, Log}) ->
 	R = rpc:call(Node, disk_log, chunk, [Log, start]),
 	done = loop_through_data(Node, Log, R),
 	ok = rpc:call(Node, enterdb_shard_recovery, stop, [{node(), Shard}])
-   catch C:E ->
-	?warning("recover data failed ~p ~p", [{C,E}, erlang:get_stacktrace()]),
+   catch C:E:ST ->
+	?warning("recover data failed ~p ~p", [{C,E}, ST]),
 	?warning("falling back to full recover of shard"),
 	%% fallback to full recovery
 	copy_shard(Node, Shard)
