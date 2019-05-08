@@ -33,6 +33,7 @@
 	 write/3,
          update/3,
 	 delete/2,
+	 delete_multi/2,
 	 read_range/3,
 	 read_range_n/3,
 	 read_range_n_ts/3,
@@ -167,6 +168,23 @@ read_multi_(T, [K | Ks], Res) ->
     R = read(T,K),
     read_multi_(T, Ks, [R|Res]);
 read_multi_(_T, [], Res) ->
+    lists:reverse(Res).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Delete many keys from table with name Tab
+%% @end
+%%--------------------------------------------------------------------
+-spec delete_multi(Tab :: string(), [Key :: key()]) ->
+	[ok |
+	 {error, Reason :: term()}].
+
+delete_multi(T, L) when is_list(L) ->
+    delete_multi_(T, L, []).
+delete_multi_(T, [K | Ks], Res) ->
+    R = delete(T,K),
+    delete_multi_(T, Ks, [R|Res]);
+delete_multi_(_T, [], Res) ->
     lists:reverse(Res).
 
 %%--------------------------------------------------------------------
