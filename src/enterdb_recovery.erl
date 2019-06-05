@@ -95,7 +95,7 @@ init_start_recovery(Type, Node, Shard) ->
 	ok ->
 	    do_start_recovery(Type, Node, Shard);
 	{error, already_running} ->
-	    ?debug("recovery already running");
+	    ?info("recovery already running");
 	E ->
 	    ?info("could not register recovery process: ~p", [E])
     end.

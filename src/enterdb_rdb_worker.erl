@@ -406,7 +406,7 @@ restore_db(Shard) ->
 restore_db(Shard, BackupId) when is_integer(BackupId) ->
     case enterdb_ns:get(Shard) of
 	Pid when is_pid(Pid) ->
-	    call(Pid, {restore_db, BackupId});
+	    call(Pid, {restore_db, BackupId}, 60*60*1000);
 	E -> E
     end.
 
@@ -420,7 +420,7 @@ restore_db(Shard, BackupId) when is_integer(BackupId) ->
 restore_db(Shard, BackupId, FromPath) when is_integer(BackupId) ->
     case enterdb_ns:get(Shard) of
 	Pid when is_pid(Pid) ->
-	    call(Pid, {restore_db, BackupId, FromPath});
+	    call(Pid, {restore_db, BackupId, FromPath}, 60*60*1000);
 	E -> E
     end.
 
@@ -740,15 +740,21 @@ handle_call({set_ttl, TTL}, _From,
     Reply = rocksdb:set_ttl(DB, TTL),
     {reply, Reply, State#state{ttl=TTL}};
 
-handle_call(memory_usage, _From,
+handle_call(memory_usage, From,
             State = #state{db_ref = DB}) ->
-    Reply = rocksdb:memory_usage(DB),
-    {reply, Reply, State};
+    spawn(fun() ->
+	    Reply = rocksdb:memory_usage(DB),
+	    gen_server:reply(From, Reply)
+	  end ),
+    {noreply, State};
 
-handle_call({get_property, Prop}, _From,
+handle_call({get_property, Prop}, From,
             State = #state{db_ref = DB}) ->
-    Reply = rocksdb:get_property(DB, Prop),
-    {reply, Reply, State};
+    spawn(fun() ->
+	    Reply = rocksdb:get_property(DB, Prop),
+	    gen_server:reply(From, Reply)
+	  end ),
+    {noreply, State};
 
 handle_call(stop, _From, State) ->
     ?debug("stopping"),

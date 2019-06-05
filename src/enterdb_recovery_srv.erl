@@ -92,9 +92,7 @@ handle_call({register, Shard, RPid}, _From, State) ->
     {Reply, NewState} =
 	case maps:get(Shard, State, undefined) of
 	    undefined ->    
-		?debug("registering ~p running recovery for shard ~p", [RPid, Shard]), 
-		erlang:monitor(process, RPid),
-		{ok, State#{Shard => RPid, RPid => Shard}};
+		check_running(Shard, RPid, State);
 	    Pid when is_pid(Pid) ->
 		?debug("recovery already running ~p for shard ~p", [Pid, Shard]), 
 		{{error, already_running}, State}
@@ -129,7 +127,11 @@ handle_info({'DOWN',_Ref,process,Pid, Reason}, State) ->
     Shard = maps:get(Pid, State, undefined),
     StateU1 = maps:remove(Shard, State),
     StateU2 = maps:remove(Pid, StateU1),
-    {noreply, StateU2}.
+    
+    %% Update running jobs accordingly
+    Jobs = maps:get(jobs_running, State, 0),
+    StateU3 = StateU2#{jobs_running => erlang:max(Jobs-1, 0)},
+    {noreply, StateU3}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -159,8 +161,15 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-
-
+check_running(Shard, RPid, State) ->
+    case maps:get(jobs_running, State, 0) of
+	N when N < 1 ->
+	    ?debug("registering ~p running recovery for shard ~p", [RPid, Shard]), 
+	    erlang:monitor(process, RPid),
+	    {ok, State#{Shard => RPid, RPid => Shard, jobs_running => N+1}};
+	_ ->
+	    {{error, too_many_jobs_running}, State}
+    end.
 
 
 
