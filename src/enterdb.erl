@@ -26,12 +26,14 @@
 -export([create_table/3,
          open_table/1,
 	 close_table/1,
+	 read_multi/2,
 	 read/2,
          read_from_disk/2,
 	 write/1,
 	 write/3,
          update/3,
 	 delete/2,
+	 delete_multi/2,
 	 read_range/3,
 	 read_range_n/3,
 	 read_range_n_ts/3,
@@ -156,6 +158,40 @@ close_table(Name) ->
 %% Reads Key from table with name Tab
 %% @end
 %%--------------------------------------------------------------------
+-spec read_multi(Tab :: string(), [Key :: key()]) ->
+	[{ok, value()} |
+	 {error, Reason :: term()}].
+
+read_multi(T, L) when is_list(L) ->
+    read_multi_(T, L, []).
+read_multi_(T, [K | Ks], Res) ->
+    R = read(T,K),
+    read_multi_(T, Ks, [R|Res]);
+read_multi_(_T, [], Res) ->
+    lists:reverse(Res).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Delete many keys from table with name Tab
+%% @end
+%%--------------------------------------------------------------------
+-spec delete_multi(Tab :: string(), [Key :: key()]) ->
+	[ok |
+	 {error, Reason :: term()}].
+
+delete_multi(T, L) when is_list(L) ->
+    delete_multi_(T, L, []).
+delete_multi_(T, [K | Ks], Res) ->
+    R = delete(T,K),
+    delete_multi_(T, Ks, [R|Res]);
+delete_multi_(_T, [], Res) ->
+    lists:reverse(Res).
+
+%%--------------------------------------------------------------------
+%% @doc
+%% Reads Key from table with name Tab
+%% @end
+%%--------------------------------------------------------------------
 -spec read(Tab :: string(),
            Key :: key()) -> {ok, value()} | {error, Reason :: term()}.
 read(Tab, Key) ->
@@ -247,12 +283,14 @@ write([], Res) ->
             Key :: key(),
             Columns :: [column()]) -> ok | {error, Reason :: term()}.
 write(Tab, Key, Columns) ->
-    case enterdb_lib:get_tab_def(Tab) of
-	TD = #{distributed := Dist} ->
+    case ets:lookup(enterdb_table, Tab) of
+	[#enterdb_table{map = TD = #{distributed := Dist}}] ->
 	    DB_HashKeyAndCols = enterdb_lib:make_key_columns(TD, Key, Columns),
 	    write_(Tab, Key, DB_HashKeyAndCols, Dist);
-	{error, _} = R ->
-	    R
+	{error, "no_table"} = R ->
+	    R;
+	[] ->
+	    {error, "no_table"}
     end.
 
 -spec write_(Tab :: string(),
@@ -275,8 +313,12 @@ write_(_Tab, _, {error, _} = E, _) ->
     E.
 
 do_write(Shard, Key, DBKey, DBColumns, IndexTerms) ->
-    TD = enterdb_lib:get_shard_def(Shard),
-    do_write(TD, Shard, Key, DBKey, DBColumns, IndexTerms).
+    case ets:lookup(enterdb_stab, Shard) of
+	[#enterdb_stab{map=ST}] ->
+	    do_write(ST, Shard, Key, DBKey, DBColumns, IndexTerms);
+	_ ->
+	    {error, "no_table"}
+    end.
 
 do_write_force(Shard, Key, DBKey, DBColumns, IndexTerms) ->
     TD = (enterdb_lib:get_shard_def(Shard))#{ready_status => forced},
@@ -653,9 +695,14 @@ table_info(Name, Parameters) ->
 	    Shards = maps:get(shards, Map),
 	    SizePL = get_size_param(Parameters, Type, Shards, Dist),
 	    MemoryUsage = get_memory_usage(Parameters, Type, Shards, Dist),
+	    ApproxKeys  = get_approx_num_keys(Parameters, Type, Shards, Dist),
 	    ColumnsMapper = maps:get(column_mapper, Map),
 	    ColumnsPL = get_columns_param(Parameters, ColumnsMapper),
-	    List = SizePL ++ ColumnsPL ++ MemoryUsage ++ maps:to_list(Map),
+	    List = SizePL ++
+		   ColumnsPL ++
+		   MemoryUsage ++
+		   ApproxKeys ++
+		   maps:to_list(Map),
 	    Info = [ lists:keyfind(P, 1, List) || P <- Parameters],
 	    {ok, lists:keysort(1, [ {A, B} || {A, B} <- Info])};
 	[] ->
@@ -700,6 +747,19 @@ get_columns_param(Parameters, ColumnsMapper) ->
 		    Filtered = lists:filter(Fun, List),
 		    Sorted = lists:keysort(2, Filtered),
 		    [{columns, [C || {C, _} <- Sorted]}]
+	    end;
+	false ->
+	    []
+    end.
+
+get_approx_num_keys(Parameters, Type, Shards, Dist) ->
+    case lists:member(approx_num_keys, Parameters) of
+	true ->
+	    case enterdb_lib:get_property(Type, Shards, Dist, approx_num_keys) of
+		{error, _Reason} ->
+		    [];
+		{ok, ApproxKeys} ->
+		    [{approx_num_keys, ApproxKeys}]
 	    end;
 	false ->
 	    []
@@ -780,7 +840,7 @@ index_read(Tab, Column, Term, Filter) ->
 	    case {Mapper:lookup(Column), Tuple} of
 		{Cid, {Column, IndexOptions}} when is_integer(Cid) ->
 		    Terms = enterdb_index_lib:make_lookup_terms(IndexOptions, Term),
-		    enterdb_index_lib:read(TD, Cid, Terms, Filter);
+		    enterdb_index_lib:read(TD, Cid, Terms, Filter, IndexOptions);
 		_ ->
 		    {error, column_not_indexed}
 	    end;

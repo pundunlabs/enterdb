@@ -59,7 +59,8 @@
 	 compact_index/1,
 	 set_ttl/2]).
 
--export([memory_usage/1]).
+-export([memory_usage/1,
+	 get_property/2]).
 
 -define(SERVER, ?MODULE).
 
@@ -269,7 +270,7 @@ read_range_n_prefix_binary(Shard, PrefixKey, DBKey, N) ->
 -spec recreate_shard(Shard :: string()) -> ok.
 recreate_shard(Shard) ->
     ServerRef = enterdb_ns:get(Shard),
-    gen_server:cast(ServerRef, recreate_shard).
+    cast(ServerRef, recreate_shard).
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -375,6 +376,18 @@ memory_usage(Shard) ->
 
 %%--------------------------------------------------------------------
 %% @doc
+%% Retrieve property for shard
+%% @end
+%%--------------------------------------------------------------------
+-spec get_property(Shard :: string(), Prop :: string()) ->
+    {ok, PropDetails :: string()} |
+    {error, Reason :: term()}.
+get_property(Shard, Prop) ->
+    Pid = enterdb_ns:get({Shard, reader}),
+    call(Pid, {get_property, Prop}).
+
+%%--------------------------------------------------------------------
+%% @doc
 %% Restore shard from latest backup.
 %% @end
 %%--------------------------------------------------------------------
@@ -393,7 +406,7 @@ restore_db(Shard) ->
 restore_db(Shard, BackupId) when is_integer(BackupId) ->
     case enterdb_ns:get(Shard) of
 	Pid when is_pid(Pid) ->
-	    call(Pid, {restore_db, BackupId});
+	    call(Pid, {restore_db, BackupId}, 60*60*1000);
 	E -> E
     end.
 
@@ -407,7 +420,7 @@ restore_db(Shard, BackupId) when is_integer(BackupId) ->
 restore_db(Shard, BackupId, FromPath) when is_integer(BackupId) ->
     case enterdb_ns:get(Shard) of
 	Pid when is_pid(Pid) ->
-	    call(Pid, {restore_db, BackupId, FromPath});
+	    call(Pid, {restore_db, BackupId, FromPath}, 60*60*1000);
 	E -> E
     end.
 
@@ -653,7 +666,9 @@ handle_call({restore_db, BackupId, FromPath}, _From,
 			   db_ref = DB,
 			   db_path = DbPath,
 			   ttl = TTL,
-			   options_pl = OptionsPL}) ->
+			   options_pl = OptionsPL,
+			   reader = ReaderPid}) ->
+    catch gen_server:call(ReaderPid, stop),
     ok = delete_enterdb_ldb_resource(Shard),
     ok = rocksdb:close_db(DB),
     Reply =
@@ -669,6 +684,7 @@ handle_call({restore_db, BackupId, FromPath}, _From,
     {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
     ELR = #enterdb_ldb_resource{name = Shard, resource = NewDB},
     ok = write_enterdb_ldb_resource(ELR),
+    gen_server:cast(self(), start_reader),
     {reply, Reply, State#state{db_ref=NewDB,
 			       options=NewOptions,
 			       options_pl=NewOptionsPL}};
@@ -679,8 +695,10 @@ handle_call({restore_db, BackupId}, _From,
 			   db_path = DbPath,
 			   backup_path = FromPath,
 			   ttl = TTL,
-			   options_pl = OptionsPL}) ->
+			   options_pl = OptionsPL,
+			   reader = ReaderPid}) ->
     ?info("DbPath ~p", [DbPath]),
+    catch gen_server:call(ReaderPid, stop),
     ok = delete_enterdb_ldb_resource(Shard),
     ok = rocksdb:close_db(DB),
     Reply =
@@ -696,6 +714,7 @@ handle_call({restore_db, BackupId}, _From,
     {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
     ELR = #enterdb_ldb_resource{name = Shard, resource = NewDB},
     ok = write_enterdb_ldb_resource(ELR),
+    gen_server:cast(self(), start_reader),
     {reply, Reply, State#state{db_ref=NewDB,
 			       options=NewOptions,
 			       options_pl=NewOptionsPL}};
@@ -727,12 +746,23 @@ handle_call({set_ttl, TTL}, _From,
     Reply = rocksdb:set_ttl(DB, TTL),
     {reply, Reply, State#state{ttl=TTL}};
 
-handle_call(memory_usage, _From,
+handle_call(memory_usage, From,
             State = #state{db_ref = DB}) ->
-    Reply = rocksdb:memory_usage(DB),
-    {reply, Reply, State};
+    spawn(fun() ->
+	    Reply = rocksdb:memory_usage(DB),
+	    gen_server:reply(From, Reply)
+	  end ),
+    {noreply, State};
 
-handle_call(stop, From, State) ->
+handle_call({get_property, Prop}, From,
+            State = #state{db_ref = DB}) ->
+    spawn(fun() ->
+	    Reply = rocksdb:get_property(DB, Prop),
+	    gen_server:reply(From, Reply)
+	  end ),
+    {noreply, State};
+
+handle_call(stop, _From, State) ->
     ?debug("stopping"),
     {stop, normal, ok, State};
 
@@ -762,8 +792,10 @@ handle_cast(recreate_shard, State = #state{shard = Shard,
 					   options = Options,
 					   db_path = DbPath,
 					   options_pl = OptionsPL,
-					   ttl = TTL}) ->
+					   ttl = TTL,
+					   reader = ReaderPid}) ->
     ?debug("Recreating shard: ~p", [Shard]),
+    catch gen_server:call(ReaderPid, stop),
     ok = delete_enterdb_ldb_resource(Shard),
     ok = rocksdb:close_db(DB),
     ok = rocksdb:destroy_db(DbPath, Options),
@@ -780,6 +812,7 @@ handle_cast(recreate_shard, State = #state{shard = Shard,
     {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
     ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Shard,
 							  resource = NewDB}),
+    gen_server:cast(self(), start_reader),
     {noreply, State#state{db_ref = NewDB,
 			  options = NewOptions,
 			  options_pl = NewOptionsPL}};
@@ -849,7 +882,8 @@ terminate_iterators(MonMap) ->
 	      end, ok, MonMap).
 
 terminate_reader(true, ReaderPid, Shard) ->
-    gen_server:call(ReaderPid, stop),
+    %% true means we are the first/write process
+    catch gen_server:call(ReaderPid, stop),
     ensure_closed(Shard);
 terminate_reader(_false, _ReaderPid, _Shard) ->
     ?debug("closing reader process"),

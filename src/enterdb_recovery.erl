@@ -95,7 +95,7 @@ init_start_recovery(Type, Node, Shard) ->
 	ok ->
 	    do_start_recovery(Type, Node, Shard);
 	{error, already_running} ->
-	    ?debug("recovery already running");
+	    ?info("recovery already running");
 	E ->
 	    ?info("could not register recovery process: ~p", [E])
     end.
@@ -120,6 +120,7 @@ do_start_recovery(log, Node, Shard) ->
 do_start_recovery(full, Node, Shard) ->
     %% start local memlog while recovering
     enterdb_shard_recovery:start({node(), Shard}, mem_log),
+    rpc:call(Node, enterdb_shard_recovery, stop, [{node(), Shard}]),
     set_shard_ready_flag(Shard, recovering),
     copy_shard(Node, Shard),
     update_column_mapper(Node, Shard),
@@ -136,8 +137,8 @@ update_local_shard(Node, Shard, {ok, Log}) ->
 	R = rpc:call(Node, disk_log, chunk, [Log, start]),
 	done = loop_through_data(Node, Log, R),
 	ok = rpc:call(Node, enterdb_shard_recovery, stop, [{node(), Shard}])
-   catch C:E ->
-	?warning("recover data failed ~p ~p", [{C,E}, erlang:get_stacktrace()]),
+   catch C:E:ST ->
+	?warning("recover data failed ~p ~p", [{C,E}, ST]),
 	?warning("falling back to full recover of shard"),
 	%% fallback to full recovery
 	copy_shard(Node, Shard)
