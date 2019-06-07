@@ -179,6 +179,8 @@ handle_call(dump_mem_log, _From, State) ->
     dump_mem_log_int(EtsTable),
     ets:delete_all_objects(EtsTable),
     {reply, done, State};
+handle_call(get_log, _From, State = #{log_state := full}) ->
+    {reply, {error, full}, State};
 handle_call(get_log, _From, State) ->
     Log = maps:get(log, State),
     {reply, {ok, Log}, State}.
@@ -202,6 +204,8 @@ handle_cast(stop, State) ->
     file:delete(maps:get(path, State)),
     {stop, normal, State};
 
+handle_cast({log_event, _Event}, #{log_state := full} = State) ->
+    {noreply, State};
 handle_cast({log_event, Event}, State) ->
     ?debug("logging to ~p ~p", [maps:get(name, State) , Event]),
     Res = disk_log:log(maps:get(log, State), Event),
@@ -212,9 +216,8 @@ handle_cast({log_event, Event}, State) ->
 	    Shard = maps:get(shard, State),
 	    %% gossip about full recovery needed for remote shard
 	    gb_dyno_metadata:node_add_prop(Node, {{Shard, oos}, {full, node()}}),
-	    disk_log:close(maps:get(log, State)),
-	    file:delete(maps:get(path, State)),
-	    {stop, normal, State};
+	    %% do not stop the log
+	    {noreply, State#{log_state=>full}};
 	_ ->
 	{noreply, State}
     end.

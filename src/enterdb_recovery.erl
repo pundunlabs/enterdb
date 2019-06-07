@@ -120,6 +120,7 @@ do_start_recovery(log, Node, Shard) ->
 do_start_recovery(full, Node, Shard) ->
     %% start local memlog while recovering
     enterdb_shard_recovery:start({node(), Shard}, mem_log),
+    rpc:call(Node, enterdb_shard_recovery, stop, [{node(), Shard}]),
     set_shard_ready_flag(Shard, recovering),
     copy_shard(Node, Shard),
     update_column_mapper(Node, Shard),
