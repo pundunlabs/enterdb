@@ -666,7 +666,9 @@ handle_call({restore_db, BackupId, FromPath}, _From,
 			   db_ref = DB,
 			   db_path = DbPath,
 			   ttl = TTL,
-			   options_pl = OptionsPL}) ->
+			   options_pl = OptionsPL,
+			   reader = ReaderPid}) ->
+    catch gen_server:call(ReaderPid, stop),
     ok = delete_enterdb_ldb_resource(Shard),
     ok = rocksdb:close_db(DB),
     Reply =
@@ -682,6 +684,7 @@ handle_call({restore_db, BackupId, FromPath}, _From,
     {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
     ELR = #enterdb_ldb_resource{name = Shard, resource = NewDB},
     ok = write_enterdb_ldb_resource(ELR),
+    gen_server:cast(self(), start_reader),
     {reply, Reply, State#state{db_ref=NewDB,
 			       options=NewOptions,
 			       options_pl=NewOptionsPL}};
@@ -692,8 +695,10 @@ handle_call({restore_db, BackupId}, _From,
 			   db_path = DbPath,
 			   backup_path = FromPath,
 			   ttl = TTL,
-			   options_pl = OptionsPL}) ->
+			   options_pl = OptionsPL,
+			   reader = ReaderPid}) ->
     ?info("DbPath ~p", [DbPath]),
+    catch gen_server:call(ReaderPid, stop),
     ok = delete_enterdb_ldb_resource(Shard),
     ok = rocksdb:close_db(DB),
     Reply =
@@ -709,6 +714,7 @@ handle_call({restore_db, BackupId}, _From,
     {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
     ELR = #enterdb_ldb_resource{name = Shard, resource = NewDB},
     ok = write_enterdb_ldb_resource(ELR),
+    gen_server:cast(self(), start_reader),
     {reply, Reply, State#state{db_ref=NewDB,
 			       options=NewOptions,
 			       options_pl=NewOptionsPL}};
@@ -786,8 +792,10 @@ handle_cast(recreate_shard, State = #state{shard = Shard,
 					   options = Options,
 					   db_path = DbPath,
 					   options_pl = OptionsPL,
-					   ttl = TTL}) ->
+					   ttl = TTL,
+					   reader = ReaderPid}) ->
     ?debug("Recreating shard: ~p", [Shard]),
+    catch gen_server:call(ReaderPid, stop),
     ok = delete_enterdb_ldb_resource(Shard),
     ok = rocksdb:close_db(DB),
     ok = rocksdb:destroy_db(DbPath, Options),
@@ -804,6 +812,7 @@ handle_cast(recreate_shard, State = #state{shard = Shard,
     {ok, NewDB} = open_db(NewOptions, DbPath, ColumnFamiliyOpts),
     ok = write_enterdb_ldb_resource(#enterdb_ldb_resource{name = Shard,
 							  resource = NewDB}),
+    gen_server:cast(self(), start_reader),
     {noreply, State#state{db_ref = NewDB,
 			  options = NewOptions,
 			  options_pl = NewOptionsPL}};
