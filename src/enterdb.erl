@@ -288,7 +288,9 @@ write(Tab, Key, Columns) ->
 	    DB_HashKeyAndCols = enterdb_lib:make_key_columns(TD, Key, Columns),
 	    write_(Tab, Key, DB_HashKeyAndCols, Dist);
 	{error, "no_table"} = R ->
-	    R
+	    R;
+	[] ->
+	    {error, "no_table"}
     end.
 
 -spec write_(Tab :: string(),
