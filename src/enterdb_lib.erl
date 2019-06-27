@@ -937,10 +937,7 @@ read_range_n_on_shard(Shard,
 	    rocksdb -> enterdb_rdb_worker
 	end,
 
-    %% for backwars compatability.
-    %% since we hash the shard on the reverse sext encoded list
-    %% will change when we can break backward compatability
-    PrefixKey = sext:encode(list_to_tuple(lists:reverse(sext:decode(HashKey)))),
+    PrefixKey = sext:encode(list_to_tuple(lists:reverse(erlang:binary_to_term(HashKey)))),
     {ok, KVLs, Cont} = CallbackMod:read_range_n_prefix_binary(Shard, PrefixKey, DBStartKey, N),
 
     ContKey =
@@ -1261,9 +1258,7 @@ make_db_key([Field | RestD], RestH, Key, {Pos, DBKey}, HashKeyList) ->
             {error, "key_mismatch"}
     end;
 make_db_key([], _, _, {_, DBKey}, HashKeyList) ->
-    %TupleD = list_to_tuple(lists:reverse(DBKeyList)),
-% {ok, sext:encode(DBKey), sext:encode(HashKeyList)}.
-     {ok, sext:encode(DBKey), erlang:term_to_binary(HashKeyList)}.
+    {ok, sext:encode(DBKey), erlang:term_to_binary(HashKeyList)}.
 
 %%--------------------------------------------------------------------
 %% @doc
