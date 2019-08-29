@@ -582,7 +582,7 @@ read_range_n_local(Name, StartKey, N) ->
     {ok, [kvp()]} | {error, Reason :: term()}.
 read_range_n_local_(Tab, TD, {ok, DBKey, HashKey}, N, true) ->
     {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
-    ?dyno:call(Ring, {enterdb_lib, read_range_n_on_shard, [Shard, TD, HashKey, DBKey, N]}, read_range_n_ts_);
+    ?dyno:call(Ring, {enterdb_lib, read_range_n_on_shard, [Shard, TD, HashKey, DBKey, N]}, read);
 read_range_n_local_(Tab, TD, {ok, DBKey, HashKey}, N, false) ->
     {ok, Shard} = gb_hash:get_local_node(Tab, HashKey),
     enterdb_lib:read_range_n_on_shard(Shard, TD, HashKey, DBKey, N);
@@ -628,7 +628,7 @@ read_range_stop_n_local_(Tab, TD,
     {ok, {Shard, Ring}} = gb_hash:get_node(Tab, HashKey),
     ?dyno:call(Ring,
 	       {enterdb_lib, read_range_n_on_shard,
-		[Shard, TD, HashKey, DBKey, SDBKey, N]}, read_range_stop_n_local_);
+		[Shard, TD, HashKey, DBKey, SDBKey, N]}, read);
 read_range_stop_n_local_(Tab, TD,
 		{ok, DBKey, HashKey},
 		{ok, SDBKey, _}, N, false) ->
