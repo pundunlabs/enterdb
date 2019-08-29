@@ -725,11 +725,13 @@ get_size_param(Parameters, Type, Shards, Dist) ->
 get_memory_usage(Parameters, Type, Shards, Dist) ->
     case lists:member(memory_usage, Parameters) of
 	true ->
-	    case enterdb_lib:memory_usage(Type, Shards, Dist) of
+	    try enterdb_lib:memory_usage(Type, Shards, Dist) of
 		{error, _Reason} ->
 		    [];
 		{ok, MemoryUsage} ->
 		    [{memory_usage, MemoryUsage}]
+	    catch _:_ ->
+		[]
 	    end;
 	false ->
 	    []
